@@ -106,6 +106,19 @@ def vault_bucket_list_add(
 
 
 @router.post(
+    "/tools/vault.bucket_list.prioritize",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_list_prioritize",
+)
+def bucket_list_prioritize(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("vault.bucket_list.prioritize", request, dispatcher)
+
+
+@router.post(
     "/tools/memory.create",
     response_model=ToolResponse,
     tags=["tools"],

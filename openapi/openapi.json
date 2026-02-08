@@ -235,6 +235,47 @@
         }
       }
     },
+    "/tools/vault.bucket_list.prioritize": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Bucket List Prioritize",
+        "operationId": "bucket_list_prioritize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tools/memory.create": {
       "post": {
         "tags": [
@@ -674,6 +715,7 @@
               "vault.recipe.save",
               "vault.note.save",
               "vault.bucket_list.add",
+              "vault.bucket_list.prioritize",
               "memory.create",
               "memory.undo",
               "reminder.schedule",
@@ -761,6 +803,7 @@
               "vault.recipe.save",
               "vault.note.save",
               "vault.bucket_list.add",
+              "vault.bucket_list.prioritize",
               "memory.create",
               "memory.undo",
               "reminder.schedule",

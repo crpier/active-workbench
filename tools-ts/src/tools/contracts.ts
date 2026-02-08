@@ -4,6 +4,7 @@ export type ToolName =
   | "vault.recipe.save"
   | "vault.note.save"
   | "vault.bucket_list.add"
+  | "vault.bucket_list.prioritize"
   | "memory.create"
   | "memory.undo"
   | "reminder.schedule"

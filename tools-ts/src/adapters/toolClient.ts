@@ -16,6 +16,7 @@ const TOOL_METHODS: Record<ToolName, ToolCall> = {
   "vault.recipe.save": (request) => ToolsService.vaultRecipeSave(request),
   "vault.note.save": (request) => ToolsService.vaultNoteSave(request),
   "vault.bucket_list.add": (request) => ToolsService.vaultBucketListAdd(request),
+  "vault.bucket_list.prioritize": (request) => ToolsService.bucketListPrioritize(request),
   "memory.create": (request) => ToolsService.memoryCreate(request),
   "memory.undo": (request) => ToolsService.memoryUndo(request),
   "reminder.schedule": (request) => ToolsService.reminderSchedule(request),

@@ -15,6 +15,7 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "vault.recipe.save",
     "vault.note.save",
     "vault.bucket_list.add",
+    "vault.bucket_list.prioritize",
     "memory.create",
     "memory.undo",
     "reminder.schedule",
@@ -40,6 +41,10 @@ def _request_body(
         "payload": payload or {"example": True},
         "context": {"timezone": "Europe/Bucharest", "session_id": "test"},
     }
+
+
+def _runtime_data_dir() -> Path:
+    return Path(os.environ["ACTIVE_WORKBENCH_DATA_DIR"])
 
 
 def test_health(client: TestClient) -> None:
@@ -75,29 +80,135 @@ def test_tool_endpoint_rejects_tool_mismatch(client: TestClient) -> None:
     assert "does not match endpoint" in response.json()["detail"]
 
 
-def test_vault_recipe_save_persists_markdown(client: TestClient) -> None:
-    response = client.post(
+def test_recipe_workflow_end_to_end(client: TestClient) -> None:
+    history = client.post(
+        "/tools/youtube.history.list_recent",
+        json=_request_body("youtube.history.list_recent", payload={"query": "cook", "limit": 3}),
+    )
+    assert history.status_code == 200
+    videos = history.json()["result"]["videos"]
+    assert videos
+    video_id = str(videos[0]["video_id"])
+
+    transcript = client.post(
+        "/tools/youtube.transcript.get",
+        json=_request_body("youtube.transcript.get", payload={"video_id": video_id}),
+    )
+    assert transcript.status_code == 200
+    transcript_text = str(transcript.json()["result"]["transcript"])
+
+    recipe = client.post(
+        "/tools/recipe.extract_from_transcript",
+        json=_request_body(
+            "recipe.extract_from_transcript",
+            payload={"video_id": video_id, "transcript": transcript_text, "title": "Leek Soup"},
+        ),
+    )
+    assert recipe.status_code == 200
+    recipe_markdown = str(recipe.json()["result"]["markdown"])
+
+    save = client.post(
         "/tools/vault.recipe.save",
         json=_request_body(
             "vault.recipe.save",
             payload={
                 "title": "Leek Soup",
-                "body": "Use the leeks before they expire.",
-                "source_refs": [{"type": "youtube_video", "id": "abc123"}],
+                "markdown": recipe_markdown,
+                "source_refs": [{"type": "youtube_video", "id": video_id}],
             },
         ),
     )
-    assert response.status_code == 200
-    body = response.json()
-    saved_path = Path(str(body["result"]["path"]))
+    assert save.status_code == 200
+    saved_path = _runtime_data_dir() / str(save.json()["result"]["path"])
+    assert saved_path.exists()
 
-    data_dir = Path(os.environ["ACTIVE_WORKBENCH_DATA_DIR"])
-    file_path = data_dir / saved_path
-    assert file_path.exists()
+    memory = client.post(
+        "/tools/memory.create",
+        json=_request_body(
+            "memory.create",
+            payload={
+                "type": "recipe_capture",
+                "recipe_title": "Leek Soup",
+                "source_refs": [{"type": "youtube_video", "id": video_id}],
+            },
+        ),
+    )
+    assert memory.status_code == 200
+    assert memory.json()["undo_token"]
 
-    content = file_path.read_text(encoding="utf-8")
-    assert "# Leek Soup" in content
-    assert "youtube_video" in content
+
+def test_summary_workflow_end_to_end(client: TestClient) -> None:
+    history = client.post(
+        "/tools/youtube.history.list_recent",
+        json=_request_body(
+            "youtube.history.list_recent",
+            payload={"query": "microservices", "limit": 3},
+        ),
+    )
+    assert history.status_code == 200
+    videos = history.json()["result"]["videos"]
+    assert videos
+    video_id = str(videos[0]["video_id"])
+
+    transcript = client.post(
+        "/tools/youtube.transcript.get",
+        json=_request_body("youtube.transcript.get", payload={"video_id": video_id}),
+    )
+    transcript_text = str(transcript.json()["result"]["transcript"])
+
+    summary = client.post(
+        "/tools/summary.extract_key_ideas",
+        json=_request_body(
+            "summary.extract_key_ideas",
+            payload={"video_id": video_id, "transcript": transcript_text, "max_points": 4},
+        ),
+    )
+    assert summary.status_code == 200
+    key_ideas = summary.json()["result"]["key_ideas"]
+    assert key_ideas
+
+    body = "\n".join(f"- {item}" for item in key_ideas)
+    save = client.post(
+        "/tools/vault.note.save",
+        json=_request_body(
+            "vault.note.save",
+            payload={
+                "title": "Microservices Interesting Ideas",
+                "body": body,
+                "source_refs": [{"type": "youtube_video", "id": video_id}],
+            },
+        ),
+    )
+    assert save.status_code == 200
+    path = _runtime_data_dir() / str(save.json()["result"]["path"])
+    assert path.exists()
+
+
+def test_bucket_list_and_prioritization(client: TestClient) -> None:
+    add_first = client.post(
+        "/tools/vault.bucket_list.add",
+        json=_request_body(
+            "vault.bucket_list.add",
+            payload={"title": "Watch Andor", "body": "effort: low\ncost: medium"},
+        ),
+    )
+    add_second = client.post(
+        "/tools/vault.bucket_list.add",
+        json=_request_body(
+            "vault.bucket_list.add",
+            payload={"title": "Watch Severance", "body": "effort: low\ncost: high"},
+        ),
+    )
+    assert add_first.status_code == 200
+    assert add_second.status_code == 200
+
+    prioritized = client.post(
+        "/tools/vault.bucket_list.prioritize",
+        json=_request_body("vault.bucket_list.prioritize", payload={}),
+    )
+    assert prioritized.status_code == 200
+    items = prioritized.json()["result"]["items"]
+    assert len(items) >= 2
 
 
 def test_memory_create_and_undo(client: TestClient) -> None:
@@ -125,7 +236,7 @@ def test_memory_create_and_undo(client: TestClient) -> None:
     assert second_undo.json()["error"]["code"] == "not_found"
 
 
-def test_reminder_schedule_feeds_context_suggestions(client: TestClient) -> None:
+def test_reminder_and_recipe_context_suggestion(client: TestClient) -> None:
     schedule_response = client.post(
         "/tools/reminder.schedule",
         json=_request_body(
@@ -151,6 +262,69 @@ def test_reminder_schedule_feeds_context_suggestions(client: TestClient) -> None
     assert suggestion_response.status_code == 200
     suggestions = suggestion_response.json()["result"]["suggestions"]
     assert any("leeks" in suggestion for suggestion in suggestions)
+
+
+def test_actions_digest_and_routine_review(client: TestClient) -> None:
+    note_save = client.post(
+        "/tools/vault.note.save",
+        json=_request_body(
+            "vault.note.save",
+            payload={
+                "title": "Microservices actions",
+                "body": "TODO: Define service boundaries\nWe should add distributed tracing",
+            },
+        ),
+    )
+    assert note_save.status_code == 200
+
+    actions = client.post(
+        "/tools/actions.extract_from_notes",
+        json=_request_body("actions.extract_from_notes", payload={}),
+    )
+    assert actions.status_code == 200
+    extracted_actions = actions.json()["result"]["actions"]
+    assert extracted_actions
+
+    digest = client.post(
+        "/tools/digest.weekly_learning.generate",
+        json=_request_body("digest.weekly_learning.generate", payload={}),
+    )
+    assert digest.status_code == 200
+    digest_path = _runtime_data_dir() / str(digest.json()["result"]["path"])
+    assert digest_path.exists()
+
+    review = client.post(
+        "/tools/review.routine.generate",
+        json=_request_body("review.routine.generate", payload={}),
+    )
+    assert review.status_code == 200
+    review_path = _runtime_data_dir() / str(review.json()["result"]["path"])
+    assert review_path.exists()
+
+
+def test_due_reminder_jobs_execute_on_next_tool_call(client: TestClient) -> None:
+    past_run = "2025-01-01T08:00:00+00:00"
+    schedule_response = client.post(
+        "/tools/reminder.schedule",
+        json=_request_body(
+            "reminder.schedule",
+            payload={"item": "old leeks", "run_at": past_run},
+        ),
+    )
+    assert schedule_response.status_code == 200
+
+    trigger_response = client.post(
+        "/tools/context.suggest_for_query",
+        json=_request_body(
+            "context.suggest_for_query",
+            payload={"query": "anything"},
+        ),
+    )
+    assert trigger_response.status_code == 200
+
+    reviews_dir = _runtime_data_dir() / "vault" / "reviews"
+    review_files = list(reviews_dir.glob("*.md"))
+    assert review_files
 
 
 def test_write_idempotency_returns_same_response(client: TestClient) -> None:

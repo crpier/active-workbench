@@ -10,6 +10,7 @@ from backend.app.repositories.jobs_repository import JobsRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import VaultRepository
 from backend.app.services.tool_dispatcher import ToolDispatcher
+from backend.app.services.youtube_service import YouTubeService
 
 
 @lru_cache(maxsize=1)
@@ -29,6 +30,7 @@ def get_dispatcher() -> ToolDispatcher:
         memory_repository=MemoryRepository(database),
         jobs_repository=JobsRepository(database),
         vault_repository=VaultRepository(settings.vault_dir),
+        youtube_service=YouTubeService(settings.youtube_mode, settings.data_dir),
         default_timezone=settings.default_timezone,
     )
 

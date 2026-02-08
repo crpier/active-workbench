@@ -13,6 +13,8 @@ from backend.app.main import create_app
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(tmp_path / "runtime-data"))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "fixture")
     reset_cached_dependencies()
 
     app = create_app()

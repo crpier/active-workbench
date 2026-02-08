@@ -46,8 +46,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     timezone TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     status TEXT NOT NULL,
+    recurrence TEXT NULL,
+    last_run_at TEXT NULL,
+    completed_at TEXT NULL,
+    result_json TEXT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status_run_at ON jobs(status, run_at);
 """
 
 
