@@ -52,6 +52,7 @@ Project agent:
 - This repo config sets `default_agent` to `workbench-assistant` in `opencode.json`.
 - Agent prompt is stored at `.opencode/agents/workbench-assistant.md`.
 - It is tuned to treat "watched/saw video" requests as liked-videos lookups.
+- It is also tuned to proactively persist durable user context through `active_workbench_memory_create`.
 
 ## Use OpenCode Custom Tools
 
