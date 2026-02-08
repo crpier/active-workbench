@@ -9,6 +9,7 @@ class Config(BaseSettings):
     """Backend configuration."""
 
     vault_path: Path = Path.home() / "vault"
+    k3s_kubeconfig: Path = Path("/etc/rancher/k3s/k3s.yaml")
     host: str = "0.0.0.0"
     port: int = 8765
 

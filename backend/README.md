@@ -41,8 +41,35 @@ Create `~/.config/workbench/config.yaml`:
 
 ```yaml
 vault_path: /home/crpier/vault
+k3s_kubeconfig: /etc/rancher/k3s/k3s.yaml
 ```
 
 ## VPS Deployment
 
 See implementation plan for systemd service configuration.
+
+## K3s Operations
+
+The backend exposes a small set of K3s helper endpoints that shell out to `kubectl`
+using the configured kubeconfig.
+
+```bash
+# List nodes
+curl http://localhost:8765/api/k3s/nodes
+
+# List namespaces
+curl http://localhost:8765/api/k3s/namespaces
+
+# List pods in a namespace
+curl http://localhost:8765/api/k3s/pods/default
+
+# Apply a manifest
+curl -X POST http://localhost:8765/api/k3s/apply \
+  -H "Content-Type: application/json" \
+  -d '{"manifest": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: demo"}'
+
+# Delete a resource
+curl -X DELETE http://localhost:8765/api/k3s/resource \
+  -H "Content-Type: application/json" \
+  -d '{"kind": "namespace", "name": "demo"}'
+```

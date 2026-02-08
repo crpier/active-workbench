@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 
 from .api.capture import router as capture_router
+from .api.k3s import router as k3s_router
 from .config import get_config
 
 # Configure logging
@@ -33,6 +34,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(capture_router)
+app.include_router(k3s_router)
 
 
 @app.get("/")
@@ -45,7 +47,8 @@ async def root():
         "vault_path": str(config.vault_path),
         "endpoints": {
             "health": "/health",
-            "capture": "/api/capture"
+            "capture": "/api/capture",
+            "k3s": "/api/k3s"
         }
     }
 
