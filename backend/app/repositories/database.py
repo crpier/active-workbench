@@ -54,6 +54,22 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status_run_at ON jobs(status, run_at);
+
+CREATE TABLE IF NOT EXISTS youtube_quota_daily (
+    date_utc TEXT PRIMARY KEY,
+    units_used INTEGER NOT NULL,
+    calls INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS youtube_quota_by_tool_daily (
+    date_utc TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    units_used INTEGER NOT NULL,
+    calls INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (date_utc, tool_name)
+);
 """
 
 

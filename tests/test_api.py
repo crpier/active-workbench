@@ -86,7 +86,9 @@ def test_recipe_workflow_end_to_end(client: TestClient) -> None:
         json=_request_body("youtube.likes.list_recent", payload={"query": "cook", "limit": 3}),
     )
     assert history.status_code == 200
-    videos = history.json()["result"]["videos"]
+    history_result = history.json()["result"]
+    assert "quota" in history_result
+    videos = history_result["videos"]
     assert videos
     assert videos[0]["liked_at"]
     video_id = str(videos[0]["video_id"])
@@ -96,7 +98,9 @@ def test_recipe_workflow_end_to_end(client: TestClient) -> None:
         json=_request_body("youtube.transcript.get", payload={"video_id": video_id}),
     )
     assert transcript.status_code == 200
-    transcript_text = str(transcript.json()["result"]["transcript"])
+    transcript_result = transcript.json()["result"]
+    assert "quota" in transcript_result
+    transcript_text = str(transcript_result["transcript"])
 
     recipe = client.post(
         "/tools/recipe.extract_from_transcript",

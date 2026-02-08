@@ -74,6 +74,14 @@ If `youtube.likes.list_recent` returns `youtube_unavailable`, verify:
 2. That account actually has liked videos.
 3. You re-ran OAuth after switching accounts.
 
+## YouTube Quota Warning In Tool Response
+
+If `result.quota.warning=true` appears in YouTube tool responses, estimated daily Data API usage is above threshold.
+
+Tune thresholds with env vars:
+- `ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT`
+- `ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT`
+
 Workarounds:
 1. Use explicit video IDs/URLs with transcript and summary tools.
 2. Stay in fixture mode for deterministic local development.

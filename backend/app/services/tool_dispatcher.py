@@ -20,6 +20,7 @@ from backend.app.repositories.idempotency_repository import IdempotencyRepositor
 from backend.app.repositories.jobs_repository import JobsRepository, ScheduledJob
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import SavedDocument, VaultRepository
+from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 from backend.app.services.content_analysis import (
     RecipeExtraction,
     build_routine_review_markdown,
@@ -63,16 +64,25 @@ class ToolDispatcher:
         memory_repository: MemoryRepository,
         jobs_repository: JobsRepository,
         vault_repository: VaultRepository,
+        youtube_quota_repository: YouTubeQuotaRepository,
         youtube_service: YouTubeService,
         default_timezone: str,
+        youtube_daily_quota_limit: int,
+        youtube_quota_warning_percent: float,
     ) -> None:
         self._audit_repository = audit_repository
         self._idempotency_repository = idempotency_repository
         self._memory_repository = memory_repository
         self._jobs_repository = jobs_repository
         self._vault_repository = vault_repository
+        self._youtube_quota_repository = youtube_quota_repository
         self._youtube_service = youtube_service
         self._default_timezone = default_timezone
+        self._youtube_daily_quota_limit = max(0, youtube_daily_quota_limit)
+        bounded_warning_percent = min(1.0, max(0.0, youtube_quota_warning_percent))
+        self._youtube_quota_warning_threshold = int(
+            self._youtube_daily_quota_limit * bounded_warning_percent
+        )
 
         self._jobs_repository.ensure_weekly_routine_review(
             run_at=_next_sunday_morning(default_timezone),
@@ -196,15 +206,21 @@ class ToolDispatcher:
     def _handle_youtube_likes(self, request: ToolRequest) -> ToolResponse:
         limit = _int_or_default(request.payload.get("limit"), default=5)
         query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        estimated_units_this_call = self._estimate_likes_units()
 
         try:
             videos = self._youtube_service.list_recent(limit=max(1, min(25, limit)), query=query)
         except YouTubeServiceError as exc:
-            return _tool_error_response(
+            error_response = _tool_error_response(
                 request_id=request.request_id,
                 tool=request.tool,
                 code="youtube_unavailable",
                 message=str(exc),
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=estimated_units_this_call,
             )
 
         payload_videos = [
@@ -219,12 +235,17 @@ class ToolDispatcher:
         ]
 
         provenance = [ProvenanceRef(type="youtube_video", id=item.video_id) for item in videos]
-        return ToolResponse(
+        response = ToolResponse(
             ok=True,
             request_id=request.request_id,
             result={"tool": request.tool, "status": "ok", "videos": payload_videos},
             provenance=provenance,
             error=None,
+        )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=estimated_units_this_call,
         )
 
     def _handle_youtube_transcript(self, request: ToolRequest) -> ToolResponse:
@@ -236,7 +257,8 @@ class ToolDispatcher:
             or _payload_str(request.payload, "video_url")
             or _payload_str(request.payload, "videoUrl")
         )
-        video_id = _extract_youtube_video_id(raw_video) if raw_video is not None else None
+        explicit_video_requested = raw_video is not None
+        video_id = _extract_youtube_video_id(raw_video) if explicit_video_requested else None
 
         if raw_video is not None and video_id is None:
             return _tool_error_response(
@@ -253,33 +275,51 @@ class ToolDispatcher:
             try:
                 recent = self._youtube_service.list_recent(limit=1, query=None)
             except YouTubeServiceError as exc:
-                return _tool_error_response(
+                error_response = _tool_error_response(
                     request_id=request.request_id,
                     tool=request.tool,
                     code="youtube_unavailable",
                     message=str(exc),
                 )
+                return self._attach_quota_snapshot(
+                    error_response,
+                    tool_name=request.tool,
+                    estimated_units_this_call=self._estimate_likes_units(),
+                )
 
             if not recent:
-                return _tool_error_response(
+                error_response = _tool_error_response(
                     request_id=request.request_id,
                     tool=request.tool,
                     code="not_found",
                     message="No recently liked videos available",
+                )
+                return self._attach_quota_snapshot(
+                    error_response,
+                    tool_name=request.tool,
+                    estimated_units_this_call=self._estimate_likes_units(),
                 )
             video_id = recent[0].video_id
 
         try:
             transcript = self._youtube_service.get_transcript(video_id)
         except YouTubeServiceError as exc:
-            return _tool_error_response(
+            error_response = _tool_error_response(
                 request_id=request.request_id,
                 tool=request.tool,
                 code="transcript_unavailable",
                 message=str(exc),
             )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=self._estimate_transcript_units(
+                    transcript_source=None,
+                    explicit_video_requested=explicit_video_requested,
+                ),
+            )
 
-        return ToolResponse(
+        response = ToolResponse(
             ok=True,
             request_id=request.request_id,
             result={
@@ -294,6 +334,70 @@ class ToolDispatcher:
             provenance=[ProvenanceRef(type="youtube_video", id=transcript.video_id)],
             error=None,
         )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=self._estimate_transcript_units(
+                transcript_source=transcript.source,
+                explicit_video_requested=explicit_video_requested,
+            ),
+        )
+
+    def _attach_quota_snapshot(
+        self,
+        response: ToolResponse,
+        *,
+        tool_name: ToolName,
+        estimated_units_this_call: int,
+    ) -> ToolResponse:
+        snapshot = self._youtube_quota_repository.record_and_snapshot(
+            tool_name=tool_name,
+            estimated_units_this_call=estimated_units_this_call,
+            daily_limit=self._youtube_daily_quota_limit,
+            warning_threshold=self._youtube_quota_warning_threshold,
+        )
+        quota_payload: dict[str, Any] = {
+            "date_utc": snapshot.date_utc,
+            "estimated_units_this_call": snapshot.estimated_units_this_call,
+            "estimated_units_today": snapshot.estimated_units_today,
+            "estimated_calls_today": snapshot.estimated_calls_today,
+            "daily_limit": snapshot.daily_limit,
+            "warning_threshold": snapshot.warning_threshold,
+            "warning": snapshot.warning,
+        }
+
+        if snapshot.warning and snapshot.daily_limit > 0:
+            quota_payload["warning_message"] = (
+                "Estimated YouTube API quota usage is above warning threshold "
+                f"({snapshot.estimated_units_today}/{snapshot.daily_limit})."
+            )
+
+        result = dict(response.result)
+        result["quota"] = quota_payload
+        return response.model_copy(update={"result": result})
+
+    def _estimate_likes_units(self) -> int:
+        if not self._youtube_service.is_oauth_mode:
+            return 0
+        return 2
+
+    def _estimate_transcript_units(
+        self,
+        *,
+        transcript_source: str | None,
+        explicit_video_requested: bool,
+    ) -> int:
+        if not self._youtube_service.is_oauth_mode:
+            return 0
+
+        units = 1  # videos.list for title lookup
+        if not explicit_video_requested:
+            units += self._estimate_likes_units()
+
+        if transcript_source == "video_description_fallback" or transcript_source is None:
+            units += 1  # videos.list for description fallback path
+
+        return units
 
     def _handle_vault_save(self, request: ToolRequest, *, category: str) -> ToolResponse:
         title = _payload_str(request.payload, "title") or "Untitled"

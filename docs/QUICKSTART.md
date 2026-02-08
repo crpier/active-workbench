@@ -70,6 +70,7 @@ Likes tool response fields:
 - `liked_at`: when the video was liked (playlist item timestamp)
 - `video_published_at`: original YouTube publish time
 - `published_at`: kept for compatibility (same value as `liked_at`)
+- `quota`: estimated daily YouTube Data API usage snapshot and warning flag
 
 ## YouTube Modes
 
@@ -110,6 +111,8 @@ just youtube-auth
 ## Useful Environment Variables
 
 - `ACTIVE_WORKBENCH_YOUTUBE_MODE=fixture|oauth`
+- `ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT` (default `10000`)
+- `ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT` (default `0.8`)
 - `ACTIVE_WORKBENCH_DATA_DIR` (default `.active-workbench`)
 - `ACTIVE_WORKBENCH_DEFAULT_TIMEZONE` (default `Europe/Bucharest`)
 - `ACTIVE_WORKBENCH_ENABLE_SCHEDULER=1|0`

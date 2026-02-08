@@ -71,6 +71,8 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         youtube_mode="fixture",
         scheduler_enabled=True,
         scheduler_poll_interval_seconds=1,
+        youtube_daily_quota_limit=10000,
+        youtube_quota_warning_percent=0.8,
     )
 
     monkeypatch.setattr("backend.app.main.get_settings", lambda: settings)

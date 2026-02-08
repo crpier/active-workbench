@@ -36,8 +36,12 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "false")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "fixture")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
 
     settings = load_settings()
     assert settings.data_dir == (tmp_path / "data").resolve()
     assert settings.scheduler_enabled is False
     assert settings.youtube_mode == "fixture"
+    assert settings.youtube_daily_quota_limit == 12_000
+    assert settings.youtube_quota_warning_percent == 0.75

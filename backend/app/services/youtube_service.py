@@ -129,6 +129,10 @@ class YouTubeService:
         self._mode = mode
         self._data_dir = data_dir
 
+    @property
+    def is_oauth_mode(self) -> bool:
+        return self._mode == "oauth"
+
     def list_recent(self, limit: int, query: str | None = None) -> list[YouTubeVideo]:
         if self._mode != "oauth":
             return _filter_fixture_videos(limit=limit, query=query)

@@ -14,6 +14,8 @@ class AppSettings:
     youtube_mode: str
     scheduler_enabled: bool
     scheduler_poll_interval_seconds: int
+    youtube_daily_quota_limit: int
+    youtube_quota_warning_percent: float
 
 
 DEFAULT_DATA_DIR = ".active-workbench"
@@ -43,6 +45,12 @@ def load_settings() -> AppSettings:
     scheduler_poll_interval_seconds = int(
         os.getenv("ACTIVE_WORKBENCH_SCHEDULER_POLL_INTERVAL_SECONDS", "30")
     )
+    youtube_daily_quota_limit = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "10000")
+    )
+    youtube_quota_warning_percent = float(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.8")
+    )
 
     return AppSettings(
         data_dir=data_dir,
@@ -52,4 +60,6 @@ def load_settings() -> AppSettings:
         youtube_mode=youtube_mode,
         scheduler_enabled=scheduler_enabled,
         scheduler_poll_interval_seconds=scheduler_poll_interval_seconds,
+        youtube_daily_quota_limit=youtube_daily_quota_limit,
+        youtube_quota_warning_percent=youtube_quota_warning_percent,
     )
