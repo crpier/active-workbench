@@ -30,6 +30,13 @@ opencode .
 3. Use tool names prefixed by filename export, e.g.:
 - `active_workbench_youtube_likes_list_recent`
 
+## OpenCode Not Using Workbench Agent Behavior
+
+Checks:
+1. File exists: `opencode.json` with `"default_agent": "workbench-assistant"`.
+2. File exists: `.opencode/agents/workbench-assistant.md`.
+3. Restart OpenCode from project root so agent config reloads.
+
 ## OAuth Error 403: access_denied
 
 If you see:

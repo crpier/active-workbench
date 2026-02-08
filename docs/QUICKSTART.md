@@ -48,6 +48,11 @@ cd /home/crpier/Projects/active-workbench
 opencode .
 ```
 
+Project agent:
+- This repo config sets `default_agent` to `workbench-assistant` in `opencode.json`.
+- Agent prompt is stored at `.opencode/agents/workbench-assistant.md`.
+- It is tuned to treat "watched/saw video" requests as liked-videos lookups.
+
 ## Use OpenCode Custom Tools
 
 OpenCode auto-loads project tools from `.opencode/tools/`.

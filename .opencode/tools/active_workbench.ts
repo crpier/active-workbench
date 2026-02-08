@@ -105,7 +105,7 @@ function backendTool(
 
 export const youtube_likes_list_recent = backendTool(
   TOOL_NAMES.youtube_likes_list_recent,
-  "List recently liked YouTube videos; treat likes as watched-video signal and filter by query/topic.",
+  "List recently liked YouTube videos; use this for user requests like watched/saw/seen videos and filter by query/topic.",
   {
     extraArgs: {
       limit: tool.schema.any().optional().describe("Maximum number of liked videos to fetch."),
