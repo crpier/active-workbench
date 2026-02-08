@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -38,6 +39,33 @@ PREFERRED_TRANSCRIPT_LANGUAGES: tuple[str, ...] = (
     "fr",
     "es",
     "it",
+)
+
+QUERY_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "about",
+        "and",
+        "can",
+        "find",
+        "for",
+        "i",
+        "it",
+        "liked",
+        "my",
+        "of",
+        "recent",
+        "recently",
+        "somewhere",
+        "that",
+        "the",
+        "this",
+        "video",
+        "watched",
+        "what",
+        "with",
+        "you",
+    }
 )
 
 
@@ -109,10 +137,8 @@ class YouTubeService:
         if query is None:
             return oauth_videos
 
-        filtered = [video for video in oauth_videos if query.lower() in video.title.lower()]
-        if filtered:
-            return filtered[:limit]
-        return oauth_videos[:limit]
+        filtered = _filter_videos_by_query(oauth_videos, query)
+        return filtered[:limit]
 
     def get_transcript(self, video_id: str) -> YouTubeTranscript:
         if self._mode != "oauth":
@@ -184,11 +210,49 @@ def _filter_fixture_videos(limit: int, query: str | None) -> list[YouTubeVideo]:
     if query is None:
         return FIXTURE_VIDEOS[:limit]
 
-    lower_query = query.lower().strip()
-    filtered = [video for video in FIXTURE_VIDEOS if lower_query in video.title.lower()]
-    if filtered:
-        return filtered[:limit]
-    return FIXTURE_VIDEOS[:limit]
+    filtered = _filter_videos_by_query(FIXTURE_VIDEOS, query)
+    return filtered[:limit]
+
+
+def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouTubeVideo]:
+    normalized_query = query.lower().strip()
+    if not normalized_query:
+        return videos
+
+    direct_matches = [video for video in videos if normalized_query in video.title.lower()]
+    if direct_matches:
+        return direct_matches
+
+    query_tokens = _query_tokens(normalized_query)
+    if not query_tokens:
+        return []
+
+    scored: list[tuple[int, int, YouTubeVideo]] = []
+    for index, video in enumerate(videos):
+        score = _score_title_against_query(video.title, query_tokens)
+        if score > 0:
+            scored.append((score, -index, video))
+
+    scored.sort(reverse=True)
+    return [video for _, _, video in scored]
+
+
+def _query_tokens(query: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", query)
+    return [token for token in tokens if len(token) >= 3 and token not in QUERY_STOPWORDS]
+
+
+def _score_title_against_query(title: str, query_tokens: list[str]) -> int:
+    normalized_title = title.lower()
+    title_tokens = set(re.findall(r"[a-z0-9]+", normalized_title))
+
+    score = 0
+    for token in query_tokens:
+        if token in title_tokens:
+            score += 3
+        elif token in normalized_title:
+            score += 1
+    return score
 
 
 def _build_youtube_client(data_dir: Path) -> Any:

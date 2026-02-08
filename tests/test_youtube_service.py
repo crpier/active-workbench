@@ -24,6 +24,24 @@ def test_fixture_mode_likes_and_transcript(tmp_path: Path) -> None:
     assert transcript.transcript
 
 
+def test_fixture_mode_natural_language_query_matches_keywords(tmp_path: Path) -> None:
+    service = YouTubeService(mode="fixture", data_dir=tmp_path)
+
+    videos = service.list_recent(
+        limit=5,
+        query="Somewhere I watched and liked a video about soup. Can you find it?",
+    )
+    assert videos
+    assert any("soup" in video.title.lower() for video in videos)
+
+
+def test_fixture_mode_query_without_match_returns_empty(tmp_path: Path) -> None:
+    service = YouTubeService(mode="fixture", data_dir=tmp_path)
+
+    videos = service.list_recent(limit=5, query="quantum cryptography lecture")
+    assert videos == []
+
+
 def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
 
