@@ -31,3 +31,9 @@ gen-client: openapi
 
 ts-typecheck:
   cd tools-ts && npm run typecheck
+
+youtube-auth:
+  ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_oauth_setup
+
+youtube-auth-secret CLIENT_SECRET_PATH:
+  ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_oauth_setup --client-secret "{{CLIENT_SECRET_PATH}}"

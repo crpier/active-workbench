@@ -7,7 +7,11 @@ from typing import Any
 
 import pytest
 
-from backend.app.services.youtube_service import YouTubeService, YouTubeServiceError
+from backend.app.services.youtube_service import (
+    YouTubeService,
+    YouTubeServiceError,
+    resolve_oauth_paths,
+)
 
 
 def test_fixture_mode_history_and_transcript(tmp_path: Path) -> None:
@@ -25,6 +29,29 @@ def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
 
     with pytest.raises(YouTubeServiceError):
         service.list_recent(limit=1)
+
+
+def test_resolve_oauth_paths_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH", raising=False)
+    monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH", raising=False)
+
+    token_path, secret_path = resolve_oauth_paths(tmp_path)
+    assert token_path == (tmp_path / "youtube-token.json").resolve()
+    assert secret_path == (tmp_path / "youtube-client-secret.json").resolve()
+
+
+def test_resolve_oauth_paths_env_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_override = tmp_path / "custom-token.json"
+    secret_override = tmp_path / "custom-secret.json"
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH", str(token_override))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH", str(secret_override))
+
+    token_path, secret_path = resolve_oauth_paths(tmp_path)
+    assert token_path == token_override.resolve()
+    assert secret_path == secret_override.resolve()
 
 
 def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -210,8 +211,7 @@ def _build_youtube_client(data_dir: Path) -> Any:
         ) from exc
 
     scope = ["https://www.googleapis.com/auth/youtube.readonly"]
-    token_path = data_dir / "youtube-token.json"
-    secrets_path = data_dir / "youtube-client-secret.json"
+    token_path, secrets_path = resolve_oauth_paths(data_dir)
 
     request_cls: Any = requests_module.Request
     credentials_cls: Any = credentials_module.Credentials
@@ -227,9 +227,7 @@ def _build_youtube_client(data_dir: Path) -> Any:
             credentials.refresh(request_cls())
         else:
             if not secrets_path.exists():
-                raise YouTubeServiceError(
-                    "Missing OAuth client secret file at runtime-data/youtube-client-secret.json"
-                )
+                raise YouTubeServiceError(f"Missing OAuth client secret file at {secrets_path}")
 
             flow = flow_cls.from_client_secrets_file(str(secrets_path), scope)
             credentials = flow.run_local_server(port=0)
@@ -241,6 +239,23 @@ def _build_youtube_client(data_dir: Path) -> Any:
         token_path.write_text(str(credentials.to_json()), encoding="utf-8")
 
     return build_fn("youtube", "v3", credentials=credentials, cache_discovery=False)
+
+
+def resolve_oauth_paths(data_dir: Path) -> tuple[Path, Path]:
+    token_override = os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH")
+    secret_override = os.getenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH")
+
+    token_path = (
+        Path(token_override).expanduser().resolve()
+        if token_override
+        else (data_dir / "youtube-token.json").resolve()
+    )
+    secrets_path = (
+        Path(secret_override).expanduser().resolve()
+        if secret_override
+        else (data_dir / "youtube-client-secret.json").resolve()
+    )
+    return token_path, secrets_path
 
 
 def _list_from_history_playlist(client: Any, playlist_id: str, limit: int) -> list[YouTubeVideo]:
