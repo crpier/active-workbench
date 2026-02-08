@@ -27,6 +27,18 @@ class YouTubeServiceError(Exception):
     pass
 
 
+PREFERRED_TRANSCRIPT_LANGUAGES: tuple[str, ...] = (
+    "en",
+    "en-US",
+    "en-GB",
+    "ro",
+    "de",
+    "fr",
+    "es",
+    "it",
+)
+
+
 FIXTURE_VIDEOS: list[YouTubeVideo] = [
     YouTubeVideo(
         video_id="fixture_cooking_001",
@@ -131,30 +143,19 @@ class YouTubeService:
             from youtube_transcript_api import YouTubeTranscriptApi
 
             transcript_api = cast(Any, YouTubeTranscriptApi)
-            segments_raw = cast(
-                list[dict[str, Any]],
-                transcript_api.get_transcript(video_id, languages=["en", "en-US", "en-GB"]),
-            )
+            segments_raw = _fetch_captions_segments(video_id, transcript_api)
 
-            text = "\n".join(str(segment.get("text", "")) for segment in segments_raw)
+            text = "\n".join(str(segment.get("text", "")) for segment in segments_raw).strip()
+            if text:
+                parsed_segments = _normalize_segments(segments_raw)
 
-            parsed_segments: list[dict[str, Any]] = []
-            for segment in segments_raw:
-                parsed_segments.append(
-                    {
-                        "text": str(segment.get("text", "")),
-                        "start": float(segment.get("start", 0.0)),
-                        "duration": float(segment.get("duration", 0.0)),
-                    }
+                return YouTubeTranscript(
+                    video_id=video_id,
+                    title=title,
+                    transcript=text,
+                    source="youtube_captions",
+                    segments=parsed_segments,
                 )
-
-            return YouTubeTranscript(
-                video_id=video_id,
-                title=title,
-                transcript=text,
-                source="youtube_captions",
-                segments=parsed_segments,
-            )
         except Exception:
             pass
 
@@ -267,6 +268,142 @@ def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
             videos.append(YouTubeVideo(video_id=video_id, title=title, published_at=published_at))
 
     return videos
+
+
+def _fetch_captions_segments(video_id: str, transcript_api_ref: Any) -> list[dict[str, Any]]:
+    preferred_languages = list(PREFERRED_TRANSCRIPT_LANGUAGES)
+    api_instance = _build_transcript_api_instance(transcript_api_ref)
+
+    fetch_callable = getattr(api_instance, "fetch", None)
+    if callable(fetch_callable):
+        try:
+            fetched = fetch_callable(
+                video_id,
+                languages=preferred_languages,
+                preserve_formatting=False,
+            )
+            segments = _normalize_segments(fetched)
+            if segments:
+                return segments
+        except Exception:
+            pass
+
+    list_callable = getattr(api_instance, "list", None)
+    if callable(list_callable):
+        try:
+            transcript_list = list_callable(video_id)
+            selected = _select_transcript_track(transcript_list, preferred_languages)
+            if selected is not None:
+                track_fetch = getattr(selected, "fetch", None)
+                if callable(track_fetch):
+                    fetched = track_fetch()
+                    segments = _normalize_segments(fetched)
+                    if segments:
+                        return segments
+        except Exception:
+            pass
+
+    legacy_get = getattr(transcript_api_ref, "get_transcript", None)
+    if callable(legacy_get):
+        legacy_segments = legacy_get(video_id, languages=preferred_languages)
+        return _normalize_segments(legacy_segments)
+
+    legacy_get_instance = getattr(api_instance, "get_transcript", None)
+    if callable(legacy_get_instance):
+        legacy_segments = legacy_get_instance(video_id, languages=preferred_languages)
+        return _normalize_segments(legacy_segments)
+
+    return []
+
+
+def _build_transcript_api_instance(transcript_api_ref: Any) -> Any:
+    try:
+        return transcript_api_ref()
+    except Exception:
+        return transcript_api_ref
+
+
+def _select_transcript_track(transcript_list: Any, preferred_languages: list[str]) -> Any | None:
+    for selector_name in (
+        "find_manually_created_transcript",
+        "find_generated_transcript",
+        "find_transcript",
+    ):
+        selector = getattr(transcript_list, selector_name, None)
+        if callable(selector):
+            try:
+                track = selector(preferred_languages)
+                if track is not None:
+                    return track
+            except Exception:
+                continue
+
+    try:
+        for track in transcript_list:
+            return track
+    except Exception:
+        return None
+
+    return None
+
+
+def _normalize_segments(raw_segments: Any) -> list[dict[str, Any]]:
+    to_raw_data = getattr(raw_segments, "to_raw_data", None)
+    if callable(to_raw_data):
+        raw_segments = to_raw_data()
+
+    segments: list[dict[str, Any]] = []
+    for raw_segment in _iterable_items(raw_segments):
+        segment_dict = _segment_to_dict(raw_segment)
+        if segment_dict is not None:
+            segments.append(segment_dict)
+    return segments
+
+
+def _iterable_items(raw_value: Any) -> list[Any]:
+    if isinstance(raw_value, list):
+        raw_list = cast(list[Any], raw_value)
+        return list(raw_list)
+    if isinstance(raw_value, tuple):
+        raw_tuple = cast(tuple[Any, ...], raw_value)
+        return list(raw_tuple)
+
+    try:
+        iterator: Any = iter(raw_value)
+    except Exception:
+        return []
+
+    items: list[Any] = []
+    for item in iterator:
+        items.append(item)
+    return items
+
+
+def _segment_to_dict(raw_segment: Any) -> dict[str, Any] | None:
+    if isinstance(raw_segment, dict):
+        source = cast(dict[object, object], raw_segment)
+        text = source.get("text")
+        start = source.get("start")
+        duration = source.get("duration")
+    else:
+        text = getattr(raw_segment, "text", None)
+        start = getattr(raw_segment, "start", None)
+        duration = getattr(raw_segment, "duration", None)
+
+    if not isinstance(text, str):
+        return None
+
+    return {
+        "text": text,
+        "start": _coerce_float(start),
+        "duration": _coerce_float(duration),
+    }
+
+
+def _coerce_float(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
 
 
 def _fetch_video_title(video_id: str, data_dir: Path) -> str:

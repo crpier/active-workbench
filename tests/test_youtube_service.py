@@ -190,16 +190,22 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
 
-    def _mock_get_transcript(
-        _video_id: str,
-        languages: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        _ = languages
-        return [{"text": "first line", "start": 0.0, "duration": 1.0}]
+    class FakeFetchedTranscript:
+        def to_raw_data(self) -> list[dict[str, Any]]:
+            return [{"text": "first line", "start": 0.0, "duration": 1.0}]
 
-    transcript_module = types.SimpleNamespace(
-        YouTubeTranscriptApi=types.SimpleNamespace(get_transcript=_mock_get_transcript)
-    )
+    class FakeTranscriptApi:
+        def fetch(
+            self,
+            _video_id: str,
+            languages: list[str] | None = None,
+            preserve_formatting: bool = False,
+        ) -> FakeFetchedTranscript:
+            _ = languages
+            _ = preserve_formatting
+            return FakeFetchedTranscript()
+
+    transcript_module = types.SimpleNamespace(YouTubeTranscriptApi=FakeTranscriptApi)
     monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module)
 
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
@@ -209,16 +215,18 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
     transcript = service.get_transcript("oauth_video_1")
     assert "first line" in transcript.transcript
 
-    def _mock_get_transcript_failing(
-        _video_id: str,
-        languages: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        _ = languages
-        raise RuntimeError("forced failure")
+    class FailingTranscriptApi:
+        def fetch(
+            self,
+            _video_id: str,
+            languages: list[str] | None = None,
+            preserve_formatting: bool = False,
+        ) -> FakeFetchedTranscript:
+            _ = languages
+            _ = preserve_formatting
+            raise RuntimeError("forced failure")
 
-    transcript_module_failing = types.SimpleNamespace(
-        YouTubeTranscriptApi=types.SimpleNamespace(get_transcript=_mock_get_transcript_failing)
-    )
+    transcript_module_failing = types.SimpleNamespace(YouTubeTranscriptApi=FailingTranscriptApi)
     monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module_failing)
 
     fallback = service.get_transcript("oauth_video_1")
