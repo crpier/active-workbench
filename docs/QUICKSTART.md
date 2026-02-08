@@ -86,7 +86,11 @@ This will:
 1. Copy the client secret to the configured location
 2. Run OAuth browser flow
 3. Save token to `.active-workbench/youtube-token.json`
-4. Verify by fetching recent videos
+4. Verify OAuth token setup
+
+Note:
+- `youtube.history.list_recent` only returns true watch history when YouTube exposes an accessible `watchHistory` playlist for the account.
+- If unavailable, the tool now returns `youtube_unavailable` instead of falling back to channel uploads.
 
 If secret is already in place:
 

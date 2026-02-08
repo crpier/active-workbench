@@ -129,15 +129,22 @@ class YouTubeService:
         related = _as_dict(content_details.get("relatedPlaylists"))
         history_playlist_value = related.get("watchHistory")
 
-        videos: list[YouTubeVideo] = []
-        if isinstance(history_playlist_value, str) and history_playlist_value:
+        if not isinstance(history_playlist_value, str) or not history_playlist_value:
+            raise YouTubeServiceError(
+                "Watch history is not accessible for this OAuth account via YouTube Data API."
+            )
+
+        try:
             videos = _list_from_history_playlist(client, history_playlist_value, limit)
+        except Exception as exc:
+            raise YouTubeServiceError(
+                "Failed to fetch watch history playlist for OAuth user."
+            ) from exc
 
         if not videos:
-            videos = _list_from_recent_activities(client, limit)
-
-        if not videos:
-            raise YouTubeServiceError("No recent videos available from OAuth user activity")
+            raise YouTubeServiceError(
+                "Watch history is unavailable via YouTube Data API for this account."
+            )
 
         return videos[:limit]
 
@@ -277,31 +284,6 @@ def _list_from_history_playlist(client: Any, playlist_id: str, limit: int) -> li
         snippet = _as_dict(item_dict.get("snippet"))
         resource = _as_dict(snippet.get("resourceId"))
         video_id = resource.get("videoId")
-        title = snippet.get("title")
-        published_at = snippet.get("publishedAt")
-
-        if isinstance(video_id, str) and isinstance(title, str) and isinstance(published_at, str):
-            videos.append(YouTubeVideo(video_id=video_id, title=title, published_at=published_at))
-
-    return videos
-
-
-def _list_from_recent_activities(client: Any, limit: int) -> list[YouTubeVideo]:
-    response = cast(
-        dict[str, Any],
-        client.activities()
-        .list(part="snippet,contentDetails", mine=True, maxResults=limit)
-        .execute(),
-    )
-
-    videos: list[YouTubeVideo] = []
-    items = _as_list(response.get("items"))
-    for item in items:
-        item_dict = _as_dict(item)
-        snippet = _as_dict(item_dict.get("snippet"))
-        details = _as_dict(item_dict.get("contentDetails"))
-        upload = _as_dict(details.get("upload"))
-        video_id = upload.get("videoId")
         title = snippet.get("title")
         published_at = snippet.get("publishedAt")
 

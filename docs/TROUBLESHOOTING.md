@@ -63,6 +63,18 @@ rm -f .active-workbench/youtube-token.json
 just youtube-auth
 ```
 
+## YouTube "Recent Watched" Shows Uploads Or Returns Unavailable
+
+Current behavior:
+- The backend now only accepts true watch history from YouTube's `watchHistory` playlist.
+- It no longer falls back to `activities.list`, because that endpoint mostly returns channel activity (for many accounts: uploads), not watched videos.
+
+If `youtube.history.list_recent` returns `youtube_unavailable`, this means YouTube did not expose watch history for your OAuth session/account through Data API.
+
+Workarounds:
+1. Use explicit video IDs/URLs with transcript and summary tools.
+2. Stay in fixture mode for deterministic local development.
+
 ## Want to Keep Secret/Token Outside Project
 
 Use env overrides:

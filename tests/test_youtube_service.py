@@ -31,6 +31,78 @@ def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
         service.list_recent(limit=1)
 
 
+def test_oauth_mode_does_not_fallback_to_upload_activity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "youtube-token.json").write_text("{}", encoding="utf-8")
+
+    class FakeCredentials:
+        valid = True
+        expired = False
+        refresh_token = None
+
+        @classmethod
+        def from_authorized_user_file(cls, _path: str, _scopes: list[str]) -> FakeCredentials:
+            return cls()
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, _path: str, _scopes: list[str]) -> FakeFlow:
+            return cls()
+
+        def run_local_server(self, port: int = 0) -> FakeCredentials:
+            _ = port
+            return FakeCredentials()
+
+    class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
+        def list(self, **kwargs: object) -> FakeClient:
+            self._kwargs = kwargs
+            return self
+
+        def execute(self) -> dict[str, object]:
+            kwargs = getattr(self, "_kwargs", {})
+            if kwargs.get("mine") is True and "contentDetails,snippet" in str(kwargs.get("part")):
+                return {
+                    "items": [
+                        {
+                            "contentDetails": {
+                                "relatedPlaylists": {"watchHistory": "HISTORY123"},
+                            }
+                        }
+                    ]
+                }
+            if kwargs.get("playlistId") == "HISTORY123":
+                return {"items": []}
+            return {"items": []}
+
+    def fake_import_module(name: str) -> object:
+        def _build(*_args: object, **_kwargs: object) -> FakeClient:
+            return FakeClient()
+
+        if name == "google.auth.transport.requests":
+            return types.SimpleNamespace(Request=object)
+        if name == "google.oauth2.credentials":
+            return types.SimpleNamespace(Credentials=FakeCredentials)
+        if name == "google_auth_oauthlib.flow":
+            return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
+        if name == "googleapiclient.discovery":
+            return types.SimpleNamespace(build=_build)
+        raise AssertionError(f"Unexpected module import: {name}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
+
+    service = YouTubeService(mode="oauth", data_dir=tmp_path)
+    with pytest.raises(YouTubeServiceError, match="Watch history is unavailable"):
+        service.list_recent(limit=5)
+
+
 def test_resolve_oauth_paths_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH", raising=False)
     monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH", raising=False)
