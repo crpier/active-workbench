@@ -92,6 +92,32 @@ Tune thresholds with env vars:
 Workarounds:
 1. Use explicit video IDs/URLs with transcript and summary tools.
 2. Stay in fixture mode for deterministic local development.
+3. Keep cache enabled so repeated queries return `estimated_units_this_call=0`.
+
+## Inspect Runtime Logs
+
+Backend runtime logs are persisted to:
+- `.active-workbench/logs/active-workbench.log` (default)
+
+Custom location and rotation:
+- `ACTIVE_WORKBENCH_LOG_DIR`
+- `ACTIVE_WORKBENCH_LOG_MAX_BYTES`
+- `ACTIVE_WORKBENCH_LOG_BACKUP_COUNT`
+- `ACTIVE_WORKBENCH_LOG_LEVEL`
+
+Quick tail:
+```bash
+tail -f .active-workbench/logs/active-workbench.log
+```
+
+## Cache Staleness Tuning
+
+If likes feel stale right after you like a video:
+- lower `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS`
+- increase `ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS`
+
+If transcript refreshes too often:
+- increase `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS`
 
 ## Transcript Tool Returns A Different Video Than Requested
 

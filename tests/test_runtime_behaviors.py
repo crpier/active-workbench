@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.config import AppSettings, load_settings
+from backend.app.logging_config import configure_application_logging
 from backend.app.main import create_app
 from backend.app.repositories.database import Database
 from backend.app.repositories.memory_repository import MemoryRepository
@@ -73,6 +75,14 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         scheduler_poll_interval_seconds=1,
         youtube_daily_quota_limit=10000,
         youtube_quota_warning_percent=0.8,
+        youtube_likes_cache_ttl_seconds=600,
+        youtube_likes_recent_guard_seconds=45,
+        youtube_likes_cache_max_items=500,
+        youtube_transcript_cache_ttl_seconds=86400,
+        log_dir=Path("/tmp/data/logs"),
+        log_level="INFO",
+        log_max_bytes=10 * 1024 * 1024,
+        log_backup_count=5,
     )
 
     monkeypatch.setattr("backend.app.main.get_settings", lambda: settings)
@@ -86,3 +96,34 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
 
     assert FakeScheduler.started is True
     assert FakeScheduler.stopped is True
+
+
+def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
+    settings = AppSettings(
+        data_dir=tmp_path,
+        vault_dir=tmp_path / "vault",
+        db_path=tmp_path / "state.db",
+        default_timezone="Europe/Bucharest",
+        youtube_mode="fixture",
+        scheduler_enabled=False,
+        scheduler_poll_interval_seconds=30,
+        youtube_daily_quota_limit=10000,
+        youtube_quota_warning_percent=0.8,
+        youtube_likes_cache_ttl_seconds=600,
+        youtube_likes_recent_guard_seconds=45,
+        youtube_likes_cache_max_items=500,
+        youtube_transcript_cache_ttl_seconds=86400,
+        log_dir=tmp_path / "logs",
+        log_level="INFO",
+        log_max_bytes=1024 * 1024,
+        log_backup_count=2,
+    )
+    log_file = configure_application_logging(settings)
+    logger = logging.getLogger("active_workbench.test")
+    logger.info("runtime-log-test")
+
+    for handler in logging.getLogger("active_workbench").handlers:
+        handler.flush()
+
+    assert log_file.exists()
+    assert "runtime-log-test" in log_file.read_text(encoding="utf-8")

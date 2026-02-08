@@ -9,6 +9,7 @@ from backend.app.repositories.idempotency_repository import IdempotencyRepositor
 from backend.app.repositories.jobs_repository import JobsRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import VaultRepository
+from backend.app.repositories.youtube_cache_repository import YouTubeCacheRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeService
@@ -32,7 +33,15 @@ def get_dispatcher() -> ToolDispatcher:
         jobs_repository=JobsRepository(database),
         vault_repository=VaultRepository(settings.vault_dir),
         youtube_quota_repository=YouTubeQuotaRepository(database),
-        youtube_service=YouTubeService(settings.youtube_mode, settings.data_dir),
+        youtube_service=YouTubeService(
+            settings.youtube_mode,
+            settings.data_dir,
+            cache_repository=YouTubeCacheRepository(database),
+            likes_cache_ttl_seconds=settings.youtube_likes_cache_ttl_seconds,
+            likes_recent_guard_seconds=settings.youtube_likes_recent_guard_seconds,
+            likes_cache_max_items=settings.youtube_likes_cache_max_items,
+            transcript_cache_ttl_seconds=settings.youtube_transcript_cache_ttl_seconds,
+        ),
         default_timezone=settings.default_timezone,
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,
         youtube_quota_warning_percent=settings.youtube_quota_warning_percent,

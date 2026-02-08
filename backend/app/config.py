@@ -16,6 +16,14 @@ class AppSettings:
     scheduler_poll_interval_seconds: int
     youtube_daily_quota_limit: int
     youtube_quota_warning_percent: float
+    youtube_likes_cache_ttl_seconds: int
+    youtube_likes_recent_guard_seconds: int
+    youtube_likes_cache_max_items: int
+    youtube_transcript_cache_ttl_seconds: int
+    log_dir: Path
+    log_level: str
+    log_max_bytes: int
+    log_backup_count: int
 
 
 DEFAULT_DATA_DIR = ".active-workbench"
@@ -51,6 +59,22 @@ def load_settings() -> AppSettings:
     youtube_quota_warning_percent = float(
         os.getenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.8")
     )
+    youtube_likes_cache_ttl_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "600")
+    )
+    youtube_likes_recent_guard_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS", "45")
+    )
+    youtube_likes_cache_max_items = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS", "500")
+    )
+    youtube_transcript_cache_ttl_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS", "86400")
+    )
+    log_dir = Path(os.getenv("ACTIVE_WORKBENCH_LOG_DIR", str(data_dir / "logs"))).resolve()
+    log_level = os.getenv("ACTIVE_WORKBENCH_LOG_LEVEL", "INFO")
+    log_max_bytes = int(os.getenv("ACTIVE_WORKBENCH_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+    log_backup_count = int(os.getenv("ACTIVE_WORKBENCH_LOG_BACKUP_COUNT", "5"))
 
     return AppSettings(
         data_dir=data_dir,
@@ -62,4 +86,12 @@ def load_settings() -> AppSettings:
         scheduler_poll_interval_seconds=scheduler_poll_interval_seconds,
         youtube_daily_quota_limit=youtube_daily_quota_limit,
         youtube_quota_warning_percent=youtube_quota_warning_percent,
+        youtube_likes_cache_ttl_seconds=youtube_likes_cache_ttl_seconds,
+        youtube_likes_recent_guard_seconds=youtube_likes_recent_guard_seconds,
+        youtube_likes_cache_max_items=youtube_likes_cache_max_items,
+        youtube_transcript_cache_ttl_seconds=youtube_transcript_cache_ttl_seconds,
+        log_dir=log_dir,
+        log_level=log_level,
+        log_max_bytes=log_max_bytes,
+        log_backup_count=log_backup_count,
     )

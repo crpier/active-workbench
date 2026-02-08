@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
+
+from backend.app.repositories.youtube_cache_repository import (
+    CachedLikeVideo,
+    YouTubeCacheRepository,
+)
 
 
 @dataclass(frozen=True)
@@ -29,9 +36,38 @@ class YouTubeTranscript:
     segments: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class YouTubeListRecentResult:
+    videos: list[YouTubeVideo]
+    estimated_api_units: int
+    cache_hit: bool
+    refreshed: bool
+
+
+@dataclass(frozen=True)
+class YouTubeTranscriptResult:
+    transcript: YouTubeTranscript
+    estimated_api_units: int
+    cache_hit: bool
+
+
 class YouTubeServiceError(Exception):
     pass
 
+
+@dataclass(frozen=True)
+class _OAuthLikedFetch:
+    videos: list[YouTubeVideo]
+    estimated_api_units: int
+
+
+@dataclass(frozen=True)
+class _VideoSnippet:
+    title: str
+    description: str | None
+
+
+LOGGER = logging.getLogger("active_workbench.youtube")
 
 PREFERRED_TRANSCRIPT_LANGUAGES: tuple[str, ...] = (
     "en",
@@ -182,57 +218,274 @@ Use asynchronous messaging when latency tolerance allows it.
 
 
 class YouTubeService:
-    def __init__(self, mode: str, data_dir: Path) -> None:
+    def __init__(
+        self,
+        mode: str,
+        data_dir: Path,
+        *,
+        cache_repository: YouTubeCacheRepository | None = None,
+        likes_cache_ttl_seconds: int = 600,
+        likes_recent_guard_seconds: int = 45,
+        likes_cache_max_items: int = 500,
+        transcript_cache_ttl_seconds: int = 86_400,
+    ) -> None:
         self._mode = mode
         self._data_dir = data_dir
+        self._cache_repository = cache_repository
+        self._likes_cache_ttl_seconds = max(0, likes_cache_ttl_seconds)
+        self._likes_recent_guard_seconds = max(0, likes_recent_guard_seconds)
+        self._likes_cache_max_items = max(25, likes_cache_max_items)
+        self._transcript_cache_ttl_seconds = max(0, transcript_cache_ttl_seconds)
 
     @property
     def is_oauth_mode(self) -> bool:
         return self._mode == "oauth"
 
     def list_recent(self, limit: int, query: str | None = None) -> list[YouTubeVideo]:
+        return self.list_recent_with_metadata(limit=limit, query=query).videos
+
+    def list_recent_with_metadata(
+        self, limit: int, query: str | None = None
+    ) -> YouTubeListRecentResult:
+        normalized_limit = max(1, min(100, limit))
         if self._mode != "oauth":
-            return _filter_fixture_videos(limit=limit, query=query)
+            return YouTubeListRecentResult(
+                videos=_filter_fixture_videos(limit=normalized_limit, query=query),
+                estimated_api_units=0,
+                cache_hit=False,
+                refreshed=False,
+            )
 
-        oauth_videos = self._list_recent_oauth(limit=limit, enrich_metadata=query is not None)
-        if query is None:
-            return oauth_videos
+        if self._cache_repository is None:
+            oauth_fetch = self._list_recent_oauth(
+                limit=normalized_limit,
+                enrich_metadata=query is not None,
+            )
+            videos = oauth_fetch.videos
+            if query is not None:
+                videos = _filter_videos_by_query(videos, query)[:normalized_limit]
 
-        filtered = _filter_videos_by_query(oauth_videos, query)
-        return filtered[:limit]
+            return YouTubeListRecentResult(
+                videos=videos,
+                estimated_api_units=oauth_fetch.estimated_api_units,
+                cache_hit=False,
+                refreshed=True,
+            )
+
+        return self._list_recent_oauth_with_cache(limit=normalized_limit, query=query)
 
     def get_transcript(self, video_id: str) -> YouTubeTranscript:
+        return self.get_transcript_with_metadata(video_id).transcript
+
+    def get_transcript_with_metadata(self, video_id: str) -> YouTubeTranscriptResult:
         if self._mode != "oauth":
             transcript = FIXTURE_TRANSCRIPTS.get(video_id)
             if transcript is None:
                 raise YouTubeServiceError(f"No fixture transcript found for video_id={video_id}")
-            return transcript
+            return YouTubeTranscriptResult(
+                transcript=transcript,
+                estimated_api_units=0,
+                cache_hit=False,
+            )
 
-        transcript = self._fetch_transcript_with_api(video_id)
+        if self._cache_repository is not None:
+            cached_transcript = self._cache_repository.get_fresh_transcript(
+                video_id=video_id,
+                ttl_seconds=self._transcript_cache_ttl_seconds,
+            )
+            if cached_transcript is not None:
+                LOGGER.info("youtube transcript cache_hit video_id=%s", video_id)
+                return YouTubeTranscriptResult(
+                    transcript=YouTubeTranscript(
+                        video_id=cached_transcript.video_id,
+                        title=cached_transcript.title,
+                        transcript=cached_transcript.transcript,
+                        source=cached_transcript.source,
+                        segments=_clone_segments(cached_transcript.segments),
+                    ),
+                    estimated_api_units=0,
+                    cache_hit=True,
+                )
+
+        try:
+            transcript = self._fetch_transcript_with_api(video_id)
+        except Exception as exc:
+            raise YouTubeServiceError(f"Failed to fetch YouTube transcript payload: {exc}") from exc
         if transcript is not None:
-            return transcript
+            if self._cache_repository is not None:
+                segments_payload: list[dict[str, object]] = []
+                for segment in transcript.segments:
+                    payload_segment: dict[str, object] = {}
+                    text = segment.get("text")
+                    if isinstance(text, str):
+                        payload_segment["text"] = text
+                    start = segment.get("start")
+                    if isinstance(start, (int, float)):
+                        payload_segment["start"] = float(start)
+                    duration = segment.get("duration")
+                    if isinstance(duration, (int, float)):
+                        payload_segment["duration"] = float(duration)
+                    if payload_segment:
+                        segments_payload.append(payload_segment)
+
+                self._cache_repository.upsert_transcript(
+                    video_id=transcript.video_id,
+                    title=transcript.title,
+                    transcript=transcript.transcript,
+                    source=transcript.source,
+                    segments=segments_payload,
+                )
+                LOGGER.info("youtube transcript cache_store video_id=%s", video_id)
+
+            return YouTubeTranscriptResult(
+                transcript=transcript,
+                estimated_api_units=1,
+                cache_hit=False,
+            )
 
         raise YouTubeServiceError(
             "Transcript unavailable from YouTube captions and no fallback provider succeeded"
         )
 
-    def _list_recent_oauth(self, limit: int, *, enrich_metadata: bool) -> list[YouTubeVideo]:
+    def _list_recent_oauth_with_cache(
+        self,
+        *,
+        limit: int,
+        query: str | None,
+    ) -> YouTubeListRecentResult:
+        if self._cache_repository is None:
+            raise YouTubeServiceError("YouTube cache repository is required for cached likes flow")
+
+        cached_rows = self._cache_repository.list_likes(limit=self._likes_cache_max_items)
+        cached_videos = [_cached_like_to_video(row) for row in cached_rows]
+        last_sync_at = self._cache_repository.get_likes_last_sync_at()
+
+        now = datetime.now(UTC)
+        cache_age = (now - last_sync_at) if last_sync_at is not None else None
+        cache_stale = cache_age is None or cache_age > timedelta(
+            seconds=self._likes_cache_ttl_seconds
+        )
+        within_recent_guard = cache_age is not None and cache_age <= timedelta(
+            seconds=self._likes_recent_guard_seconds
+        )
+        query_requests_recent = query is not None and _query_has_recency_signal(query)
+        needs_initial_refresh = (
+            not cached_videos
+            or cache_stale
+            or len(cached_videos) < limit
+            or (query_requests_recent and within_recent_guard)
+        )
+
+        active_videos = cached_videos
+        estimated_api_units = 0
+        refreshed = False
+        cache_hit = bool(cached_videos) and not needs_initial_refresh
+
+        if needs_initial_refresh:
+            try:
+                oauth_fetch = self._refresh_likes_cache(
+                    limit=max(limit, self._likes_cache_max_items),
+                    enrich_metadata=query is not None,
+                )
+                active_videos = oauth_fetch.videos
+                estimated_api_units += oauth_fetch.estimated_api_units
+                refreshed = True
+                cache_hit = False
+            except YouTubeServiceError:
+                if not cached_videos:
+                    raise
+                LOGGER.warning(
+                    "youtube likes cache_refresh_failed using_stale_cache reason=initial_refresh",
+                    exc_info=True,
+                )
+
+        filtered = active_videos if query is None else _filter_videos_by_query(active_videos, query)
+
+        query_miss = query is not None and not filtered
+        sparse_metadata = _contains_sparse_metadata(active_videos)
+        if (
+            query_miss
+            and query is not None
+            and not refreshed
+            and (
+                sparse_metadata
+                or query_requests_recent
+                or cache_age is None
+                or cache_age > timedelta(seconds=self._likes_recent_guard_seconds)
+            )
+        ):
+            try:
+                oauth_fetch = self._refresh_likes_cache(
+                    limit=max(limit, self._likes_cache_max_items),
+                    enrich_metadata=True,
+                )
+                active_videos = oauth_fetch.videos
+                estimated_api_units += oauth_fetch.estimated_api_units
+                refreshed = True
+                cache_hit = False
+                filtered = _filter_videos_by_query(active_videos, query)
+            except YouTubeServiceError:
+                LOGGER.warning(
+                    "youtube likes cache_refresh_failed using_cached_query_miss sparse_metadata=%s",
+                    sparse_metadata,
+                    exc_info=True,
+                )
+
+        videos = filtered[:limit]
+        if cache_hit:
+            LOGGER.info(
+                "youtube likes cache_hit query=%s limit=%s rows=%s", query, limit, len(videos)
+            )
+        elif refreshed:
+            LOGGER.info(
+                "youtube likes cache_refreshed query=%s limit=%s rows=%s units=%s",
+                query,
+                limit,
+                len(videos),
+                estimated_api_units,
+            )
+
+        return YouTubeListRecentResult(
+            videos=videos,
+            estimated_api_units=estimated_api_units,
+            cache_hit=cache_hit,
+            refreshed=refreshed,
+        )
+
+    def _refresh_likes_cache(self, *, limit: int, enrich_metadata: bool) -> _OAuthLikedFetch:
+        oauth_fetch = self._list_recent_oauth(
+            limit=max(1, limit),
+            enrich_metadata=enrich_metadata,
+        )
+        if self._cache_repository is not None:
+            cached_rows = [_video_to_cached_like(video) for video in oauth_fetch.videos]
+            self._cache_repository.replace_likes(
+                videos=cached_rows,
+                max_items=self._likes_cache_max_items,
+            )
+        return oauth_fetch
+
+    def _list_recent_oauth(self, limit: int, *, enrich_metadata: bool) -> _OAuthLikedFetch:
         client = _build_youtube_client(self._data_dir)
 
         try:
-            videos = _list_from_liked_videos(client, limit, enrich_metadata=enrich_metadata)
+            oauth_fetch = _list_from_liked_videos(client, limit, enrich_metadata=enrich_metadata)
         except Exception as exc:
             raise YouTubeServiceError(
                 f"Failed to fetch liked videos for OAuth user: {exc}"
             ) from exc
 
-        if not videos:
+        if not oauth_fetch.videos:
             raise YouTubeServiceError("No liked videos available for this OAuth account.")
 
-        return videos[:limit]
+        return _OAuthLikedFetch(
+            videos=oauth_fetch.videos[:limit],
+            estimated_api_units=oauth_fetch.estimated_api_units,
+        )
 
     def _fetch_transcript_with_api(self, video_id: str) -> YouTubeTranscript | None:
-        title = _fetch_video_title(video_id, self._data_dir)
+        snippet = _fetch_video_snippet(video_id, self._data_dir)
+        title = snippet.title
 
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
@@ -254,7 +507,7 @@ class YouTubeService:
         except Exception:
             pass
 
-        description = _fetch_video_description(video_id, self._data_dir)
+        description = snippet.description
         if description is None:
             return None
 
@@ -280,11 +533,7 @@ def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouT
     if not normalized_query:
         return videos
 
-    direct_matches = [
-        video
-        for video in videos
-        if normalized_query in _video_search_text(video)
-    ]
+    direct_matches = [video for video in videos if normalized_query in _video_search_text(video)]
     if direct_matches:
         return direct_matches
 
@@ -328,6 +577,63 @@ def _video_search_text(video: YouTubeVideo) -> str:
         " ".join(video.tags),
     ]
     return " ".join(parts).lower()
+
+
+def _query_has_recency_signal(query: str) -> bool:
+    tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+    return any(token in tokens for token in {"latest", "recent", "recently", "new", "just", "last"})
+
+
+def _contains_sparse_metadata(videos: list[YouTubeVideo]) -> bool:
+    return any(
+        not video.description and not video.channel_title and not video.tags for video in videos
+    )
+
+
+def _cached_like_to_video(cached_video: CachedLikeVideo) -> YouTubeVideo:
+    return YouTubeVideo(
+        video_id=cached_video.video_id,
+        title=cached_video.title,
+        published_at=cached_video.liked_at,
+        liked_at=cached_video.liked_at,
+        video_published_at=cached_video.video_published_at,
+        description=cached_video.description,
+        channel_title=cached_video.channel_title,
+        tags=cached_video.tags,
+    )
+
+
+def _video_to_cached_like(video: YouTubeVideo) -> CachedLikeVideo:
+    return CachedLikeVideo(
+        video_id=video.video_id,
+        title=video.title,
+        liked_at=video.liked_at or video.published_at,
+        video_published_at=video.video_published_at,
+        description=video.description,
+        channel_title=video.channel_title,
+        tags=video.tags,
+    )
+
+
+def _clone_segments(segments: list[dict[str, object]]) -> list[dict[str, Any]]:
+    cloned: list[dict[str, Any]] = []
+    for segment in segments:
+        payload: dict[str, Any] = {}
+        text = segment.get("text")
+        if isinstance(text, str):
+            payload["text"] = text
+
+        start = segment.get("start")
+        if isinstance(start, (int, float)):
+            payload["start"] = float(start)
+
+        duration = segment.get("duration")
+        if isinstance(duration, (int, float)):
+            payload["duration"] = float(duration)
+
+        if payload:
+            cloned.append(payload)
+    return cloned
 
 
 def _build_youtube_client(data_dir: Path) -> Any:
@@ -394,89 +700,114 @@ def _list_from_liked_videos(
     limit: int,
     *,
     enrich_metadata: bool,
-) -> list[YouTubeVideo]:
+) -> _OAuthLikedFetch:
     likes_playlist_id = _resolve_likes_playlist_id(client)
-
-    response = cast(
-        dict[str, Any],
-        client.playlistItems()
-        .list(
-            part="snippet,contentDetails",
-            playlistId=likes_playlist_id,
-            maxResults=min(limit, 50),
-        )
-        .execute(),
-    )
+    clamped_limit = max(1, limit)
 
     videos: list[YouTubeVideo] = []
-    items = _as_list(response.get("items"))
-    for item in items:
-        item_dict = _as_dict(item)
-        content_details = _as_dict(item_dict.get("contentDetails"))
-        snippet = _as_dict(item_dict.get("snippet"))
-        resource = _as_dict(snippet.get("resourceId"))
-        video_id = resource.get("videoId")
-        title = snippet.get("title")
-        liked_at = snippet.get("publishedAt")
-        video_published_at_value = content_details.get("videoPublishedAt")
-        video_published_at = (
-            video_published_at_value if isinstance(video_published_at_value, str) else None
-        )
+    playlist_calls = 0
+    next_page_token: str | None = None
 
-        if isinstance(video_id, str) and isinstance(title, str) and isinstance(liked_at, str):
-            videos.append(
-                YouTubeVideo(
-                    video_id=video_id,
-                    title=title,
-                    published_at=liked_at,
-                    liked_at=liked_at,
-                    video_published_at=video_published_at,
-                )
+    while len(videos) < clamped_limit:
+        query_kwargs: dict[str, object] = {
+            "part": "snippet,contentDetails",
+            "playlistId": likes_playlist_id,
+            "maxResults": min(50, clamped_limit - len(videos)),
+        }
+        if next_page_token is not None:
+            query_kwargs["pageToken"] = next_page_token
+
+        response = cast(
+            dict[str, Any],
+            client.playlistItems().list(**query_kwargs).execute(),
+        )
+        playlist_calls += 1
+
+        items = _as_list(response.get("items"))
+        for item in items:
+            item_dict = _as_dict(item)
+            content_details = _as_dict(item_dict.get("contentDetails"))
+            snippet = _as_dict(item_dict.get("snippet"))
+            resource = _as_dict(snippet.get("resourceId"))
+            video_id = resource.get("videoId")
+            title = snippet.get("title")
+            liked_at = snippet.get("publishedAt")
+            video_published_at_value = content_details.get("videoPublishedAt")
+            video_published_at = (
+                video_published_at_value if isinstance(video_published_at_value, str) else None
             )
 
+            if isinstance(video_id, str) and isinstance(title, str) and isinstance(liked_at, str):
+                videos.append(
+                    YouTubeVideo(
+                        video_id=video_id,
+                        title=title,
+                        published_at=liked_at,
+                        liked_at=liked_at,
+                        video_published_at=video_published_at,
+                    )
+                )
+
+        raw_next = response.get("nextPageToken")
+        if not isinstance(raw_next, str) or not raw_next.strip():
+            break
+        next_page_token = raw_next
+
+    metadata_calls = 0
     if enrich_metadata and videos:
-        return _enrich_liked_video_metadata(client, videos)
+        videos, metadata_calls = _enrich_liked_video_metadata(client, videos)
 
-    return videos
-
-
-def _enrich_liked_video_metadata(client: Any, videos: list[YouTubeVideo]) -> list[YouTubeVideo]:
-    video_ids = [video.video_id for video in videos]
-    response = cast(
-        dict[str, Any],
-        client.videos()
-        .list(
-            part="snippet",
-            id=",".join(video_ids),
-            maxResults=min(50, len(video_ids)),
-        )
-        .execute(),
+    return _OAuthLikedFetch(
+        videos=videos,
+        estimated_api_units=1 + playlist_calls + metadata_calls,
     )
 
+
+def _enrich_liked_video_metadata(
+    client: Any,
+    videos: list[YouTubeVideo],
+) -> tuple[list[YouTubeVideo], int]:
+    video_ids = [video.video_id for video in videos]
     metadata_by_id: dict[str, tuple[str | None, str | None, tuple[str, ...]]] = {}
-    for item in _as_list(response.get("items")):
-        item_dict = _as_dict(item)
-        raw_video_id = item_dict.get("id")
-        if not isinstance(raw_video_id, str):
-            continue
+    metadata_calls = 0
 
-        snippet = _as_dict(item_dict.get("snippet"))
-        description_raw = snippet.get("description")
-        description = description_raw if isinstance(description_raw, str) else None
+    for index in range(0, len(video_ids), 50):
+        chunk = video_ids[index : index + 50]
+        response = cast(
+            dict[str, Any],
+            client.videos()
+            .list(
+                part="snippet",
+                id=",".join(chunk),
+                maxResults=len(chunk),
+            )
+            .execute(),
+        )
+        metadata_calls += 1
 
-        channel_raw = snippet.get("channelTitle")
-        channel_title = channel_raw if isinstance(channel_raw, str) else None
+        for item in _as_list(response.get("items")):
+            item_dict = _as_dict(item)
+            raw_video_id = item_dict.get("id")
+            if not isinstance(raw_video_id, str):
+                continue
 
-        tags_raw = snippet.get("tags")
-        tags: tuple[str, ...] = ()
-        if isinstance(tags_raw, list):
-            values: list[str] = []
-            for raw_tag in cast(list[Any], tags_raw):
-                if isinstance(raw_tag, str):
-                    values.append(raw_tag)
-            tags = tuple(values)
+            snippet = _as_dict(item_dict.get("snippet"))
+            description_raw = snippet.get("description")
+            description = description_raw if isinstance(description_raw, str) else None
 
-        metadata_by_id[raw_video_id] = (description, channel_title, tags)
+            channel_raw = snippet.get("channelTitle")
+            channel_title = channel_raw if isinstance(channel_raw, str) else None
+
+            tags_raw = snippet.get("tags")
+            tags: tuple[str, ...] = ()
+            if isinstance(tags_raw, list):
+                values: list[str] = []
+                for raw_tag in cast(list[Any], tags_raw):
+                    if isinstance(raw_tag, str):
+                        values.append(raw_tag)
+                tags = tuple(values)
+
+            metadata_by_id[raw_video_id] = (description, channel_title, tags)
 
     enriched: list[YouTubeVideo] = []
     for video in videos:
@@ -493,7 +824,7 @@ def _enrich_liked_video_metadata(client: Any, videos: list[YouTubeVideo]) -> lis
                 tags=tags,
             )
         )
-    return enriched
+    return enriched, metadata_calls
 
 
 def _resolve_likes_playlist_id(client: Any) -> str:
@@ -651,23 +982,7 @@ def _coerce_float(value: Any) -> float:
     return 0.0
 
 
-def _fetch_video_title(video_id: str, data_dir: Path) -> str:
-    client = _build_youtube_client(data_dir)
-    response = cast(
-        dict[str, Any],
-        client.videos().list(part="snippet", id=video_id, maxResults=1).execute(),
-    )
-
-    items = _as_list(response.get("items"))
-    if items:
-        snippet = _as_dict(_as_dict(items[0]).get("snippet"))
-        title = snippet.get("title")
-        if isinstance(title, str) and title.strip():
-            return title
-    return video_id
-
-
-def _fetch_video_description(video_id: str, data_dir: Path) -> str | None:
+def _fetch_video_snippet(video_id: str, data_dir: Path) -> _VideoSnippet:
     client = _build_youtube_client(data_dir)
     response = cast(
         dict[str, Any],
@@ -676,13 +991,19 @@ def _fetch_video_description(video_id: str, data_dir: Path) -> str | None:
 
     items = _as_list(response.get("items"))
     if not items:
-        return None
+        return _VideoSnippet(title=video_id, description=None)
 
     snippet = _as_dict(_as_dict(items[0]).get("snippet"))
-    description = snippet.get("description")
-    if isinstance(description, str) and description.strip():
-        return description.strip()
-    return None
+    raw_title = snippet.get("title")
+    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else video_id
+
+    raw_description = snippet.get("description")
+    description = (
+        raw_description.strip()
+        if isinstance(raw_description, str) and raw_description.strip()
+        else None
+    )
+    return _VideoSnippet(title=title, description=description)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

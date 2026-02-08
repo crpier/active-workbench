@@ -6,6 +6,10 @@ from pathlib import Path
 from backend.app.repositories.database import Database
 from backend.app.repositories.jobs_repository import JobsRepository
 from backend.app.repositories.vault_repository import VaultRepository
+from backend.app.repositories.youtube_cache_repository import (
+    CachedLikeVideo,
+    YouTubeCacheRepository,
+)
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 
 
@@ -105,3 +109,62 @@ def test_youtube_quota_repository_sets_warning(tmp_path: Path) -> None:
         warning_threshold=8_000,
     )
     assert snapshot.warning is True
+
+
+def test_youtube_cache_repository_likes_replace_and_list(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+
+    cache_repo.replace_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_1",
+                title="First",
+                liked_at="2026-02-08T12:00:00+00:00",
+                video_published_at="2026-02-07T12:00:00+00:00",
+                description="desc 1",
+                channel_title="chan 1",
+                tags=("one", "two"),
+            ),
+            CachedLikeVideo(
+                video_id="vid_2",
+                title="Second",
+                liked_at="2026-02-07T12:00:00+00:00",
+                video_published_at="2026-02-06T12:00:00+00:00",
+                description=None,
+                channel_title=None,
+                tags=(),
+            ),
+        ],
+        max_items=10,
+    )
+
+    last_sync_at = cache_repo.get_likes_last_sync_at()
+    assert last_sync_at is not None
+
+    listed = cache_repo.list_likes(limit=10)
+    assert [video.video_id for video in listed] == ["vid_1", "vid_2"]
+    assert listed[0].tags == ("one", "two")
+
+
+def test_youtube_cache_repository_transcript_ttl(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+
+    cache_repo.upsert_transcript(
+        video_id="vid_3",
+        title="Transcript Video",
+        transcript="hello world",
+        source="youtube_captions",
+        segments=[{"text": "hello", "start": 0.0, "duration": 1.0}],
+    )
+
+    fresh = cache_repo.get_fresh_transcript(video_id="vid_3", ttl_seconds=3600)
+    assert fresh is not None
+    assert fresh.transcript == "hello world"
+    assert fresh.segments[0]["text"] == "hello"
+
+    stale = cache_repo.get_fresh_transcript(video_id="vid_3", ttl_seconds=0)
+    assert stale is None

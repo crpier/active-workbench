@@ -38,6 +38,13 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "fixture")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "120")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS", "15")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS", "250")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS", "1800")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_MAX_BYTES", "2048")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_BACKUP_COUNT", "3")
 
     settings = load_settings()
     assert settings.data_dir == (tmp_path / "data").resolve()
@@ -45,3 +52,11 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.youtube_mode == "fixture"
     assert settings.youtube_daily_quota_limit == 12_000
     assert settings.youtube_quota_warning_percent == 0.75
+    assert settings.youtube_likes_cache_ttl_seconds == 120
+    assert settings.youtube_likes_recent_guard_seconds == 15
+    assert settings.youtube_likes_cache_max_items == 250
+    assert settings.youtube_transcript_cache_ttl_seconds == 1800
+    assert settings.log_dir == (tmp_path / "data" / "logs").resolve()
+    assert settings.log_level == "DEBUG"
+    assert settings.log_max_bytes == 2048
+    assert settings.log_backup_count == 3

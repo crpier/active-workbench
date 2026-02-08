@@ -123,12 +123,27 @@ just youtube-auth
 - `ACTIVE_WORKBENCH_YOUTUBE_MODE=fixture|oauth`
 - `ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT` (default `10000`)
 - `ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT` (default `0.8`)
+- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS` (default `600`)
+- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS` (default `45`)
+- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS` (default `500`)
+- `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS` (default `86400`)
 - `ACTIVE_WORKBENCH_DATA_DIR` (default `.active-workbench`)
 - `ACTIVE_WORKBENCH_DEFAULT_TIMEZONE` (default `Europe/Bucharest`)
 - `ACTIVE_WORKBENCH_ENABLE_SCHEDULER=1|0`
+- `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
+- `ACTIVE_WORKBENCH_LOG_LEVEL` (default `INFO`)
+- `ACTIVE_WORKBENCH_LOG_MAX_BYTES` (default `10485760`)
+- `ACTIVE_WORKBENCH_LOG_BACKUP_COUNT` (default `5`)
 - `ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH`
 - `ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH`
 - `ACTIVE_WORKBENCH_API_BASE_URL` (used by OpenCode custom tools; default `http://127.0.0.1:8000`)
+
+Caching behavior:
+- Likes and transcript results are cached in SQLite tables (`youtube_likes_cache`, `youtube_transcript_cache`).
+- Tool responses include `result.cache` metadata and quota snapshots show `estimated_units_this_call=0` on cache hits.
+
+Runtime logs:
+- Rotating backend logs are written to `ACTIVE_WORKBENCH_LOG_DIR/active-workbench.log`.
 
 ## Inspect Data Quickly
 

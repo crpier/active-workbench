@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from backend.app.api.routes import router
 from backend.app.dependencies import get_dispatcher, get_settings
+from backend.app.logging_config import configure_application_logging
 from backend.app.services.scheduler_service import SchedulerService
 
 
@@ -17,6 +18,7 @@ def health_check() -> dict[str, str]:
 @asynccontextmanager
 async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    configure_application_logging(settings)
     scheduler: SchedulerService | None = None
 
     if settings.scheduler_enabled:

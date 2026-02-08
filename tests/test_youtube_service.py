@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import sys
 import types
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from backend.app.repositories.database import Database
+from backend.app.repositories.youtube_cache_repository import (
+    CachedLikeVideo,
+    YouTubeCacheRepository,
+)
 from backend.app.services.youtube_service import (
     YouTubeService,
     YouTubeServiceError,
+    YouTubeVideo,
     resolve_oauth_paths,
 )
 
@@ -221,7 +228,7 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
                                 "description": "GPT-5.3 analysis and fallback transcript",
                                 "channelTitle": "OAuth Channel",
                                 "tags": ["gpt-5.3", "ai"],
-                            }
+                            },
                         }
                     ]
                 }
@@ -288,3 +295,131 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     fallback = service.get_transcript("oauth_video_1")
     assert fallback.source == "video_description_fallback"
+
+
+def test_oauth_likes_cache_hit_returns_zero_units(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.replace_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="cached_1",
+                title="Cached Video",
+                liked_at="2026-02-08T12:00:00+00:00",
+                video_published_at="2026-02-07T12:00:00+00:00",
+                description="cached description",
+                channel_title="Cached Channel",
+                tags=("cached",),
+            )
+        ],
+        max_items=100,
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        likes_cache_ttl_seconds=600,
+        likes_recent_guard_seconds=45,
+        likes_cache_max_items=100,
+    )
+    result = service.list_recent_with_metadata(limit=1, query="cached")
+
+    assert result.cache_hit is True
+    assert result.estimated_api_units == 0
+    assert result.videos and result.videos[0].video_id == "cached_1"
+
+
+def test_oauth_likes_recent_query_refreshes_when_cache_is_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    @dataclass(frozen=True)
+    class _FakeOAuthFetch:
+        videos: list[YouTubeVideo]
+        estimated_api_units: int
+
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.replace_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="old_1",
+                title="Old Video",
+                liked_at="2026-02-08T11:00:00+00:00",
+                video_published_at="2026-02-07T10:00:00+00:00",
+                description="old",
+                channel_title="Old",
+                tags=(),
+            )
+        ],
+        max_items=100,
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        likes_cache_ttl_seconds=600,
+        likes_recent_guard_seconds=120,
+        likes_cache_max_items=100,
+    )
+
+    calls: list[tuple[int, bool]] = []
+
+    def _fake_refresh(*, limit: int, enrich_metadata: bool) -> _FakeOAuthFetch:
+        calls.append((limit, enrich_metadata))
+        return _FakeOAuthFetch(
+            videos=[
+                YouTubeVideo(
+                    video_id="new_1",
+                    title="Monoliths Talk",
+                    published_at="2026-02-08T12:05:00+00:00",
+                    liked_at="2026-02-08T12:05:00+00:00",
+                    video_published_at="2026-02-08T10:00:00+00:00",
+                    description="modular monoliths",
+                    channel_title="NDC",
+                    tags=("monoliths",),
+                )
+            ],
+            estimated_api_units=3,
+        )
+
+    monkeypatch.setattr(service, "_refresh_likes_cache", _fake_refresh)
+    result = service.list_recent_with_metadata(
+        limit=1,
+        query="what's my most recent liked video about monoliths",
+    )
+
+    assert calls
+    assert result.cache_hit is False
+    assert result.refreshed is True
+    assert result.estimated_api_units == 3
+    assert result.videos and result.videos[0].video_id == "new_1"
+
+
+def test_oauth_transcript_cache_hit_returns_zero_units(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_transcript(
+        video_id="cached_video",
+        title="Cached Transcript Video",
+        transcript="cached transcript text",
+        source="youtube_captions",
+        segments=[{"text": "cached", "start": 0.0, "duration": 1.0}],
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_cache_ttl_seconds=3600,
+    )
+    result = service.get_transcript_with_metadata("cached_video")
+
+    assert result.cache_hit is True
+    assert result.estimated_api_units == 0
+    assert result.transcript.transcript == "cached transcript text"
