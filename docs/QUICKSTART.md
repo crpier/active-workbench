@@ -1,151 +1,38 @@
-# Workbench CLI - Quick Start
+# Active Workbench - Quick Start
 
-## Installation
+**Updated:** 2026-02-08
 
-The CLI is already installed! It's located at:
-```
-~/Projects/active-workbench/cli/
-```
+## Use Model
 
-A symlink has been created at `~/bin/wb`. After restarting your terminal (or running `source ~/.bashrc`), you can use `wb` from anywhere.
+Use Active Workbench by interacting with the assistant via chat or voice.
 
-For now, use the full path:
-```bash
-~/bin/wb <command>
-```
+## Request Flow
 
-## Available Commands
+1. User sends a prompt
+2. Agent selects approved tools
+3. Backend reads/writes vault and memory state
+4. Agent responds with result and action visibility
 
-### Daily Workflow
+## Storage Model
 
-```bash
-wb today              # Open today's daybook (creates from template if needed)
-wb yesterday          # Open yesterday's daybook
-```
+- Canonical content: markdown files
+- Fast retrieval/state: SQLite index and memory tables
 
-### Project Management
+## Safety Defaults
 
-```bash
-wb new <project-name>         # Create new project
-wb list                       # Show all ongoing and hiatus projects
-wb compile <project-name>     # Extract [project-name] entries from daybook
-wb solve [project-name]       # Mark project as solved (interactive if no name)
-wb block [project-name]       # Move project to hiatus (interactive if no name)
-wb resume <project-name>      # Move project from hiatus back to ongoing
-```
+- Tool allowlist only
+- Integrations are read-only by default
+- Memory auto-save with notification and undo
 
-### Writing Workflow
+## First Milestone
 
-```bash
-wb write <title>      # Create/open draft in writing/drafts/
-wb ideas              # Open writing ideas file
-wb publish <title>    # Move draft to writing/published/YYYY-MM/
-```
+Implement this workflow end-to-end:
+- "Save the recipe from a recently watched YouTube cooking video"
 
-### Utilities
-
-```bash
-wb inbox              # Open limbo/Inbox.md
-wb triage             # Open limbo/ directory for processing voice notes
-wb search <term>      # Search across all daybook entries
-wb status             # Show dashboard (projects, limbo notes, drafts)
-```
-
-## Quick Workflow Example
-
-### Start your day:
-```bash
-wb today
-```
-
-This opens today's daybook. Start logging your work:
-
-```markdown
-## Engineering Log (UTC)
-- 10:30 [learn-keyboard]
-  Started practicing keyboard. Finger positioning is tricky.
-
-- 14:00 [fix-auth-bug]
-  Production bug: users getting logged out randomly.
-  Checking server logs...
-```
-
-### Create a project:
-```bash
-wb new learn-keyboard
-```
-
-This creates `projects/personal/ongoing/learn-keyboard.md`.
-
-### Compile your work:
-```bash
-wb compile learn-keyboard
-```
-
-This extracts all `[learn-keyboard]` entries from your daybook and appends them to the project log.
-
-### Review your projects:
-```bash
-wb list
-```
-
-Shows:
-```
-ONGOING
-  - learn-keyboard (started 2026-01-04)
-
-HIATUS
-  (none)
-```
-
-### When done:
-```bash
-wb solve learn-keyboard
-```
-
-Moves the project to `projects/personal/solved/2026-01/`.
-
-## Configuration
-
-Config file: `~/.config/workbench/config.yaml`
-
-```yaml
-vault_path: /home/crpier/vault
-editor: nvim
-```
-
-The CLI will create this with defaults on first run if it doesn't exist.
-
-## Next Steps
-
-1. **Start using it today**: Run `wb today` and start logging
-2. **Create a test project**: `wb new test-project`
-3. **Try compilation**: Tag some entries with `[test-project]` then run `wb compile test-project`
-4. **Check status**: Run `wb status` to see your dashboard
-
-## Tips
-
-- **Tag everything**: Use `[project-name]` tags in your daybook entries so they can be compiled later
-- **Compile weekly**: Every Sunday, compile your active projects to see the week's progress
-- **Don't over-organize**: The system works best when you just write and compile later, not when you perfectly categorize up front
-
-## Development
-
-The CLI is installed in editable mode, so any changes you make to the source code will be immediately available.
-
-Project structure:
-```
-~/Projects/active-workbench/cli/
-├── src/wb/
-│   ├── cli.py          # Main entry point
-│   ├── config.py       # Configuration handling
-│   ├── vault.py        # Vault operations
-│   └── commands/       # Individual command modules
-└── pyproject.toml      # Package configuration
-```
-
-To reinstall after changes:
-```bash
-cd ~/Projects/active-workbench/cli
-uv pip install -e .
-```
+Expected behavior:
+1. Fetch recent watch history
+2. Pull transcript
+3. Extract structured recipe
+4. Save recipe as markdown
+5. Record provenance and memory entry
+6. Offer undo for memory
