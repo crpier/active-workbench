@@ -2,37 +2,129 @@
 
 **Updated:** 2026-02-08
 
-## Use Model
+## What This Runs
 
-Use Active Workbench by interacting with the assistant via chat or voice.
+This project is a local-first assistant backend + OpenCode custom tools setup:
+- FastAPI backend (`backend/`) for tool contracts and persistence
+- SQLite state database (`.active-workbench/state.db`)
+- Markdown vault (`.active-workbench/vault/`)
+- OpenCode custom tools (`.opencode/tools/active_workbench.ts`)
 
-## Request Flow
+## Prerequisites
 
-1. User sends a prompt
-2. Agent selects approved tools
-3. Backend reads/writes vault and memory state
-4. Agent responds with result and action visibility
+- `uv`
+- `just`
+- `node` + `npm`
+- `opencode`
 
-## Storage Model
+## First-Time Setup
 
-- Canonical content: markdown files
-- Fast retrieval/state: SQLite index and memory tables
+```bash
+cd /home/crpier/Projects/active-workbench
+just setup
+just gen-client
+```
 
-## Safety Defaults
+Optional verification:
 
-- Tool allowlist only
-- Integrations are read-only by default
-- Memory auto-save with notification and undo
+```bash
+just check
+just ts-typecheck
+```
 
-## First Milestone
+## Run Backend + OpenCode
 
-Implement this workflow end-to-end:
-- "Save the recipe from a recently watched YouTube cooking video"
+Terminal A:
 
-Expected behavior:
-1. Fetch recent watch history
-2. Pull transcript
-3. Extract structured recipe
-4. Save recipe as markdown
-5. Record provenance and memory entry
-6. Offer undo for memory
+```bash
+cd /home/crpier/Projects/active-workbench
+just run
+```
+
+Terminal B:
+
+```bash
+cd /home/crpier/Projects/active-workbench
+opencode .
+```
+
+## Use OpenCode Custom Tools
+
+OpenCode auto-loads project tools from `.opencode/tools/`.
+
+Examples:
+- `active_workbench_youtube_history_list_recent`
+- `active_workbench_youtube_transcript_get`
+- `active_workbench_recipe_extract_from_transcript`
+- `active_workbench_vault_recipe_save`
+- `active_workbench_memory_create`
+- `active_workbench_reminder_schedule`
+
+The tool returns are JSON envelopes from the backend (`ok`, `result`, `provenance`, `audit_event_id`, `undo_token`, `error`).
+
+## YouTube Modes
+
+### Fixture Mode (default)
+
+No OAuth required. Used for local development and deterministic tests.
+
+### OAuth Mode (real account)
+
+Set mode when running backend:
+
+```bash
+ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth just run
+```
+
+One-command auth bootstrap:
+
+```bash
+just youtube-auth-secret /path/to/google_client_secret.json
+```
+
+This will:
+1. Copy the client secret to the configured location
+2. Run OAuth browser flow
+3. Save token to `.active-workbench/youtube-token.json`
+4. Verify by fetching recent videos
+
+If secret is already in place:
+
+```bash
+just youtube-auth
+```
+
+## Useful Environment Variables
+
+- `ACTIVE_WORKBENCH_YOUTUBE_MODE=fixture|oauth`
+- `ACTIVE_WORKBENCH_DATA_DIR` (default `.active-workbench`)
+- `ACTIVE_WORKBENCH_DEFAULT_TIMEZONE` (default `Europe/Bucharest`)
+- `ACTIVE_WORKBENCH_ENABLE_SCHEDULER=1|0`
+- `ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH`
+- `ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH`
+- `ACTIVE_WORKBENCH_API_BASE_URL` (used by OpenCode custom tools; default `http://127.0.0.1:8000`)
+
+## Inspect Data Quickly
+
+Latest memories:
+
+```bash
+sqlite3 .active-workbench/state.db "
+SELECT id, created_at, deleted_at, content_json
+FROM memory_entries
+ORDER BY created_at DESC
+LIMIT 10;
+"
+```
+
+Latest memory audit events:
+
+```bash
+sqlite3 .active-workbench/state.db "
+SELECT id, tool_name, created_at
+FROM audit_events
+WHERE tool_name = 'memory.create'
+ORDER BY created_at DESC
+LIMIT 10;
+"
+```
