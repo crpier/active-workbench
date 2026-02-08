@@ -30,13 +30,13 @@
         }
       }
     },
-    "/tools/youtube.history.list_recent": {
+    "/tools/youtube.likes.list_recent": {
       "post": {
         "tags": [
           "tools"
         ],
-        "summary": "Youtube History List Recent",
-        "operationId": "youtube_history_list_recent",
+        "summary": "Youtube Likes List Recent",
+        "operationId": "youtube_likes_list_recent",
         "requestBody": {
           "content": {
             "application/json": {
@@ -710,7 +710,7 @@
           "name": {
             "type": "string",
             "enum": [
-              "youtube.history.list_recent",
+              "youtube.likes.list_recent",
               "youtube.transcript.get",
               "vault.recipe.save",
               "vault.note.save",
@@ -798,7 +798,7 @@
           "tool": {
             "type": "string",
             "enum": [
-              "youtube.history.list_recent",
+              "youtube.likes.list_recent",
               "youtube.transcript.get",
               "vault.recipe.save",
               "vault.note.save",

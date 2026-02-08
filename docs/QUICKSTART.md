@@ -53,7 +53,7 @@ opencode .
 OpenCode auto-loads project tools from `.opencode/tools/`.
 
 Examples:
-- `active_workbench_youtube_history_list_recent`
+- `active_workbench_youtube_likes_list_recent`
 - `active_workbench_youtube_transcript_get`
 - `active_workbench_recipe_extract_from_transcript`
 - `active_workbench_vault_recipe_save`
@@ -89,8 +89,8 @@ This will:
 4. Verify OAuth token setup
 
 Note:
-- `youtube.history.list_recent` only returns true watch history when YouTube exposes an accessible `watchHistory` playlist for the account.
-- If unavailable, the tool now returns `youtube_unavailable` instead of falling back to channel uploads.
+- `youtube.likes.list_recent` returns your recently liked videos (YouTube Data API `myRating=like`) and is used as the watched-video signal in agent flows.
+- It does not use watch-history APIs.
 
 If secret is already in place:
 

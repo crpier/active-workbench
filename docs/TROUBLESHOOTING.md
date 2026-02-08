@@ -28,7 +28,7 @@ Checks:
 opencode .
 ```
 3. Use tool names prefixed by filename export, e.g.:
-- `active_workbench_youtube_history_list_recent`
+- `active_workbench_youtube_likes_list_recent`
 
 ## OAuth Error 403: access_denied
 
@@ -63,13 +63,16 @@ rm -f .active-workbench/youtube-token.json
 just youtube-auth
 ```
 
-## YouTube "Recent Watched" Shows Uploads Or Returns Unavailable
+## YouTube Likes Tool Returns Unavailable Or Empty
 
 Current behavior:
-- The backend now only accepts true watch history from YouTube's `watchHistory` playlist.
-- It no longer falls back to `activities.list`, because that endpoint mostly returns channel activity (for many accounts: uploads), not watched videos.
+- The backend reads `youtube.likes.list_recent` from YouTube Data API `videos.list(myRating=like)`.
+- If your account has no liked videos (or likes are unavailable to the API session), the tool returns `youtube_unavailable`.
 
-If `youtube.history.list_recent` returns `youtube_unavailable`, this means YouTube did not expose watch history for your OAuth session/account through Data API.
+If `youtube.likes.list_recent` returns `youtube_unavailable`, verify:
+1. You are authenticated with the expected YouTube account.
+2. That account actually has liked videos.
+3. You re-ran OAuth after switching accounts.
 
 Workarounds:
 1. Use explicit video IDs/URLs with transcript and summary tools.

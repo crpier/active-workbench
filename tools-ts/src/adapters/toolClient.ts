@@ -11,7 +11,7 @@ export type ToolName = ToolRequest["tool"];
 type ToolCall = (request: ToolRequest) => Promise<ToolResponse>;
 
 const TOOL_METHODS: Record<ToolName, ToolCall> = {
-  "youtube.history.list_recent": (request) => ToolsService.youtubeHistoryListRecent(request),
+  "youtube.likes.list_recent": (request) => ToolsService.youtubeLikesListRecent(request),
   "youtube.transcript.get": (request) => ToolsService.youtubeTranscriptGet(request),
   "vault.recipe.save": (request) => ToolsService.vaultRecipeSave(request),
   "vault.note.save": (request) => ToolsService.vaultNoteSave(request),

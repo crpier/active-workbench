@@ -22,17 +22,17 @@ export class ToolsService {
         });
     }
     /**
-     * Youtube History List Recent
+     * Youtube Likes List Recent
      * @param requestBody
      * @returns ToolResponse Successful Response
      * @throws ApiError
      */
-    public static youtubeHistoryListRecent(
+    public static youtubeLikesListRecent(
         requestBody: ToolRequest,
     ): CancelablePromise<ToolResponse> {
         return __request(OpenAPI, {
             method: 'POST',
-            url: '/tools/youtube.history.list_recent',
+            url: '/tools/youtube.likes.list_recent',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

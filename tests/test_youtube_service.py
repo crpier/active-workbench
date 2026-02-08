@@ -14,7 +14,7 @@ from backend.app.services.youtube_service import (
 )
 
 
-def test_fixture_mode_history_and_transcript(tmp_path: Path) -> None:
+def test_fixture_mode_likes_and_transcript(tmp_path: Path) -> None:
     service = YouTubeService(mode="fixture", data_dir=tmp_path)
 
     videos = service.list_recent(limit=2, query="cook")
@@ -31,7 +31,7 @@ def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
         service.list_recent(limit=1)
 
 
-def test_oauth_mode_does_not_fallback_to_upload_activity(
+def test_oauth_mode_without_liked_videos_raises(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -56,10 +56,7 @@ def test_oauth_mode_does_not_fallback_to_upload_activity(
             return FakeCredentials()
 
     class FakeClient:
-        def channels(self) -> FakeClient:
-            return self
-
-        def playlistItems(self) -> FakeClient:  # noqa: N802
+        def videos(self) -> FakeClient:
             return self
 
         def list(self, **kwargs: object) -> FakeClient:
@@ -67,18 +64,8 @@ def test_oauth_mode_does_not_fallback_to_upload_activity(
             return self
 
         def execute(self) -> dict[str, object]:
-            kwargs = getattr(self, "_kwargs", {})
-            if kwargs.get("mine") is True and "contentDetails,snippet" in str(kwargs.get("part")):
-                return {
-                    "items": [
-                        {
-                            "contentDetails": {
-                                "relatedPlaylists": {"watchHistory": "HISTORY123"},
-                            }
-                        }
-                    ]
-                }
-            if kwargs.get("playlistId") == "HISTORY123":
+            _kwargs = getattr(self, "_kwargs", {})
+            if _kwargs.get("myRating") == "like":
                 return {"items": []}
             return {"items": []}
 
@@ -99,7 +86,7 @@ def test_oauth_mode_does_not_fallback_to_upload_activity(
     monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
 
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
-    with pytest.raises(YouTubeServiceError, match="Watch history is unavailable"):
+    with pytest.raises(YouTubeServiceError, match="No liked videos available"):
         service.list_recent(limit=5)
 
 
@@ -153,15 +140,6 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
             return FakeCredentials()
 
     class FakeClient:
-        def channels(self) -> FakeClient:
-            return self
-
-        def playlistItems(self) -> FakeClient:  # noqa: N802
-            return self
-
-        def activities(self) -> FakeClient:
-            return self
-
         def videos(self) -> FakeClient:
             return self
 
@@ -171,22 +149,12 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
         def execute(self) -> dict[str, object]:
             kwargs = getattr(self, "_kwargs", {})
-            if kwargs.get("mine") is True and "contentDetails,snippet" in str(kwargs.get("part")):
+            if kwargs.get("myRating") == "like":
                 return {
                     "items": [
                         {
-                            "contentDetails": {
-                                "relatedPlaylists": {"watchHistory": "HISTORY123"},
-                            }
-                        }
-                    ]
-                }
-            if kwargs.get("playlistId") == "HISTORY123":
-                return {
-                    "items": [
-                        {
+                            "id": "oauth_video_1",
                             "snippet": {
-                                "resourceId": {"videoId": "oauth_video_1"},
                                 "title": "OAuth Cooking",
                                 "publishedAt": "2026-02-01T12:00:00Z",
                             }

@@ -32,7 +32,10 @@ from backend.app.services.content_analysis import (
 from backend.app.services.youtube_service import YouTubeService, YouTubeServiceError
 
 TOOL_DESCRIPTIONS: dict[ToolName, str] = {
-    "youtube.history.list_recent": "List recently watched YouTube videos.",
+    "youtube.likes.list_recent": (
+        "List recently liked YouTube videos (treat likes as watched-video signal). "
+        "Use payload.query or payload.topic to filter by topic."
+    ),
     "youtube.transcript.get": "Retrieve transcript for a YouTube video.",
     "vault.recipe.save": "Persist a recipe note in markdown.",
     "vault.note.save": "Persist a generic knowledge note in markdown.",
@@ -107,8 +110,8 @@ class ToolDispatcher:
         return response
 
     def _execute_tool(self, tool_name: ToolName, request: ToolRequest) -> ToolResponse:
-        if tool_name == "youtube.history.list_recent":
-            return self._handle_youtube_history(request)
+        if tool_name == "youtube.likes.list_recent":
+            return self._handle_youtube_likes(request)
         if tool_name == "youtube.transcript.get":
             return self._handle_youtube_transcript(request)
         if tool_name == "vault.recipe.save":
@@ -189,7 +192,7 @@ class ToolDispatcher:
         )
         return response.model_copy(update={"audit_event_id": audit_event_id})
 
-    def _handle_youtube_history(self, request: ToolRequest) -> ToolResponse:
+    def _handle_youtube_likes(self, request: ToolRequest) -> ToolResponse:
         limit = _int_or_default(request.payload.get("limit"), default=5)
         query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
 
@@ -240,7 +243,7 @@ class ToolDispatcher:
                     request_id=request.request_id,
                     tool=request.tool,
                     code="not_found",
-                    message="No recent videos available",
+                    message="No recently liked videos available",
                 )
             video_id = recent[0].video_id
 

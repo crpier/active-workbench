@@ -38,7 +38,7 @@ User story:
 "Save the recipe from a recently watched YouTube cooking video."
 
 Acceptance criteria:
-1. Agent can list recent watched videos via OAuth-backed connector.
+1. Agent can list recently liked videos via OAuth-backed connector (used as watched-video signal).
 2. Agent fetches transcript with fallback behavior when possible.
 3. Agent extracts recipe details (flexible schema in MVP).
 4. Recipe is saved as markdown with source provenance.
@@ -161,7 +161,7 @@ Tool communication between OpenCode and backend uses HTTP/JSON over local networ
 ## Tool Surface (Initial)
 
 YouTube:
-- `youtube.history.list_recent`
+- `youtube.likes.list_recent`
 - `youtube.transcript.get`
 
 Vault/content:

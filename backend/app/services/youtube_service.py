@@ -113,38 +113,14 @@ class YouTubeService:
         client = _build_youtube_client(self._data_dir)
 
         try:
-            channels_resp = cast(
-                dict[str, Any],
-                client.channels().list(part="contentDetails,snippet", mine=True).execute(),
-            )
-        except Exception as exc:
-            raise YouTubeServiceError(f"Failed to fetch channels for OAuth user: {exc}") from exc
-
-        items = _as_list(channels_resp.get("items"))
-        if not items:
-            raise YouTubeServiceError("OAuth account has no accessible YouTube channels")
-
-        first_item = _as_dict(items[0])
-        content_details = _as_dict(first_item.get("contentDetails"))
-        related = _as_dict(content_details.get("relatedPlaylists"))
-        history_playlist_value = related.get("watchHistory")
-
-        if not isinstance(history_playlist_value, str) or not history_playlist_value:
-            raise YouTubeServiceError(
-                "Watch history is not accessible for this OAuth account via YouTube Data API."
-            )
-
-        try:
-            videos = _list_from_history_playlist(client, history_playlist_value, limit)
+            videos = _list_from_liked_videos(client, limit)
         except Exception as exc:
             raise YouTubeServiceError(
-                "Failed to fetch watch history playlist for OAuth user."
+                f"Failed to fetch liked videos for OAuth user: {exc}"
             ) from exc
 
         if not videos:
-            raise YouTubeServiceError(
-                "Watch history is unavailable via YouTube Data API for this account."
-            )
+            raise YouTubeServiceError("No liked videos available for this OAuth account.")
 
         return videos[:limit]
 
@@ -265,13 +241,13 @@ def resolve_oauth_paths(data_dir: Path) -> tuple[Path, Path]:
     return token_path, secrets_path
 
 
-def _list_from_history_playlist(client: Any, playlist_id: str, limit: int) -> list[YouTubeVideo]:
+def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
     response = cast(
         dict[str, Any],
-        client.playlistItems()
+        client.videos()
         .list(
-            part="snippet,contentDetails",
-            playlistId=playlist_id,
+            part="snippet",
+            myRating="like",
             maxResults=min(limit, 50),
         )
         .execute(),
@@ -281,9 +257,9 @@ def _list_from_history_playlist(client: Any, playlist_id: str, limit: int) -> li
     items = _as_list(response.get("items"))
     for item in items:
         item_dict = _as_dict(item)
+        raw_video_id = item_dict.get("id")
         snippet = _as_dict(item_dict.get("snippet"))
-        resource = _as_dict(snippet.get("resourceId"))
-        video_id = resource.get("videoId")
+        video_id = raw_video_id if isinstance(raw_video_id, str) else None
         title = snippet.get("title")
         published_at = snippet.get("publishedAt")
 

@@ -26,13 +26,13 @@ def _parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=3,
-        help="How many recent videos to fetch for verification.",
+        help="How many recently liked videos to fetch for verification.",
     )
     parser.add_argument(
         "--query",
         type=str,
         default=None,
-        help="Optional search query to filter recent videos.",
+        help="Optional search query to filter liked videos.",
     )
     return parser.parse_args()
 
@@ -67,7 +67,7 @@ def main() -> None:
     videos = service.list_recent(limit=max(1, min(10, args.limit)), query=args.query)
 
     print(f"OAuth success. Token path: {token_path}")
-    print("Recent videos:")
+    print("Recently liked videos:")
     for index, video in enumerate(videos, start=1):
         print(f"{index}. {video.title} [{video.video_id}] {video.published_at}")
 

@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 ToolName = Literal[
-    "youtube.history.list_recent",
+    "youtube.likes.list_recent",
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",

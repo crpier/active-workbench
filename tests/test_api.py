@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from backend.app.models.tool_contracts import WRITE_TOOLS, ToolName
 
 ALL_TOOLS: tuple[ToolName, ...] = (
-    "youtube.history.list_recent",
+    "youtube.likes.list_recent",
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",
@@ -74,7 +74,7 @@ def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
 def test_tool_endpoint_rejects_tool_mismatch(client: TestClient) -> None:
     response = client.post(
         "/tools/vault.recipe.save",
-        json=_request_body("youtube.history.list_recent"),
+        json=_request_body("youtube.likes.list_recent"),
     )
     assert response.status_code == 400
     assert "does not match endpoint" in response.json()["detail"]
@@ -82,8 +82,8 @@ def test_tool_endpoint_rejects_tool_mismatch(client: TestClient) -> None:
 
 def test_recipe_workflow_end_to_end(client: TestClient) -> None:
     history = client.post(
-        "/tools/youtube.history.list_recent",
-        json=_request_body("youtube.history.list_recent", payload={"query": "cook", "limit": 3}),
+        "/tools/youtube.likes.list_recent",
+        json=_request_body("youtube.likes.list_recent", payload={"query": "cook", "limit": 3}),
     )
     assert history.status_code == 200
     videos = history.json()["result"]["videos"]
@@ -139,9 +139,9 @@ def test_recipe_workflow_end_to_end(client: TestClient) -> None:
 
 def test_summary_workflow_end_to_end(client: TestClient) -> None:
     history = client.post(
-        "/tools/youtube.history.list_recent",
+        "/tools/youtube.likes.list_recent",
         json=_request_body(
-            "youtube.history.list_recent",
+            "youtube.likes.list_recent",
             payload={"query": "microservices", "limit": 3},
         ),
     )

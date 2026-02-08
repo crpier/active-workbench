@@ -6,7 +6,7 @@ import type { ToolRequest } from "../../tools-ts/src/client/models/ToolRequest";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
 
 const TOOL_NAMES = {
-  youtube_history_list_recent: "youtube.history.list_recent",
+  youtube_likes_list_recent: "youtube.likes.list_recent",
   youtube_transcript_get: "youtube.transcript.get",
   vault_recipe_save: "vault.recipe.save",
   vault_note_save: "vault.note.save",
@@ -72,9 +72,9 @@ function backendTool(toolName: BackendToolName, description: string) {
   });
 }
 
-export const youtube_history_list_recent = backendTool(
-  TOOL_NAMES.youtube_history_list_recent,
-  "List recent YouTube videos from the backend integration.",
+export const youtube_likes_list_recent = backendTool(
+  TOOL_NAMES.youtube_likes_list_recent,
+  "List recently liked YouTube videos; treat likes as watched-video signal and use payload.query or payload.topic to filter by topic.",
 );
 
 export const youtube_transcript_get = backendTool(

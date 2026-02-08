@@ -41,16 +41,16 @@ def list_tools(
 
 
 @router.post(
-    "/tools/youtube.history.list_recent",
+    "/tools/youtube.likes.list_recent",
     response_model=ToolResponse,
     tags=["tools"],
-    operation_id="youtube_history_list_recent",
+    operation_id="youtube_likes_list_recent",
 )
-def youtube_history_list_recent(
+def youtube_likes_list_recent(
     request: ToolRequest,
     dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
 ) -> ToolResponse:
-    return _handle_tool("youtube.history.list_recent", request, dispatcher)
+    return _handle_tool("youtube.likes.list_recent", request, dispatcher)
 
 
 @router.post(
