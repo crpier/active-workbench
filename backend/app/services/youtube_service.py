@@ -15,6 +15,9 @@ class YouTubeVideo:
     published_at: str
     liked_at: str | None = None
     video_published_at: str | None = None
+    description: str | None = None
+    channel_title: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,26 +47,71 @@ PREFERRED_TRANSCRIPT_LANGUAGES: tuple[str, ...] = (
 QUERY_STOPWORDS: frozenset[str] = frozenset(
     {
         "a",
+        "am",
+        "an",
+        "are",
         "about",
         "and",
+        "as",
+        "at",
+        "been",
+        "but",
         "can",
+        "could",
+        "did",
+        "do",
+        "does",
         "find",
         "for",
+        "had",
+        "has",
+        "have",
+        "how",
         "i",
+        "if",
+        "in",
+        "into",
+        "is",
         "it",
+        "ive",
         "liked",
+        "make",
+        "me",
         "my",
         "of",
-        "recent",
+        "on",
+        "or",
+        "please",
         "recently",
+        "saw",
+        "seen",
+        "should",
+        "some",
+        "recent",
         "somewhere",
+        "summarize",
+        "summary",
         "that",
+        "tell",
         "the",
+        "them",
+        "then",
+        "there",
         "this",
+        "to",
+        "up",
         "video",
+        "want",
+        "was",
         "watched",
         "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
         "with",
+        "would",
         "you",
     }
 )
@@ -76,6 +124,9 @@ FIXTURE_VIDEOS: list[YouTubeVideo] = [
         published_at="2026-02-06T18:00:00+00:00",
         liked_at="2026-02-06T18:00:00+00:00",
         video_published_at="2026-02-06T18:00:00+00:00",
+        description="Simple leek soup tutorial with potato and stock.",
+        channel_title="Fixture Cooking",
+        tags=("soup", "leek", "recipe"),
     ),
     YouTubeVideo(
         video_id="fixture_micro_001",
@@ -83,6 +134,9 @@ FIXTURE_VIDEOS: list[YouTubeVideo] = [
         published_at="2026-02-05T19:30:00+00:00",
         liked_at="2026-02-05T19:30:00+00:00",
         video_published_at="2026-02-05T19:30:00+00:00",
+        description="Architecture trade-offs and distributed systems pitfalls.",
+        channel_title="Fixture Engineering",
+        tags=("microservices", "architecture"),
     ),
     YouTubeVideo(
         video_id="fixture_general_001",
@@ -90,6 +144,9 @@ FIXTURE_VIDEOS: list[YouTubeVideo] = [
         published_at="2026-02-04T15:00:00+00:00",
         liked_at="2026-02-04T15:00:00+00:00",
         video_published_at="2026-02-04T15:00:00+00:00",
+        description="A review of GPT-5.3 pros and cons for coding productivity.",
+        channel_title="Fixture AI",
+        tags=("gpt-5.3", "llm", "productivity"),
     ),
 ]
 
@@ -137,7 +194,7 @@ class YouTubeService:
         if self._mode != "oauth":
             return _filter_fixture_videos(limit=limit, query=query)
 
-        oauth_videos = self._list_recent_oauth(limit=limit)
+        oauth_videos = self._list_recent_oauth(limit=limit, enrich_metadata=query is not None)
         if query is None:
             return oauth_videos
 
@@ -159,11 +216,11 @@ class YouTubeService:
             "Transcript unavailable from YouTube captions and no fallback provider succeeded"
         )
 
-    def _list_recent_oauth(self, limit: int) -> list[YouTubeVideo]:
+    def _list_recent_oauth(self, limit: int, *, enrich_metadata: bool) -> list[YouTubeVideo]:
         client = _build_youtube_client(self._data_dir)
 
         try:
-            videos = _list_from_liked_videos(client, limit)
+            videos = _list_from_liked_videos(client, limit, enrich_metadata=enrich_metadata)
         except Exception as exc:
             raise YouTubeServiceError(
                 f"Failed to fetch liked videos for OAuth user: {exc}"
@@ -223,7 +280,11 @@ def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouT
     if not normalized_query:
         return videos
 
-    direct_matches = [video for video in videos if normalized_query in video.title.lower()]
+    direct_matches = [
+        video
+        for video in videos
+        if normalized_query in _video_search_text(video)
+    ]
     if direct_matches:
         return direct_matches
 
@@ -233,7 +294,7 @@ def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouT
 
     scored: list[tuple[int, int, YouTubeVideo]] = []
     for index, video in enumerate(videos):
-        score = _score_title_against_query(video.title, query_tokens)
+        score = _score_video_against_query(video, query_tokens)
         if score > 0:
             scored.append((score, -index, video))
 
@@ -246,17 +307,27 @@ def _query_tokens(query: str) -> list[str]:
     return [token for token in tokens if len(token) >= 3 and token not in QUERY_STOPWORDS]
 
 
-def _score_title_against_query(title: str, query_tokens: list[str]) -> int:
-    normalized_title = title.lower()
-    title_tokens = set(re.findall(r"[a-z0-9]+", normalized_title))
+def _score_video_against_query(video: YouTubeVideo, query_tokens: list[str]) -> int:
+    search_text = _video_search_text(video)
+    search_tokens = set(re.findall(r"[a-z0-9]+", search_text))
 
     score = 0
     for token in query_tokens:
-        if token in title_tokens:
+        if token in search_tokens:
             score += 3
-        elif token in normalized_title:
+        elif token in search_text:
             score += 1
     return score
+
+
+def _video_search_text(video: YouTubeVideo) -> str:
+    parts = [
+        video.title,
+        video.description or "",
+        video.channel_title or "",
+        " ".join(video.tags),
+    ]
+    return " ".join(parts).lower()
 
 
 def _build_youtube_client(data_dir: Path) -> Any:
@@ -318,7 +389,12 @@ def resolve_oauth_paths(data_dir: Path) -> tuple[Path, Path]:
     return token_path, secrets_path
 
 
-def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
+def _list_from_liked_videos(
+    client: Any,
+    limit: int,
+    *,
+    enrich_metadata: bool,
+) -> list[YouTubeVideo]:
     likes_playlist_id = _resolve_likes_playlist_id(client)
 
     response = cast(
@@ -358,7 +434,66 @@ def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
                 )
             )
 
+    if enrich_metadata and videos:
+        return _enrich_liked_video_metadata(client, videos)
+
     return videos
+
+
+def _enrich_liked_video_metadata(client: Any, videos: list[YouTubeVideo]) -> list[YouTubeVideo]:
+    video_ids = [video.video_id for video in videos]
+    response = cast(
+        dict[str, Any],
+        client.videos()
+        .list(
+            part="snippet",
+            id=",".join(video_ids),
+            maxResults=min(50, len(video_ids)),
+        )
+        .execute(),
+    )
+
+    metadata_by_id: dict[str, tuple[str | None, str | None, tuple[str, ...]]] = {}
+    for item in _as_list(response.get("items")):
+        item_dict = _as_dict(item)
+        raw_video_id = item_dict.get("id")
+        if not isinstance(raw_video_id, str):
+            continue
+
+        snippet = _as_dict(item_dict.get("snippet"))
+        description_raw = snippet.get("description")
+        description = description_raw if isinstance(description_raw, str) else None
+
+        channel_raw = snippet.get("channelTitle")
+        channel_title = channel_raw if isinstance(channel_raw, str) else None
+
+        tags_raw = snippet.get("tags")
+        tags: tuple[str, ...] = ()
+        if isinstance(tags_raw, list):
+            values: list[str] = []
+            for raw_tag in cast(list[Any], tags_raw):
+                if isinstance(raw_tag, str):
+                    values.append(raw_tag)
+            tags = tuple(values)
+
+        metadata_by_id[raw_video_id] = (description, channel_title, tags)
+
+    enriched: list[YouTubeVideo] = []
+    for video in videos:
+        description, channel_title, tags = metadata_by_id.get(video.video_id, (None, None, ()))
+        enriched.append(
+            YouTubeVideo(
+                video_id=video.video_id,
+                title=video.title,
+                published_at=video.published_at,
+                liked_at=video.liked_at,
+                video_published_at=video.video_published_at,
+                description=description,
+                channel_title=channel_title,
+                tags=tags,
+            )
+        )
+    return enriched
 
 
 def _resolve_likes_playlist_id(client: Any) -> str:

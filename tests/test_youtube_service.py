@@ -42,6 +42,21 @@ def test_fixture_mode_query_without_match_returns_empty(tmp_path: Path) -> None:
     assert videos == []
 
 
+def test_fixture_mode_query_matches_description_not_title(tmp_path: Path) -> None:
+    service = YouTubeService(mode="fixture", data_dir=tmp_path)
+
+    videos = service.list_recent(limit=5, query="gpt-5.3")
+    assert videos
+    assert videos[0].video_id == "fixture_general_001"
+
+    phrase_videos = service.list_recent(
+        limit=5,
+        query="I have recently watched a video about gpt-5.3. Can you find it?",
+    )
+    assert phrase_videos
+    assert phrase_videos[0].video_id == "fixture_general_001"
+
+
 def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
 
@@ -200,9 +215,12 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
                 return {
                     "items": [
                         {
+                            "id": "oauth_video_1",
                             "snippet": {
                                 "title": "OAuth Cooking",
-                                "description": "fallback transcript",
+                                "description": "GPT-5.3 analysis and fallback transcript",
+                                "channelTitle": "OAuth Channel",
+                                "tags": ["gpt-5.3", "ai"],
                             }
                         }
                     ]
@@ -247,6 +265,9 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
     videos = service.list_recent(limit=1)
     assert videos and videos[0].video_id == "oauth_video_1"
     assert videos[0].liked_at == "2026-02-01T12:00:00Z"
+
+    filtered = service.list_recent(limit=5, query="gpt-5.3")
+    assert filtered and filtered[0].video_id == "oauth_video_1"
 
     transcript = service.get_transcript("oauth_video_1")
     assert "first line" in transcript.transcript

@@ -206,7 +206,7 @@ class ToolDispatcher:
     def _handle_youtube_likes(self, request: ToolRequest) -> ToolResponse:
         limit = _int_or_default(request.payload.get("limit"), default=5)
         query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
-        estimated_units_this_call = self._estimate_likes_units()
+        estimated_units_this_call = self._estimate_likes_units(has_query=query is not None)
 
         try:
             videos = self._youtube_service.list_recent(limit=max(1, min(25, limit)), query=query)
@@ -284,7 +284,7 @@ class ToolDispatcher:
                 return self._attach_quota_snapshot(
                     error_response,
                     tool_name=request.tool,
-                    estimated_units_this_call=self._estimate_likes_units(),
+                    estimated_units_this_call=self._estimate_likes_units(has_query=False),
                 )
 
             if not recent:
@@ -297,7 +297,7 @@ class ToolDispatcher:
                 return self._attach_quota_snapshot(
                     error_response,
                     tool_name=request.tool,
-                    estimated_units_this_call=self._estimate_likes_units(),
+                    estimated_units_this_call=self._estimate_likes_units(has_query=False),
                 )
             video_id = recent[0].video_id
 
@@ -376,10 +376,12 @@ class ToolDispatcher:
         result["quota"] = quota_payload
         return response.model_copy(update={"result": result})
 
-    def _estimate_likes_units(self) -> int:
+    def _estimate_likes_units(self, *, has_query: bool) -> int:
         if not self._youtube_service.is_oauth_mode:
             return 0
-        return 2
+        # channels.list + playlistItems.list
+        # (+ videos.list metadata enrichment when query is present)
+        return 3 if has_query else 2
 
     def _estimate_transcript_units(
         self,
@@ -392,7 +394,7 @@ class ToolDispatcher:
 
         units = 1  # videos.list for title lookup
         if not explicit_video_requested:
-            units += self._estimate_likes_units()
+            units += self._estimate_likes_units(has_query=False)
 
         if transcript_source == "video_description_fallback" or transcript_source is None:
             units += 1  # videos.list for description fallback path
