@@ -1,4 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "default_agent": "workbench-assistant"
+  "default_agent": "workbench-assistant",
+  "share": "disabled",
+  "permission": {
+    "*": "allow",
+    "bash": "deny",
+    "edit": "deny",
+    "write": "deny"
+  }
 }
