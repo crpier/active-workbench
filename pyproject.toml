@@ -1,0 +1,65 @@
+[project]
+name = "active-workbench-backend"
+version = "0.1.0"
+description = "FastAPI backend for Active Workbench tool contracts"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "pydantic>=2.10.0",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0",
+  "pyright>=1.1.390",
+  "pytest>=8.3.0",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "N",
+  "UP",
+  "B",
+  "A",
+  "C4",
+  "DTZ",
+  "SIM",
+  "TID",
+  "RUF",
+]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+include = ["backend", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = true
+reportUnknownVariableType = true
+reportUnknownArgumentType = true
+reportUnknownLambdaType = true
+reportUnknownParameterType = true
+reportUnnecessaryTypeIgnoreComment = true

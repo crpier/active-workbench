@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Node / TypeScript
+tools-ts/node_modules/
+tools-ts/dist/
+
+# Generated artifacts
+.DS_Store
