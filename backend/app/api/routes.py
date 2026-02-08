@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from backend.app.dependencies import get_dispatcher
 from backend.app.models.tool_contracts import ToolCatalogEntry, ToolName, ToolRequest, ToolResponse
 from backend.app.services.tool_dispatcher import ToolDispatcher
 
 router = APIRouter()
-_dispatcher = ToolDispatcher()
 
 
 def _validate_tool_name(expected_tool: ToolName, request: ToolRequest) -> None:
@@ -20,16 +22,22 @@ def _validate_tool_name(expected_tool: ToolName, request: ToolRequest) -> None:
         )
 
 
-def _handle_tool(expected_tool: ToolName, request: ToolRequest) -> ToolResponse:
+def _handle_tool(
+    expected_tool: ToolName,
+    request: ToolRequest,
+    dispatcher: ToolDispatcher,
+) -> ToolResponse:
     _validate_tool_name(expected_tool, request)
-    return _dispatcher.execute(expected_tool, request)
+    return dispatcher.execute(expected_tool, request)
 
 
 @router.get(
     "/tools", response_model=list[ToolCatalogEntry], tags=["tools"], operation_id="list_tools"
 )
-def list_tools() -> list[ToolCatalogEntry]:
-    return _dispatcher.list_tools()
+def list_tools(
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> list[ToolCatalogEntry]:
+    return dispatcher.list_tools()
 
 
 @router.post(
@@ -38,8 +46,11 @@ def list_tools() -> list[ToolCatalogEntry]:
     tags=["tools"],
     operation_id="youtube_history_list_recent",
 )
-def youtube_history_list_recent(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("youtube.history.list_recent", request)
+def youtube_history_list_recent(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.history.list_recent", request, dispatcher)
 
 
 @router.post(
@@ -48,8 +59,11 @@ def youtube_history_list_recent(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="youtube_transcript_get",
 )
-def youtube_transcript_get(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("youtube.transcript.get", request)
+def youtube_transcript_get(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.transcript.get", request, dispatcher)
 
 
 @router.post(
@@ -58,8 +72,11 @@ def youtube_transcript_get(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="vault_recipe_save",
 )
-def vault_recipe_save(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("vault.recipe.save", request)
+def vault_recipe_save(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("vault.recipe.save", request, dispatcher)
 
 
 @router.post(
@@ -68,8 +85,11 @@ def vault_recipe_save(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="vault_note_save",
 )
-def vault_note_save(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("vault.note.save", request)
+def vault_note_save(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("vault.note.save", request, dispatcher)
 
 
 @router.post(
@@ -78,8 +98,11 @@ def vault_note_save(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="vault_bucket_list_add",
 )
-def vault_bucket_list_add(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("vault.bucket_list.add", request)
+def vault_bucket_list_add(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("vault.bucket_list.add", request, dispatcher)
 
 
 @router.post(
@@ -88,8 +111,11 @@ def vault_bucket_list_add(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="memory_create",
 )
-def memory_create(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("memory.create", request)
+def memory_create(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("memory.create", request, dispatcher)
 
 
 @router.post(
@@ -98,8 +124,11 @@ def memory_create(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="memory_undo",
 )
-def memory_undo(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("memory.undo", request)
+def memory_undo(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("memory.undo", request, dispatcher)
 
 
 @router.post(
@@ -108,8 +137,11 @@ def memory_undo(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="reminder_schedule",
 )
-def reminder_schedule(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("reminder.schedule", request)
+def reminder_schedule(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("reminder.schedule", request, dispatcher)
 
 
 @router.post(
@@ -118,8 +150,11 @@ def reminder_schedule(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="context_suggest_for_query",
 )
-def context_suggest_for_query(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("context.suggest_for_query", request)
+def context_suggest_for_query(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("context.suggest_for_query", request, dispatcher)
 
 
 @router.post(
@@ -128,8 +163,11 @@ def context_suggest_for_query(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="digest_weekly_learning_generate",
 )
-def digest_weekly_learning_generate(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("digest.weekly_learning.generate", request)
+def digest_weekly_learning_generate(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("digest.weekly_learning.generate", request, dispatcher)
 
 
 @router.post(
@@ -138,8 +176,11 @@ def digest_weekly_learning_generate(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="review_routine_generate",
 )
-def review_routine_generate(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("review.routine.generate", request)
+def review_routine_generate(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("review.routine.generate", request, dispatcher)
 
 
 @router.post(
@@ -148,8 +189,11 @@ def review_routine_generate(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="recipe_extract_from_transcript",
 )
-def recipe_extract_from_transcript(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("recipe.extract_from_transcript", request)
+def recipe_extract_from_transcript(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("recipe.extract_from_transcript", request, dispatcher)
 
 
 @router.post(
@@ -158,8 +202,11 @@ def recipe_extract_from_transcript(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="summary_extract_key_ideas",
 )
-def summary_extract_key_ideas(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("summary.extract_key_ideas", request)
+def summary_extract_key_ideas(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("summary.extract_key_ideas", request, dispatcher)
 
 
 @router.post(
@@ -168,5 +215,8 @@ def summary_extract_key_ideas(request: ToolRequest) -> ToolResponse:
     tags=["tools"],
     operation_id="actions_extract_from_notes",
 )
-def actions_extract_from_notes(request: ToolRequest) -> ToolResponse:
-    return _handle_tool("actions.extract_from_notes", request)
+def actions_extract_from_notes(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("actions.extract_from_notes", request, dispatcher)
