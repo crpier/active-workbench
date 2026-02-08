@@ -25,6 +25,14 @@ const TOOL_NAMES = {
 
 type BackendToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 
+type ToolArgs = {
+  payload?: Record<string, unknown>;
+  timezone?: string;
+  session_id?: string;
+  idempotency_key?: string;
+  [key: string]: unknown;
+};
+
 function getClient(): ToolClient {
   return new ToolClient({
     baseUrl: process.env.ACTIVE_WORKBENCH_API_BASE_URL ?? DEFAULT_BASE_URL,
@@ -32,7 +40,17 @@ function getClient(): ToolClient {
   });
 }
 
-function backendTool(toolName: BackendToolName, description: string) {
+function backendTool(
+  toolName: BackendToolName,
+  description: string,
+  options?: {
+    extraArgs?: Record<string, unknown>;
+    payloadFields?: string[];
+  },
+) {
+  const extraArgs = options?.extraArgs ?? {};
+  const payloadFields = options?.payloadFields ?? [];
+
   return tool({
     description,
     args: {
@@ -53,17 +71,30 @@ function backendTool(toolName: BackendToolName, description: string) {
         .uuid()
         .optional()
         .describe("Optional idempotency key for write tools"),
+      ...extraArgs,
     },
     async execute(args, context) {
+      const argsValue = args as ToolArgs;
+      const payload: Record<string, unknown> = {
+        ...(argsValue.payload ?? {}),
+      };
+
+      for (const field of payloadFields) {
+        const value = argsValue[field];
+        if (value !== undefined && value !== null && value !== "") {
+          payload[field] = value;
+        }
+      }
+
       const request = createToolRequest({
         tool: toolName,
-        payload: args.payload,
-        sessionId: args.session_id ?? context.sessionID,
-        timezone: args.timezone,
+        payload,
+        sessionId: argsValue.session_id ?? context.sessionID,
+        timezone: argsValue.timezone,
       });
 
-      if (args.idempotency_key) {
-        request.idempotency_key = args.idempotency_key;
+      if (argsValue.idempotency_key) {
+        request.idempotency_key = argsValue.idempotency_key;
       }
 
       const response = await getClient().callTool(request as ToolRequest);
@@ -74,12 +105,39 @@ function backendTool(toolName: BackendToolName, description: string) {
 
 export const youtube_likes_list_recent = backendTool(
   TOOL_NAMES.youtube_likes_list_recent,
-  "List recently liked YouTube videos; treat likes as watched-video signal and use payload.query or payload.topic to filter by topic.",
+  "List recently liked YouTube videos; treat likes as watched-video signal and filter by query/topic.",
+  {
+    extraArgs: {
+      limit: tool.schema.any().optional().describe("Maximum number of liked videos to fetch."),
+      query: tool.schema
+        .string()
+        .optional()
+        .describe("Filter liked videos by title/content topic."),
+      topic: tool.schema
+        .string()
+        .optional()
+        .describe("Alias for query."),
+    },
+    payloadFields: ["limit", "query", "topic"],
+  },
 );
 
 export const youtube_transcript_get = backendTool(
   TOOL_NAMES.youtube_transcript_get,
-  "Fetch transcript for a specific YouTube video.",
+  "Fetch transcript for a specific YouTube video. Provide video_id or url.",
+  {
+    extraArgs: {
+      video_id: tool.schema
+        .string()
+        .optional()
+        .describe("YouTube video ID, for example 4qfsmE11Ejo."),
+      url: tool.schema
+        .string()
+        .optional()
+        .describe("YouTube URL; backend extracts the video ID."),
+    },
+    payloadFields: ["video_id", "url"],
+  },
 );
 
 export const vault_recipe_save = backendTool(

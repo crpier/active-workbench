@@ -78,6 +78,13 @@ Workarounds:
 1. Use explicit video IDs/URLs with transcript and summary tools.
 2. Stay in fixture mode for deterministic local development.
 
+## Transcript Tool Returns A Different Video Than Requested
+
+Checks:
+1. Call `active_workbench_youtube_transcript_get` with `video_id` or `url`.
+2. Restart OpenCode after pulling latest changes so it reloads updated tool args.
+3. Confirm backend is on latest code and restarted.
+
 ## Want to Keep Secret/Token Outside Project
 
 Use env overrides:

@@ -62,6 +62,10 @@ Examples:
 
 The tool returns are JSON envelopes from the backend (`ok`, `result`, `provenance`, `audit_event_id`, `undo_token`, `error`).
 
+YouTube tool argument hints:
+- `active_workbench_youtube_likes_list_recent`: pass `query`, `topic`, `limit`.
+- `active_workbench_youtube_transcript_get`: pass `video_id` or `url`.
+
 ## YouTube Modes
 
 ### Fixture Mode (default)

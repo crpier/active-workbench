@@ -184,6 +184,32 @@ def test_summary_workflow_end_to_end(client: TestClient) -> None:
     assert path.exists()
 
 
+def test_transcript_accepts_youtube_url_payload(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.transcript.get",
+        json=_request_body(
+            "youtube.transcript.get",
+            payload={"url": "https://www.youtube.com/watch?v=fixture_micro_001"},
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json()["result"]["video_id"] == "fixture_micro_001"
+
+
+def test_transcript_rejects_invalid_video_identifier(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.transcript.get",
+        json=_request_body(
+            "youtube.transcript.get",
+            payload={"url": "https://example.com/not-a-youtube-url"},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "invalid_input"
+
+
 def test_bucket_list_and_prioritization(client: TestClient) -> None:
     add_first = client.post(
         "/tools/vault.bucket_list.add",

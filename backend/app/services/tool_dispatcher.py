@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, cast
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -225,7 +226,26 @@ class ToolDispatcher:
         )
 
     def _handle_youtube_transcript(self, request: ToolRequest) -> ToolResponse:
-        video_id = _payload_str(request.payload, "video_id")
+        raw_video = (
+            _payload_str(request.payload, "video_id")
+            or _payload_str(request.payload, "videoId")
+            or _payload_str(request.payload, "id")
+            or _payload_str(request.payload, "url")
+            or _payload_str(request.payload, "video_url")
+            or _payload_str(request.payload, "videoUrl")
+        )
+        video_id = _extract_youtube_video_id(raw_video) if raw_video is not None else None
+
+        if raw_video is not None and video_id is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=(
+                    "Could not extract a valid YouTube video ID from payload. "
+                    "Provide payload.video_id or a valid YouTube URL."
+                ),
+            )
 
         if video_id is None:
             try:
@@ -693,6 +713,42 @@ def _payload_str(payload: dict[str, Any], key: str) -> str | None:
         stripped = value.strip()
         if stripped:
             return stripped
+    return None
+
+
+def _extract_youtube_video_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    if "://" not in candidate and "/" not in candidate and "?" not in candidate:
+        return candidate
+
+    parsed = urlparse(candidate)
+    host = parsed.netloc.lower()
+    path = parsed.path.strip("/")
+
+    if host in {"youtu.be", "www.youtu.be", "m.youtu.be"}:
+        first = path.split("/", maxsplit=1)[0]
+        return first or None
+
+    if host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
+        query_video = parse_qs(parsed.query).get("v")
+        if query_video:
+            value = query_video[0].strip()
+            if value:
+                return value
+
+        for prefix in ("shorts/", "embed/", "live/"):
+            if path.startswith(prefix):
+                remainder = path[len(prefix) :]
+                first = remainder.split("/", maxsplit=1)[0].strip()
+                if first:
+                    return first
+
     return None
 
 
