@@ -88,6 +88,7 @@ def test_recipe_workflow_end_to_end(client: TestClient) -> None:
     assert history.status_code == 200
     videos = history.json()["result"]["videos"]
     assert videos
+    assert videos[0]["liked_at"]
     video_id = str(videos[0]["video_id"])
 
     transcript = client.post(

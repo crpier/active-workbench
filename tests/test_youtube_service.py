@@ -56,6 +56,12 @@ def test_oauth_mode_without_liked_videos_raises(
             return FakeCredentials()
 
     class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
         def videos(self) -> FakeClient:
             return self
 
@@ -65,7 +71,9 @@ def test_oauth_mode_without_liked_videos_raises(
 
         def execute(self) -> dict[str, object]:
             _kwargs = getattr(self, "_kwargs", {})
-            if _kwargs.get("myRating") == "like":
+            if _kwargs.get("mine") is True and _kwargs.get("part") == "contentDetails":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"likes": "LL"}}}]}
+            if _kwargs.get("playlistId") == "LL":
                 return {"items": []}
             return {"items": []}
 
@@ -140,6 +148,12 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
             return FakeCredentials()
 
     class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
         def videos(self) -> FakeClient:
             return self
 
@@ -149,15 +163,18 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
         def execute(self) -> dict[str, object]:
             kwargs = getattr(self, "_kwargs", {})
-            if kwargs.get("myRating") == "like":
+            if kwargs.get("mine") is True and kwargs.get("part") == "contentDetails":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"likes": "LL"}}}]}
+            if kwargs.get("playlistId") == "LL":
                 return {
                     "items": [
                         {
-                            "id": "oauth_video_1",
                             "snippet": {
+                                "resourceId": {"videoId": "oauth_video_1"},
                                 "title": "OAuth Cooking",
                                 "publishedAt": "2026-02-01T12:00:00Z",
-                            }
+                            },
+                            "contentDetails": {"videoPublishedAt": "2026-01-20T09:00:00Z"},
                         }
                     ]
                 }
@@ -211,6 +228,7 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
     videos = service.list_recent(limit=1)
     assert videos and videos[0].video_id == "oauth_video_1"
+    assert videos[0].liked_at == "2026-02-01T12:00:00Z"
 
     transcript = service.get_transcript("oauth_video_1")
     assert "first line" in transcript.transcript

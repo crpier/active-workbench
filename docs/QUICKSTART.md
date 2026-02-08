@@ -66,6 +66,11 @@ YouTube tool argument hints:
 - `active_workbench_youtube_likes_list_recent`: pass `query`, `topic`, `limit`.
 - `active_workbench_youtube_transcript_get`: pass `video_id` or `url`.
 
+Likes tool response fields:
+- `liked_at`: when the video was liked (playlist item timestamp)
+- `video_published_at`: original YouTube publish time
+- `published_at`: kept for compatibility (same value as `liked_at`)
+
 ## YouTube Modes
 
 ### Fixture Mode (default)

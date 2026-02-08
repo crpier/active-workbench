@@ -69,7 +69,8 @@ def main() -> None:
     print(f"OAuth success. Token path: {token_path}")
     print("Recently liked videos:")
     for index, video in enumerate(videos, start=1):
-        print(f"{index}. {video.title} [{video.video_id}] {video.published_at}")
+        liked_at = video.liked_at or video.published_at
+        print(f"{index}. {video.title} [{video.video_id}] liked_at={liked_at}")
 
 
 if __name__ == "__main__":

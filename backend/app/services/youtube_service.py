@@ -12,6 +12,8 @@ class YouTubeVideo:
     video_id: str
     title: str
     published_at: str
+    liked_at: str | None = None
+    video_published_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,16 +46,22 @@ FIXTURE_VIDEOS: list[YouTubeVideo] = [
         video_id="fixture_cooking_001",
         title="How To Cook Leek And Potato Soup",
         published_at="2026-02-06T18:00:00+00:00",
+        liked_at="2026-02-06T18:00:00+00:00",
+        video_published_at="2026-02-06T18:00:00+00:00",
     ),
     YouTubeVideo(
         video_id="fixture_micro_001",
         title="Microservices Done Right - Real Lessons",
         published_at="2026-02-05T19:30:00+00:00",
+        liked_at="2026-02-05T19:30:00+00:00",
+        video_published_at="2026-02-05T19:30:00+00:00",
     ),
     YouTubeVideo(
         video_id="fixture_general_001",
         title="Weekly Productivity Systems",
         published_at="2026-02-04T15:00:00+00:00",
+        liked_at="2026-02-04T15:00:00+00:00",
+        video_published_at="2026-02-04T15:00:00+00:00",
     ),
 ]
 
@@ -243,12 +251,14 @@ def resolve_oauth_paths(data_dir: Path) -> tuple[Path, Path]:
 
 
 def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
+    likes_playlist_id = _resolve_likes_playlist_id(client)
+
     response = cast(
         dict[str, Any],
-        client.videos()
+        client.playlistItems()
         .list(
-            part="snippet",
-            myRating="like",
+            part="snippet,contentDetails",
+            playlistId=likes_playlist_id,
             maxResults=min(limit, 50),
         )
         .execute(),
@@ -258,16 +268,48 @@ def _list_from_liked_videos(client: Any, limit: int) -> list[YouTubeVideo]:
     items = _as_list(response.get("items"))
     for item in items:
         item_dict = _as_dict(item)
-        raw_video_id = item_dict.get("id")
+        content_details = _as_dict(item_dict.get("contentDetails"))
         snippet = _as_dict(item_dict.get("snippet"))
-        video_id = raw_video_id if isinstance(raw_video_id, str) else None
+        resource = _as_dict(snippet.get("resourceId"))
+        video_id = resource.get("videoId")
         title = snippet.get("title")
-        published_at = snippet.get("publishedAt")
+        liked_at = snippet.get("publishedAt")
+        video_published_at_value = content_details.get("videoPublishedAt")
+        video_published_at = (
+            video_published_at_value if isinstance(video_published_at_value, str) else None
+        )
 
-        if isinstance(video_id, str) and isinstance(title, str) and isinstance(published_at, str):
-            videos.append(YouTubeVideo(video_id=video_id, title=title, published_at=published_at))
+        if isinstance(video_id, str) and isinstance(title, str) and isinstance(liked_at, str):
+            videos.append(
+                YouTubeVideo(
+                    video_id=video_id,
+                    title=title,
+                    published_at=liked_at,
+                    liked_at=liked_at,
+                    video_published_at=video_published_at,
+                )
+            )
 
     return videos
+
+
+def _resolve_likes_playlist_id(client: Any) -> str:
+    response = cast(
+        dict[str, Any],
+        client.channels().list(part="contentDetails", mine=True, maxResults=1).execute(),
+    )
+
+    items = _as_list(response.get("items"))
+    if not items:
+        return "LL"
+
+    first_item = _as_dict(items[0])
+    content_details = _as_dict(first_item.get("contentDetails"))
+    related = _as_dict(content_details.get("relatedPlaylists"))
+    likes_value = related.get("likes")
+    if isinstance(likes_value, str) and likes_value.strip():
+        return likes_value
+    return "LL"
 
 
 def _fetch_captions_segments(video_id: str, transcript_api_ref: Any) -> list[dict[str, Any]]:

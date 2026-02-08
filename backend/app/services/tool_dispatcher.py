@@ -212,6 +212,8 @@ class ToolDispatcher:
                 "video_id": item.video_id,
                 "title": item.title,
                 "published_at": item.published_at,
+                "liked_at": item.liked_at,
+                "video_published_at": item.video_published_at,
             }
             for item in videos
         ]
