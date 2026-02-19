@@ -14,8 +14,12 @@ from backend.app.repositories.youtube_cache_repository import (
     YouTubeCacheRepository,
 )
 from backend.app.services.youtube_service import (
+    YouTubeRateLimitedError,
     YouTubeService,
     YouTubeServiceError,
+    YouTubeTranscript,
+    YouTubeTranscriptIpBlockedError,
+    YouTubeTranscriptResult,
     YouTubeVideo,
     resolve_oauth_paths,
 )
@@ -136,6 +140,51 @@ def test_oauth_mode_without_liked_videos_raises(
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
     with pytest.raises(YouTubeServiceError, match="No liked videos available"):
         service.list_recent(limit=5)
+
+
+def test_oauth_refresh_invalid_grant_requires_reauth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "youtube-token.json").write_text("{}", encoding="utf-8")
+
+    class FakeCredentials:
+        valid = False
+        expired = True
+        refresh_token = "refresh-token"
+
+        @classmethod
+        def from_authorized_user_file(cls, _path: str, _scopes: list[str]) -> FakeCredentials:
+            return cls()
+
+        def refresh(self, _request: object) -> None:
+            raise RuntimeError("invalid_grant: Token has been expired or revoked.")
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, _path: str, _scopes: list[str]) -> FakeFlow:
+            return cls()
+
+        def run_local_server(self, port: int = 0) -> FakeCredentials:
+            _ = port
+            return FakeCredentials()
+
+    def fake_import_module(name: str) -> object:
+        if name == "google.auth.transport.requests":
+            return types.SimpleNamespace(Request=object)
+        if name == "google.oauth2.credentials":
+            return types.SimpleNamespace(Credentials=FakeCredentials)
+        if name == "google_auth_oauthlib.flow":
+            return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
+        if name == "googleapiclient.discovery":
+            return types.SimpleNamespace(build=lambda *_args, **_kwargs: object())
+        raise AssertionError(f"Unexpected module import: {name}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
+
+    service = YouTubeService(mode="oauth", data_dir=tmp_path)
+    with pytest.raises(YouTubeServiceError, match="run `just youtube-auth`"):
+        service.list_recent(limit=1)
 
 
 def test_resolve_oauth_paths_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -296,6 +345,37 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
     fallback = service.get_transcript("oauth_video_1")
     assert fallback.source == "video_description_fallback"
 
+    class IpBlockedError(RuntimeError):
+        pass
+
+    class BlockingTrack:
+        language_code = "en"
+        is_generated = True
+        is_translatable = True
+
+        def fetch(self) -> list[dict[str, Any]]:
+            raise IpBlockedError("blocking requests from your IP")
+
+    class IpBlockedTranscriptApi:
+        def fetch(
+            self,
+            _video_id: str,
+            languages: list[str] | None = None,
+            preserve_formatting: bool = False,
+        ) -> FakeFetchedTranscript:
+            _ = languages
+            _ = preserve_formatting
+            raise IpBlockedError("blocking requests from your IP")
+
+        def list(self, _video_id: str) -> list[BlockingTrack]:
+            return [BlockingTrack()]
+
+    transcript_module_blocked = types.SimpleNamespace(YouTubeTranscriptApi=IpBlockedTranscriptApi)
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module_blocked)
+
+    with pytest.raises(YouTubeTranscriptIpBlockedError):
+        service.get_transcript("oauth_video_1")
+
 
 def test_oauth_likes_cache_hit_returns_zero_units(tmp_path: Path) -> None:
     db = Database(tmp_path / "state.db")
@@ -329,6 +409,143 @@ def test_oauth_likes_cache_hit_returns_zero_units(tmp_path: Path) -> None:
     assert result.cache_hit is True
     assert result.estimated_api_units == 0
     assert result.videos and result.videos[0].video_id == "cached_1"
+
+
+def test_oauth_likes_cache_only_does_not_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.replace_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="cached_only_1",
+                title="Cached Only Video",
+                liked_at="2026-02-08T12:00:00+00:00",
+            )
+        ],
+        max_items=100,
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+    )
+
+    def _unexpected_refresh(*, limit: int, enrich_metadata: bool) -> None:
+        _ = limit
+        _ = enrich_metadata
+        raise AssertionError("refresh should not be called for cache-only path")
+
+    monkeypatch.setattr(service, "_refresh_likes_cache", _unexpected_refresh)
+
+    result = service.list_recent_cached_only_with_metadata(limit=1, query="cached")
+    assert result.videos and result.videos[0].video_id == "cached_only_1"
+    assert result.estimated_api_units == 0
+
+
+def test_oauth_likes_cache_only_probe_recent_on_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.replace_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="cached_only_1",
+                title="Cached Only Video",
+                liked_at="2026-02-08T12:00:00+00:00",
+                description="unrelated topic",
+            )
+        ],
+        max_items=100,
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+    )
+
+    def _fake_probe(*, recent_probe_pages: int, enrich_metadata: bool) -> tuple[int, int]:
+        _ = enrich_metadata
+        assert recent_probe_pages == 2
+        cache_repo.upsert_likes(
+            videos=[
+                CachedLikeVideo(
+                    video_id="probed_1",
+                    title="Probed Soup Video",
+                    liked_at="2026-02-08T12:01:00+00:00",
+                    description="potato soup",
+                )
+            ],
+            max_items=100,
+        )
+        return 4, 1
+
+    monkeypatch.setattr(service, "_probe_recent_likes_cache", _fake_probe)
+
+    result = service.list_recent_cached_only_with_metadata(
+        limit=1,
+        query="soup",
+        probe_recent_on_miss=True,
+        recent_probe_pages=2,
+    )
+    assert result.videos and result.videos[0].video_id == "probed_1"
+    assert result.estimated_api_units == 4
+    assert result.cache_miss is False
+    assert result.recent_probe_applied is True
+    assert result.recent_probe_pages_used == 1
+
+
+def test_oauth_search_recent_content_matches_transcript(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="match_1",
+                title="Console teardown",
+                liked_at="2026-02-15T12:00:00+00:00",
+                description="hardware video",
+            ),
+            CachedLikeVideo(
+                video_id="other_1",
+                title="Gardening tips",
+                liked_at="2026-02-15T11:00:00+00:00",
+                description="plants",
+            ),
+        ],
+        max_items=100,
+    )
+    cache_repo.upsert_transcript(
+        video_id="match_1",
+        title="Console teardown",
+        transcript="We tested game controllers and button latency.",
+        source="youtube_captions",
+        segments=[],
+    )
+
+    service = YouTubeService(mode="oauth", data_dir=tmp_path, cache_repository=cache_repo)
+    result = service.search_recent_content_with_metadata(
+        query="game controllers",
+        window_days=7,
+        limit=5,
+        probe_recent_on_miss=False,
+        recent_probe_pages=1,
+    )
+
+    assert result.matches
+    assert result.matches[0].video.video_id == "match_1"
+    assert "transcript" in result.matches[0].matched_in
+    assert result.recent_videos_count == 2
+    assert result.transcripts_available_count == 1
 
 
 def test_oauth_likes_recent_query_refreshes_when_cache_is_fresh(
@@ -423,3 +640,369 @@ def test_oauth_transcript_cache_hit_returns_zero_units(tmp_path: Path) -> None:
     assert result.cache_hit is True
     assert result.estimated_api_units == 0
     assert result.transcript.transcript == "cached transcript text"
+
+
+def test_oauth_background_sync_populates_likes_with_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "youtube-token.json").write_text("{}", encoding="utf-8")
+
+    class FakeCredentials:
+        valid = True
+        expired = False
+        refresh_token = None
+
+        @classmethod
+        def from_authorized_user_file(cls, _path: str, _scopes: list[str]) -> FakeCredentials:
+            return cls()
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, _path: str, _scopes: list[str]) -> FakeFlow:
+            return cls()
+
+        def run_local_server(self, port: int = 0) -> FakeCredentials:
+            _ = port
+            return FakeCredentials()
+
+    class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
+        def videos(self) -> FakeClient:
+            return self
+
+        def list(self, **kwargs: object) -> FakeClient:
+            self._kwargs = kwargs
+            return self
+
+        def execute(self) -> dict[str, object]:
+            kwargs = getattr(self, "_kwargs", {})
+            if kwargs.get("mine") is True and kwargs.get("part") == "contentDetails":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"likes": "LL"}}}]}
+            if kwargs.get("playlistId") == "LL":
+                if kwargs.get("pageToken") == "p2":
+                    return {
+                        "items": [
+                            {
+                                "snippet": {
+                                    "resourceId": {"videoId": "vid_2"},
+                                    "title": "Second Video",
+                                    "publishedAt": "2026-02-08T11:00:00Z",
+                                },
+                                "contentDetails": {"videoPublishedAt": "2026-01-31T10:00:00Z"},
+                            }
+                        ]
+                    }
+                return {
+                    "items": [
+                        {
+                            "snippet": {
+                                "resourceId": {"videoId": "vid_1"},
+                                "title": "First Video",
+                                "publishedAt": "2026-02-08T12:00:00Z",
+                            },
+                            "contentDetails": {"videoPublishedAt": "2026-02-01T10:00:00Z"},
+                        }
+                    ],
+                    "nextPageToken": "p2",
+                }
+            if kwargs.get("id") == "vid_1":
+                return {
+                    "items": [
+                        {
+                            "id": "vid_1",
+                            "snippet": {
+                                "description": "desc 1",
+                                "channelId": "ch_1",
+                                "channelTitle": "Channel One",
+                                "categoryId": "22",
+                                "defaultLanguage": "en",
+                                "defaultAudioLanguage": "en-US",
+                                "liveBroadcastContent": "none",
+                                "tags": ["tag1"],
+                                "thumbnails": {"default": {"url": "https://example.com/1.jpg"}},
+                            },
+                            "contentDetails": {
+                                "duration": "PT5M3S",
+                                "caption": "true",
+                                "definition": "hd",
+                                "dimension": "2d",
+                            },
+                            "status": {
+                                "privacyStatus": "public",
+                                "licensedContent": True,
+                                "madeForKids": False,
+                            },
+                            "statistics": {
+                                "viewCount": "101",
+                                "likeCount": "9",
+                                "commentCount": "1",
+                            },
+                            "topicDetails": {
+                                "topicCategories": ["https://en.wikipedia.org/wiki/Food"]
+                            },
+                        }
+                    ]
+                }
+            if kwargs.get("id") == "vid_2":
+                return {
+                    "items": [
+                        {
+                            "id": "vid_2",
+                            "snippet": {
+                                "description": "desc 2",
+                                "channelId": "ch_2",
+                                "channelTitle": "Channel Two",
+                                "liveBroadcastContent": "none",
+                                "tags": ["tag2"],
+                            },
+                            "contentDetails": {"duration": "PT45S", "caption": "false"},
+                            "status": {
+                                "privacyStatus": "public",
+                                "licensedContent": False,
+                                "madeForKids": False,
+                            },
+                            "statistics": {
+                                "viewCount": "50",
+                                "likeCount": "4",
+                                "commentCount": "0",
+                            },
+                            "topicDetails": {"topicCategories": []},
+                        }
+                    ]
+                }
+            return {"items": []}
+
+    def fake_import_module(name: str) -> object:
+        def _build(*_args: object, **_kwargs: object) -> FakeClient:
+            return FakeClient()
+
+        if name == "google.auth.transport.requests":
+            return types.SimpleNamespace(Request=object)
+        if name == "google.oauth2.credentials":
+            return types.SimpleNamespace(Credentials=FakeCredentials)
+        if name == "google_auth_oauthlib.flow":
+            return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
+        if name == "googleapiclient.discovery":
+            return types.SimpleNamespace(build=_build)
+        raise AssertionError(f"Unexpected module import: {name}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
+
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        likes_background_min_interval_seconds=0,
+        likes_background_hot_pages=1,
+        likes_background_backfill_pages_per_run=1,
+        likes_background_page_size=1,
+        likes_background_target_items=100,
+    )
+
+    service.run_background_likes_sync()
+
+    rows = cache_repo.list_likes(limit=10)
+    assert [row.video_id for row in rows] == ["vid_1", "vid_2"]
+    assert rows[0].channel_id == "ch_1"
+    assert rows[0].duration_seconds == 303
+    assert rows[0].caption_available is True
+    assert rows[0].statistics_view_count == 101
+    assert rows[0].topic_categories == ("https://en.wikipedia.org/wiki/Food",)
+    assert cache_repo.get_cache_state_value("likes_background_backfill_next_page_token") is None
+
+
+def test_oauth_background_transcript_sync_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_t_1",
+                title="Transcript Target",
+                liked_at="2026-02-10T12:00:00+00:00",
+            )
+        ],
+        max_items=100,
+    )
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_background_min_interval_seconds=0,
+    )
+
+    def _fake_get_transcript(video_id: str) -> YouTubeTranscriptResult:
+        cache_repo.upsert_transcript(
+            video_id=video_id,
+            title="Transcript Target",
+            transcript="hello from background sync",
+            source="youtube_captions",
+            segments=[],
+        )
+        return YouTubeTranscriptResult(
+            transcript=YouTubeTranscript(
+                video_id=video_id,
+                title="Transcript Target",
+                transcript="hello from background sync",
+                source="youtube_captions",
+                segments=[],
+            ),
+            estimated_api_units=1,
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr(service, "get_transcript_with_metadata", _fake_get_transcript)
+
+    service.run_background_transcript_sync()
+
+    cached = cache_repo.get_fresh_transcript(video_id="vid_t_1", ttl_seconds=3600)
+    assert cached is not None
+    assert cached.transcript == "hello from background sync"
+    assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_1") == 1
+
+
+def test_oauth_background_transcript_sync_failure_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_t_fail",
+                title="Transcript Failure Target",
+                liked_at="2026-02-10T12:00:00+00:00",
+            )
+        ],
+        max_items=100,
+    )
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_background_min_interval_seconds=0,
+        transcript_background_backoff_base_seconds=60,
+        transcript_background_backoff_max_seconds=600,
+    )
+
+    def _failing_get_transcript(_video_id: str) -> YouTubeTranscriptResult:
+        raise YouTubeServiceError("forced transcript failure")
+
+    monkeypatch.setattr(service, "get_transcript_with_metadata", _failing_get_transcript)
+
+    service.run_background_transcript_sync()
+    service.run_background_transcript_sync()
+
+    assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_fail") == 1
+
+
+def test_oauth_background_transcript_sync_ip_block_global_pause(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_block_1",
+                title="Blocked One",
+                liked_at="2026-02-10T12:00:00+00:00",
+            ),
+            CachedLikeVideo(
+                video_id="vid_block_2",
+                title="Blocked Two",
+                liked_at="2026-02-10T11:00:00+00:00",
+            ),
+        ],
+        max_items=100,
+    )
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_background_min_interval_seconds=0,
+        transcript_background_backoff_base_seconds=60,
+        transcript_background_backoff_max_seconds=600,
+        transcript_background_ip_block_pause_seconds=600,
+    )
+
+    def _ip_blocked(_video_id: str) -> YouTubeTranscriptResult:
+        raise YouTubeTranscriptIpBlockedError("IpBlocked")
+
+    monkeypatch.setattr(service, "get_transcript_with_metadata", _ip_blocked)
+
+    service.run_background_transcript_sync()
+    service.run_background_transcript_sync()
+
+    assert cache_repo.get_transcript_sync_attempts(video_id="vid_block_1") == 1
+    assert cache_repo.get_transcript_sync_attempts(video_id="vid_block_2") == 0
+    pause_until = cache_repo.get_cache_state_value("transcripts_background_ip_block_paused_until")
+    assert pause_until is not None
+    assert cache_repo.get_cache_state_value("transcripts_background_ip_block_streak") == "1"
+
+
+def test_oauth_recent_probe_rate_limit_sets_pause_and_skips_api_while_paused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+    )
+
+    calls: dict[str, int] = {"build_client": 0}
+
+    def _failing_build_client(_data_dir: Path) -> object:
+        calls["build_client"] += 1
+        raise RuntimeError("quotaExceeded")
+
+    monkeypatch.setattr(
+        "backend.app.services.youtube_service._build_youtube_client",
+        _failing_build_client,
+    )
+
+    with pytest.raises(YouTubeRateLimitedError) as first_exc:
+        service.list_recent_cached_only_with_metadata(
+            limit=5,
+            query="missing term",
+            probe_recent_on_miss=True,
+            recent_probe_pages=1,
+        )
+    assert first_exc.value.scope == "youtube_data_api_recent_probe"
+    assert first_exc.value.retry_after_seconds >= 900
+    assert calls["build_client"] == 1
+    assert (
+        cache_repo.get_cache_state_value("likes_recent_probe_rate_limit_paused_until") is not None
+    )
+    assert cache_repo.get_cache_state_value("likes_recent_probe_rate_limit_streak") == "1"
+
+    with pytest.raises(YouTubeRateLimitedError) as second_exc:
+        service.list_recent_cached_only_with_metadata(
+            limit=5,
+            query="missing term",
+            probe_recent_on_miss=True,
+            recent_probe_pages=1,
+        )
+    assert second_exc.value.scope == "youtube_data_api_recent_probe"
+    assert calls["build_client"] == 1

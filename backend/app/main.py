@@ -22,9 +22,11 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
     scheduler: SchedulerService | None = None
 
     if settings.scheduler_enabled:
+        dispatcher = get_dispatcher()
         scheduler = SchedulerService(
-            dispatcher=get_dispatcher(),
+            dispatcher=dispatcher,
             poll_interval_seconds=settings.scheduler_poll_interval_seconds,
+            youtube_service=dispatcher.youtube_service,
         )
         scheduler.start()
 

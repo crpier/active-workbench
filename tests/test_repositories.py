@@ -168,3 +168,56 @@ def test_youtube_cache_repository_transcript_ttl(tmp_path: Path) -> None:
 
     stale = cache_repo.get_fresh_transcript(video_id="vid_3", ttl_seconds=0)
     assert stale is None
+
+
+def test_youtube_cache_repository_transcript_sync_candidate_and_status(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="recent_1",
+                title="Recent One",
+                liked_at="2026-02-10T12:00:00+00:00",
+            ),
+            CachedLikeVideo(
+                video_id="recent_2",
+                title="Recent Two",
+                liked_at="2026-02-10T11:00:00+00:00",
+            ),
+        ],
+        max_items=100,
+    )
+    cache_repo.upsert_transcript(
+        video_id="recent_1",
+        title="Recent One",
+        transcript="already cached",
+        source="youtube_captions",
+        segments=[],
+    )
+
+    candidate = cache_repo.get_next_transcript_candidate(
+        recent_limit=100,
+        not_before=datetime.now(UTC),
+    )
+    assert candidate is not None
+    assert candidate.video_id == "recent_2"
+
+    next_attempt = datetime.now(UTC) + timedelta(minutes=30)
+    cache_repo.mark_transcript_sync_failure(
+        video_id="recent_2",
+        attempts=1,
+        next_attempt_at=next_attempt,
+        error="temporary failure",
+    )
+
+    blocked = cache_repo.get_next_transcript_candidate(
+        recent_limit=100,
+        not_before=datetime.now(UTC),
+    )
+    assert blocked is None
+
+    cache_repo.mark_transcript_sync_success(video_id="recent_2")
+    assert cache_repo.get_transcript_sync_attempts(video_id="recent_2") == 2

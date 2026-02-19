@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -31,14 +32,23 @@ from backend.app.services.content_analysis import (
     extract_summary_from_text,
     prioritize_bucket_list_items,
 )
-from backend.app.services.youtube_service import YouTubeService, YouTubeServiceError
+from backend.app.services.youtube_service import (
+    YouTubeRateLimitedError,
+    YouTubeService,
+    YouTubeServiceError,
+)
 
 TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "youtube.likes.list_recent": (
-        "List recently liked YouTube videos (treat likes as watched-video signal). "
-        "Use payload.query or payload.topic to filter by topic."
+        "List recently liked YouTube videos from local cache populated by background sync. "
+        "Use payload.query/topic and optional payload.time_scope/cache_miss_policy hints."
     ),
-    "youtube.transcript.get": "Retrieve transcript for a YouTube video.",
+    "youtube.likes.search_recent_content": (
+        "Search recent liked videos by content (title/description/transcript) in a recent window."
+    ),
+    "youtube.transcript.get": (
+        "Retrieve transcript for a YouTube video (cache-first, fetch fallback)."
+    ),
     "vault.recipe.save": "Persist a recipe note in markdown.",
     "vault.note.save": "Persist a generic knowledge note in markdown.",
     "vault.bucket_list.add": "Add an item to the bucket list.",
@@ -99,6 +109,10 @@ class ToolDispatcher:
             for name, description in TOOL_DESCRIPTIONS.items()
         ]
 
+    @property
+    def youtube_service(self) -> YouTubeService:
+        return self._youtube_service
+
     def run_due_jobs(self) -> None:
         due_jobs = self._jobs_repository.list_due_jobs(datetime.now(UTC))
         for job in due_jobs:
@@ -123,6 +137,8 @@ class ToolDispatcher:
     def _execute_tool(self, tool_name: ToolName, request: ToolRequest) -> ToolResponse:
         if tool_name == "youtube.likes.list_recent":
             return self._handle_youtube_likes(request)
+        if tool_name == "youtube.likes.search_recent_content":
+            return self._handle_youtube_likes_search_recent_content(request)
         if tool_name == "youtube.transcript.get":
             return self._handle_youtube_transcript(request)
         if tool_name == "vault.recipe.save":
@@ -206,11 +222,45 @@ class ToolDispatcher:
     def _handle_youtube_likes(self, request: ToolRequest) -> ToolResponse:
         limit = _int_or_default(request.payload.get("limit"), default=5)
         query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        time_scope = _normalize_time_scope(request.payload.get("time_scope"))
+        cache_miss_policy = _normalize_cache_miss_policy(request.payload.get("cache_miss_policy"))
+        recent_probe_pages = max(
+            1, min(3, _int_or_default(request.payload.get("recent_probe_pages"), default=1))
+        )
+
+        if cache_miss_policy is not None:
+            probe_recent_on_miss = cache_miss_policy == "probe_recent"
+            resolved_time_scope = time_scope
+            resolved_cache_miss_policy = cache_miss_policy
+        else:
+            inferred_time_scope = (
+                time_scope if time_scope != "auto" else _infer_query_time_scope(query)
+            )
+            resolved_time_scope = inferred_time_scope
+            resolved_cache_miss_policy = (
+                "probe_recent" if inferred_time_scope == "recent" else "none"
+            )
+            probe_recent_on_miss = resolved_cache_miss_policy == "probe_recent"
 
         try:
-            likes_result = self._youtube_service.list_recent_with_metadata(
+            likes_result = self._youtube_service.list_recent_cached_only_with_metadata(
                 limit=max(1, min(25, limit)),
                 query=query,
+                probe_recent_on_miss=probe_recent_on_miss,
+                recent_probe_pages=recent_probe_pages,
+            )
+        except YouTubeRateLimitedError as exc:
+            error_response = _youtube_rate_limited_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                message=str(exc),
+                scope=exc.scope,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
             )
         except YouTubeServiceError as exc:
             error_response = _tool_error_response(
@@ -222,7 +272,7 @@ class ToolDispatcher:
             return self._attach_quota_snapshot(
                 error_response,
                 tool_name=request.tool,
-                estimated_units_this_call=self._estimate_likes_units(has_query=query is not None),
+                estimated_units_this_call=0,
             )
 
         payload_videos = [
@@ -232,6 +282,27 @@ class ToolDispatcher:
                 "published_at": item.published_at,
                 "liked_at": item.liked_at,
                 "video_published_at": item.video_published_at,
+                "description": item.description,
+                "channel_id": item.channel_id,
+                "channel_title": item.channel_title,
+                "duration_seconds": item.duration_seconds,
+                "category_id": item.category_id,
+                "default_language": item.default_language,
+                "default_audio_language": item.default_audio_language,
+                "caption_available": item.caption_available,
+                "privacy_status": item.privacy_status,
+                "licensed_content": item.licensed_content,
+                "made_for_kids": item.made_for_kids,
+                "live_broadcast_content": item.live_broadcast_content,
+                "definition": item.definition,
+                "dimension": item.dimension,
+                "thumbnails": item.thumbnails or {},
+                "topic_categories": list(item.topic_categories),
+                "statistics_view_count": item.statistics_view_count,
+                "statistics_like_count": item.statistics_like_count,
+                "statistics_comment_count": item.statistics_comment_count,
+                "statistics_fetched_at": item.statistics_fetched_at,
+                "tags": list(item.tags),
             }
             for item in likes_result.videos
         ]
@@ -249,6 +320,18 @@ class ToolDispatcher:
                 "cache": {
                     "hit": likes_result.cache_hit,
                     "refreshed": likes_result.refreshed,
+                    "miss": likes_result.cache_miss,
+                    "time_scope": resolved_time_scope,
+                    "miss_policy": resolved_cache_miss_policy,
+                    "miss_policy_applied": likes_result.cache_miss
+                    and likes_result.recent_probe_applied,
+                    "recent_probe": {
+                        "applied": likes_result.recent_probe_applied,
+                        "pages_requested": recent_probe_pages
+                        if resolved_cache_miss_policy == "probe_recent"
+                        else 0,
+                        "pages_used": likes_result.recent_probe_pages_used,
+                    },
                 },
             },
             provenance=provenance,
@@ -285,7 +368,10 @@ class ToolDispatcher:
 
         if video_id is None:
             try:
-                recent_result = self._youtube_service.list_recent_with_metadata(limit=1, query=None)
+                recent_result = self._youtube_service.list_recent_cached_only_with_metadata(
+                    limit=1,
+                    query=None,
+                )
             except YouTubeServiceError as exc:
                 error_response = _tool_error_response(
                     request_id=request.request_id,
@@ -296,7 +382,7 @@ class ToolDispatcher:
                 return self._attach_quota_snapshot(
                     error_response,
                     tool_name=request.tool,
-                    estimated_units_this_call=self._estimate_likes_units(has_query=False),
+                    estimated_units_this_call=0,
                 )
 
             recent = recent_result.videos
@@ -356,6 +442,114 @@ class ToolDispatcher:
             response,
             tool_name=request.tool,
             estimated_units_this_call=likes_units_used + transcript_result.estimated_api_units,
+        )
+
+    def _handle_youtube_likes_search_recent_content(self, request: ToolRequest) -> ToolResponse:
+        query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        if query is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.query is required",
+            )
+
+        window_days = max(
+            1, min(30, _int_or_default(request.payload.get("window_days"), default=7))
+        )
+        limit = max(1, min(25, _int_or_default(request.payload.get("limit"), default=5)))
+        recent_probe_pages = max(
+            1, min(3, _int_or_default(request.payload.get("recent_probe_pages"), default=2))
+        )
+        cache_miss_policy = (
+            _normalize_cache_miss_policy(request.payload.get("cache_miss_policy")) or "probe_recent"
+        )
+        probe_recent_on_miss = cache_miss_policy == "probe_recent"
+
+        try:
+            search_result = self._youtube_service.search_recent_content_with_metadata(
+                query=query,
+                window_days=window_days,
+                limit=limit,
+                probe_recent_on_miss=probe_recent_on_miss,
+                recent_probe_pages=recent_probe_pages,
+            )
+        except YouTubeRateLimitedError as exc:
+            error_response = _youtube_rate_limited_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                message=str(exc),
+                scope=exc.scope,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+        except YouTubeServiceError as exc:
+            error_response = _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="youtube_unavailable",
+                message=str(exc),
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+
+        matches = [
+            {
+                "video_id": match.video.video_id,
+                "title": match.video.title,
+                "liked_at": match.video.liked_at,
+                "video_published_at": match.video.video_published_at,
+                "score": match.score,
+                "matched_in": list(match.matched_in),
+                "snippet": match.snippet,
+            }
+            for match in search_result.matches
+        ]
+        response = ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "query": query,
+                "window_days": window_days,
+                "matches": matches,
+                "coverage": {
+                    "recent_videos_count": search_result.recent_videos_count,
+                    "transcripts_available_count": search_result.transcripts_available_count,
+                    "transcript_coverage_percent": search_result.transcript_coverage_percent,
+                },
+                "cache": {
+                    "miss": search_result.cache_miss,
+                    "miss_policy": cache_miss_policy,
+                    "miss_policy_applied": search_result.cache_miss
+                    and search_result.recent_probe_applied,
+                    "recent_probe": {
+                        "applied": search_result.recent_probe_applied,
+                        "pages_requested": recent_probe_pages
+                        if cache_miss_policy == "probe_recent"
+                        else 0,
+                        "pages_used": search_result.recent_probe_pages_used,
+                    },
+                },
+            },
+            provenance=[
+                ProvenanceRef(type="youtube_video", id=match.video.video_id)
+                for match in search_result.matches
+            ],
+            error=None,
+        )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=search_result.estimated_api_units,
         )
 
     def _attach_quota_snapshot(
@@ -810,12 +1004,44 @@ def _tool_error_response(
     tool: ToolName,
     code: str,
     message: str,
+    retryable: bool = False,
+    result_updates: dict[str, Any] | None = None,
 ) -> ToolResponse:
+    result: dict[str, Any] = {"tool": tool, "status": "failed"}
+    if result_updates:
+        result.update(result_updates)
     return ToolResponse(
         ok=False,
         request_id=request_id,
-        result={"tool": tool, "status": "failed"},
-        error=ToolError(code=code, message=message, retryable=False),
+        result=result,
+        error=ToolError(code=code, message=message, retryable=retryable),
+    )
+
+
+def _youtube_rate_limited_error_response(
+    *,
+    request_id: UUID,
+    tool: ToolName,
+    message: str,
+    scope: str,
+    retry_after_seconds: int,
+) -> ToolResponse:
+    now = datetime.now(UTC)
+    retry_at = now + timedelta(seconds=max(1, retry_after_seconds))
+    return _tool_error_response(
+        request_id=request_id,
+        tool=tool,
+        code="youtube_rate_limited",
+        message=message,
+        retryable=True,
+        result_updates={
+            "rate_limit": {
+                "scope": scope,
+                "retry_after_seconds": max(1, retry_after_seconds),
+                "retry_after_utc": retry_at.isoformat(),
+                "action": "wait_and_retry",
+            }
+        },
     )
 
 
@@ -826,6 +1052,34 @@ def _payload_str(payload: dict[str, Any], key: str) -> str | None:
         if stripped:
             return stripped
     return None
+
+
+def _normalize_time_scope(value: object) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"recent", "historical", "auto"}:
+            return normalized
+    return "auto"
+
+
+def _normalize_cache_miss_policy(value: object) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"probe_recent", "none"}:
+            return normalized
+    return None
+
+
+def _infer_query_time_scope(query: str | None) -> str:
+    if query is None:
+        return "recent"
+
+    tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+    if tokens & {"recent", "recently", "latest", "new", "just", "last"}:
+        return "recent"
+    if tokens & {"ago", "before", "older", "old", "past", "historical"}:
+        return "historical"
+    return "recent"
 
 
 def _extract_youtube_video_id(value: str | None) -> str | None:

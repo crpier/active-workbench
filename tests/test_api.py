@@ -11,6 +11,7 @@ from backend.app.models.tool_contracts import WRITE_TOOLS, ToolName
 
 ALL_TOOLS: tuple[ToolName, ...] = (
     "youtube.likes.list_recent",
+    "youtube.likes.search_recent_content",
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",
@@ -63,7 +64,8 @@ def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:
 
 def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
     for tool in ALL_TOOLS:
-        response = client.post(f"/tools/{tool}", json=_request_body(tool))
+        payload = {"query": "soup"} if tool == "youtube.likes.search_recent_content" else None
+        response = client.post(f"/tools/{tool}", json=_request_body(tool, payload=payload))
         assert response.status_code == 200, tool
         body = response.json()
         assert body["result"]["tool"] == tool
@@ -91,6 +93,9 @@ def test_recipe_workflow_end_to_end(client: TestClient) -> None:
     videos = history_result["videos"]
     assert videos
     assert videos[0]["liked_at"]
+    assert "description" in videos[0]
+    assert "channel_title" in videos[0]
+    assert "tags" in videos[0]
     video_id = str(videos[0]["video_id"])
 
     transcript = client.post(
@@ -213,6 +218,57 @@ def test_transcript_rejects_invalid_video_identifier(client: TestClient) -> None
     body = response.json()
     assert body["ok"] is False
     assert body["error"]["code"] == "invalid_input"
+
+
+def test_youtube_likes_cache_miss_policy_from_time_scope(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.likes.list_recent",
+        json=_request_body(
+            "youtube.likes.list_recent",
+            payload={"query": "a while ago I saw a quantum cryptography lecture", "limit": 5},
+        ),
+    )
+    assert response.status_code == 200
+    cache = response.json()["result"]["cache"]
+    assert cache["miss"] is True
+    assert cache["time_scope"] == "historical"
+    assert cache["miss_policy"] == "none"
+    assert cache["recent_probe"]["pages_requested"] == 0
+
+
+def test_youtube_likes_cache_miss_policy_explicit_probe(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.likes.list_recent",
+        json=_request_body(
+            "youtube.likes.list_recent",
+            payload={
+                "query": "random missing topic",
+                "time_scope": "recent",
+                "cache_miss_policy": "probe_recent",
+                "recent_probe_pages": 2,
+            },
+        ),
+    )
+    assert response.status_code == 200
+    cache = response.json()["result"]["cache"]
+    assert cache["time_scope"] == "recent"
+    assert cache["miss_policy"] == "probe_recent"
+    assert cache["recent_probe"]["pages_requested"] == 2
+
+
+def test_youtube_likes_search_recent_content_returns_matches(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.likes.search_recent_content",
+        json=_request_body(
+            "youtube.likes.search_recent_content",
+            payload={"query": "soup", "window_days": 30, "limit": 5},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["matches"]
+    assert body["coverage"]["recent_videos_count"] >= 1
+    assert "matched_in" in body["matches"][0]
 
 
 def test_bucket_list_and_prioritization(client: TestClient) -> None:

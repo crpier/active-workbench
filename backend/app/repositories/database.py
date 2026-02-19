@@ -83,7 +83,25 @@ CREATE TABLE IF NOT EXISTS youtube_likes_cache (
     liked_at TEXT NOT NULL,
     video_published_at TEXT NULL,
     description TEXT NULL,
+    channel_id TEXT NULL,
     channel_title TEXT NULL,
+    duration_seconds INTEGER NULL,
+    category_id TEXT NULL,
+    default_language TEXT NULL,
+    default_audio_language TEXT NULL,
+    caption_available INTEGER NULL,
+    privacy_status TEXT NULL,
+    licensed_content INTEGER NULL,
+    made_for_kids INTEGER NULL,
+    live_broadcast_content TEXT NULL,
+    definition TEXT NULL,
+    dimension TEXT NULL,
+    thumbnails_json TEXT NOT NULL,
+    topic_categories_json TEXT NOT NULL,
+    statistics_view_count INTEGER NULL,
+    statistics_like_count INTEGER NULL,
+    statistics_comment_count INTEGER NULL,
+    statistics_fetched_at TEXT NULL,
     tags_json TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
@@ -99,6 +117,18 @@ CREATE TABLE IF NOT EXISTS youtube_transcript_cache (
     segments_json TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS youtube_transcript_sync_state (
+    video_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    last_attempt_at TEXT NOT NULL,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_transcript_sync_state_next_attempt
+ON youtube_transcript_sync_state(next_attempt_at, status);
 """
 
 

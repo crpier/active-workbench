@@ -40,7 +40,31 @@ def get_dispatcher() -> ToolDispatcher:
             likes_cache_ttl_seconds=settings.youtube_likes_cache_ttl_seconds,
             likes_recent_guard_seconds=settings.youtube_likes_recent_guard_seconds,
             likes_cache_max_items=settings.youtube_likes_cache_max_items,
+            likes_background_sync_enabled=settings.youtube_background_sync_enabled,
+            likes_background_min_interval_seconds=settings.youtube_background_min_interval_seconds,
+            likes_background_hot_pages=settings.youtube_background_hot_pages,
+            likes_background_backfill_pages_per_run=(
+                settings.youtube_background_backfill_pages_per_run
+            ),
+            likes_background_page_size=settings.youtube_background_page_size,
+            likes_background_target_items=settings.youtube_background_target_items,
             transcript_cache_ttl_seconds=settings.youtube_transcript_cache_ttl_seconds,
+            transcript_background_sync_enabled=(
+                settings.youtube_transcript_background_sync_enabled
+            ),
+            transcript_background_min_interval_seconds=(
+                settings.youtube_transcript_background_min_interval_seconds
+            ),
+            transcript_background_recent_limit=settings.youtube_transcript_background_recent_limit,
+            transcript_background_backoff_base_seconds=(
+                settings.youtube_transcript_background_backoff_base_seconds
+            ),
+            transcript_background_backoff_max_seconds=(
+                settings.youtube_transcript_background_backoff_max_seconds
+            ),
+            transcript_background_ip_block_pause_seconds=(
+                settings.youtube_transcript_background_ip_block_pause_seconds
+            ),
         ),
         default_timezone=settings.default_timezone,
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,

@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
 from backend.app.services.tool_dispatcher import ToolDispatcher
+from backend.app.services.youtube_service import YouTubeService
+
+LOGGER = logging.getLogger("active_workbench.scheduler")
 
 
 class SchedulerService:
-    def __init__(self, dispatcher: ToolDispatcher, poll_interval_seconds: int) -> None:
+    def __init__(
+        self,
+        dispatcher: ToolDispatcher,
+        poll_interval_seconds: int,
+        *,
+        youtube_service: YouTubeService | None = None,
+    ) -> None:
         self._dispatcher = dispatcher
         self._poll_interval_seconds = max(1, poll_interval_seconds)
+        self._youtube_service = youtube_service
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -31,5 +42,11 @@ class SchedulerService:
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             self._dispatcher.run_due_jobs()
+            if self._youtube_service is not None:
+                try:
+                    self._youtube_service.run_background_likes_sync()
+                    self._youtube_service.run_background_transcript_sync()
+                except Exception:
+                    LOGGER.warning("youtube background sync failed", exc_info=True)
             self._stop_event.wait(self._poll_interval_seconds)
             time.sleep(0)

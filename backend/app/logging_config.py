@@ -31,6 +31,11 @@ def configure_application_logging(settings: AppSettings) -> Path:
     )
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(console_handler)
+
     logger.info("logging configured level=%s path=%s", settings.log_level.upper(), log_file)
     return log_file
 

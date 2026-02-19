@@ -19,7 +19,19 @@ class AppSettings:
     youtube_likes_cache_ttl_seconds: int
     youtube_likes_recent_guard_seconds: int
     youtube_likes_cache_max_items: int
+    youtube_background_sync_enabled: bool
+    youtube_background_min_interval_seconds: int
+    youtube_background_hot_pages: int
+    youtube_background_backfill_pages_per_run: int
+    youtube_background_page_size: int
+    youtube_background_target_items: int
     youtube_transcript_cache_ttl_seconds: int
+    youtube_transcript_background_sync_enabled: bool
+    youtube_transcript_background_min_interval_seconds: int
+    youtube_transcript_background_recent_limit: int
+    youtube_transcript_background_backoff_base_seconds: int
+    youtube_transcript_background_backoff_max_seconds: int
+    youtube_transcript_background_ip_block_pause_seconds: int
     log_dir: Path
     log_level: str
     log_max_bytes: int
@@ -68,8 +80,46 @@ def load_settings() -> AppSettings:
     youtube_likes_cache_max_items = int(
         os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS", "500")
     )
+    youtube_background_sync_enabled = _env_bool(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_SYNC_ENABLED"),
+        default=True,
+    )
+    youtube_background_min_interval_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_MIN_INTERVAL_SECONDS", "120")
+    )
+    youtube_background_hot_pages = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_HOT_PAGES", "2")
+    )
+    youtube_background_backfill_pages_per_run = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_BACKFILL_PAGES_PER_RUN", "1")
+    )
+    youtube_background_page_size = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_PAGE_SIZE", "50")
+    )
+    youtube_background_target_items = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_TARGET_ITEMS", "1000")
+    )
     youtube_transcript_cache_ttl_seconds = int(
         os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS", "86400")
+    )
+    youtube_transcript_background_sync_enabled = _env_bool(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_SYNC_ENABLED"),
+        default=True,
+    )
+    youtube_transcript_background_min_interval_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS", "20")
+    )
+    youtube_transcript_background_recent_limit = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_RECENT_LIMIT", "1000")
+    )
+    youtube_transcript_background_backoff_base_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_BACKOFF_BASE_SECONDS", "300")
+    )
+    youtube_transcript_background_backoff_max_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_BACKOFF_MAX_SECONDS", "86400")
+    )
+    youtube_transcript_background_ip_block_pause_seconds = int(
+        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_IP_BLOCK_PAUSE_SECONDS", "7200")
     )
     log_dir = Path(os.getenv("ACTIVE_WORKBENCH_LOG_DIR", str(data_dir / "logs"))).resolve()
     log_level = os.getenv("ACTIVE_WORKBENCH_LOG_LEVEL", "INFO")
@@ -89,7 +139,27 @@ def load_settings() -> AppSettings:
         youtube_likes_cache_ttl_seconds=youtube_likes_cache_ttl_seconds,
         youtube_likes_recent_guard_seconds=youtube_likes_recent_guard_seconds,
         youtube_likes_cache_max_items=youtube_likes_cache_max_items,
+        youtube_background_sync_enabled=youtube_background_sync_enabled,
+        youtube_background_min_interval_seconds=youtube_background_min_interval_seconds,
+        youtube_background_hot_pages=youtube_background_hot_pages,
+        youtube_background_backfill_pages_per_run=youtube_background_backfill_pages_per_run,
+        youtube_background_page_size=youtube_background_page_size,
+        youtube_background_target_items=youtube_background_target_items,
         youtube_transcript_cache_ttl_seconds=youtube_transcript_cache_ttl_seconds,
+        youtube_transcript_background_sync_enabled=youtube_transcript_background_sync_enabled,
+        youtube_transcript_background_min_interval_seconds=(
+            youtube_transcript_background_min_interval_seconds
+        ),
+        youtube_transcript_background_recent_limit=youtube_transcript_background_recent_limit,
+        youtube_transcript_background_backoff_base_seconds=(
+            youtube_transcript_background_backoff_base_seconds
+        ),
+        youtube_transcript_background_backoff_max_seconds=(
+            youtube_transcript_background_backoff_max_seconds
+        ),
+        youtube_transcript_background_ip_block_pause_seconds=(
+            youtube_transcript_background_ip_block_pause_seconds
+        ),
         log_dir=log_dir,
         log_level=log_level,
         log_max_bytes=log_max_bytes,

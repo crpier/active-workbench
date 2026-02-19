@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ToolName = Literal[
     "youtube.likes.list_recent",
+    "youtube.likes.search_recent_content",
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",

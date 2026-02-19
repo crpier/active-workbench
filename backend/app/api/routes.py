@@ -54,6 +54,19 @@ def youtube_likes_list_recent(
 
 
 @router.post(
+    "/tools/youtube.likes.search_recent_content",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="youtube_likes_search_recent_content",
+)
+def youtube_likes_search_recent_content(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.likes.search_recent_content", request, dispatcher)
+
+
+@router.post(
     "/tools/youtube.transcript.get",
     response_model=ToolResponse,
     tags=["tools"],

@@ -48,6 +48,8 @@ def test_memory_repository_lists_active_entries(tmp_path: Path) -> None:
 
 def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeDispatcher:
+        youtube_service = None
+
         def run_due_jobs(self) -> None:
             return None
 
@@ -55,9 +57,16 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         started = False
         stopped = False
 
-        def __init__(self, dispatcher: FakeDispatcher, poll_interval_seconds: int) -> None:
+        def __init__(
+            self,
+            dispatcher: FakeDispatcher,
+            poll_interval_seconds: int,
+            *,
+            youtube_service: object | None = None,
+        ) -> None:
             _ = dispatcher
             _ = poll_interval_seconds
+            _ = youtube_service
 
         def start(self) -> None:
             FakeScheduler.started = True
@@ -78,7 +87,19 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         youtube_likes_cache_ttl_seconds=600,
         youtube_likes_recent_guard_seconds=45,
         youtube_likes_cache_max_items=500,
+        youtube_background_sync_enabled=True,
+        youtube_background_min_interval_seconds=120,
+        youtube_background_hot_pages=2,
+        youtube_background_backfill_pages_per_run=1,
+        youtube_background_page_size=50,
+        youtube_background_target_items=1000,
         youtube_transcript_cache_ttl_seconds=86400,
+        youtube_transcript_background_sync_enabled=True,
+        youtube_transcript_background_min_interval_seconds=20,
+        youtube_transcript_background_recent_limit=1000,
+        youtube_transcript_background_backoff_base_seconds=300,
+        youtube_transcript_background_backoff_max_seconds=86400,
+        youtube_transcript_background_ip_block_pause_seconds=3600,
         log_dir=Path("/tmp/data/logs"),
         log_level="INFO",
         log_max_bytes=10 * 1024 * 1024,
@@ -112,7 +133,19 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
         youtube_likes_cache_ttl_seconds=600,
         youtube_likes_recent_guard_seconds=45,
         youtube_likes_cache_max_items=500,
+        youtube_background_sync_enabled=True,
+        youtube_background_min_interval_seconds=120,
+        youtube_background_hot_pages=2,
+        youtube_background_backfill_pages_per_run=1,
+        youtube_background_page_size=50,
+        youtube_background_target_items=1000,
         youtube_transcript_cache_ttl_seconds=86400,
+        youtube_transcript_background_sync_enabled=True,
+        youtube_transcript_background_min_interval_seconds=20,
+        youtube_transcript_background_recent_limit=1000,
+        youtube_transcript_background_backoff_base_seconds=300,
+        youtube_transcript_background_backoff_max_seconds=86400,
+        youtube_transcript_background_ip_block_pause_seconds=3600,
         log_dir=tmp_path / "logs",
         log_level="INFO",
         log_max_bytes=1024 * 1024,
