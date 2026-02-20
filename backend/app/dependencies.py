@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from backend.app.config import AppSettings, load_settings
 from backend.app.repositories.audit_repository import AuditRepository
+from backend.app.repositories.bucket_repository import BucketRepository
 from backend.app.repositories.database import Database
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.jobs_repository import JobsRepository
@@ -11,6 +12,7 @@ from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import VaultRepository
 from backend.app.repositories.youtube_cache_repository import YouTubeCacheRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
+from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeService
 
@@ -32,6 +34,12 @@ def get_dispatcher() -> ToolDispatcher:
         memory_repository=MemoryRepository(database),
         jobs_repository=JobsRepository(database),
         vault_repository=VaultRepository(settings.vault_dir),
+        bucket_repository=BucketRepository(database),
+        bucket_metadata_service=BucketMetadataService(
+            enrichment_enabled=settings.bucket_enrichment_enabled,
+            http_timeout_seconds=settings.bucket_enrichment_http_timeout_seconds,
+            omdb_api_key=settings.bucket_omdb_api_key,
+        ),
         youtube_quota_repository=YouTubeQuotaRepository(database),
         youtube_service=YouTubeService(
             settings.youtube_mode,
@@ -65,6 +73,14 @@ def get_dispatcher() -> ToolDispatcher:
             transcript_background_ip_block_pause_seconds=(
                 settings.youtube_transcript_background_ip_block_pause_seconds
             ),
+            oauth_token_path=settings.youtube_token_path,
+            oauth_client_secret_path=settings.youtube_client_secret_path,
+            supadata_api_key=settings.supadata_api_key,
+            supadata_base_url=settings.supadata_base_url,
+            supadata_transcript_mode=settings.supadata_transcript_mode,
+            supadata_http_timeout_seconds=settings.supadata_http_timeout_seconds,
+            supadata_poll_interval_seconds=settings.supadata_poll_interval_seconds,
+            supadata_poll_max_attempts=settings.supadata_poll_max_attempts,
         ),
         default_timezone=settings.default_timezone,
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,

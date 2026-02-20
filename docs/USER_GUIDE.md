@@ -1,0 +1,118 @@
+# Active Workbench - User Guide
+
+## What You Can Do Today
+
+Active Workbench currently supports two user-facing capabilities:
+1. Work with your recently liked YouTube videos.
+2. Maintain a structured bucket list.
+
+## How The System Behaves (User View)
+
+When you interact through OpenCode:
+
+1. You ask in natural language.
+2. The assistant chooses one of the ready tools.
+3. The backend validates input and runs the operation.
+4. Results are returned in a consistent envelope:
+   - `ok`
+   - `result`
+   - `error` (if any)
+   - `provenance`
+   - `quota` (for YouTube-related tools)
+
+Caching behavior:
+- Liked-video results are cached.
+- Transcript results are cached.
+- Cache metadata is included in responses (`result.cache`).
+
+## YouTube Workflow
+
+### 1) Find recent liked videos
+
+Use:
+- `youtube.likes.list_recent`
+
+What it does:
+- Reads liked videos from your YouTube account (`myRating=like`) in OAuth mode.
+- Supports topic/query filtering.
+- Returns metadata such as title, channel, `liked_at`, and `video_published_at`.
+
+### 2) Search recent liked content
+
+Use:
+- `youtube.likes.search_recent_content`
+
+What it does:
+- Searches recent liked videos by title, description, and cached transcript text.
+- Returns ranked matches with snippets.
+
+### 3) Fetch transcript
+
+Use:
+- `youtube.transcript.get`
+
+What it does:
+- Retrieves transcript for a YouTube video ID or URL.
+- In OAuth mode, transcript retrieval is performed through Supadata.
+- Returns transcript text and segments when available.
+
+## Bucket List Workflow
+
+### Legacy markdown-compatible bucket list
+
+Use:
+- `vault.bucket_list.add`
+- `vault.bucket_list.prioritize`
+
+What it does:
+- Adds items through the vault-compatible flow.
+- Produces a prioritization view.
+
+### Structured bucket list
+
+Use:
+- `bucket.item.add`
+- `bucket.item.update`
+- `bucket.item.complete`
+- `bucket.item.search`
+- `bucket.item.recommend`
+- `bucket.health.report`
+
+What it does:
+- Keeps items as structured records in SQLite.
+- Supports filtering, recommendations, and health diagnostics.
+
+## OpenCode Tool Names
+
+In OpenCode, these are exposed as:
+
+- `active_workbench_youtube_likes_list_recent`
+- `active_workbench_youtube_likes_search_recent_content`
+- `active_workbench_youtube_transcript_get`
+- `active_workbench_vault_bucket_list_add`
+- `active_workbench_vault_bucket_list_prioritize`
+- `active_workbench_bucket_item_add`
+- `active_workbench_bucket_item_update`
+- `active_workbench_bucket_item_complete`
+- `active_workbench_bucket_item_search`
+- `active_workbench_bucket_item_recommend`
+- `active_workbench_bucket_health_report`
+
+## Practical Prompt Examples
+
+- "Show my last 5 liked videos about Rust performance."
+- "Search recent liked videos for material on microservices trade-offs."
+- "Get transcript for https://www.youtube.com/watch?v=<video_id>."
+- "Add 'Watch Andor' to my bucket list."
+- "Recommend one bucket item I can do in under 45 minutes."
+- "Mark item <id> as completed."
+
+## Required User Setup For YouTube Transcripts
+
+For OAuth mode with transcripts:
+1. Complete YouTube OAuth setup (`just youtube-auth` or `just youtube-auth-secret ...`).
+2. Set Supadata API key (`ACTIVE_WORKBENCH_SUPADATA_API_KEY`).
+
+See:
+- `docs/QUICKSTART.md`
+- `docs/TROUBLESHOOTING.md`

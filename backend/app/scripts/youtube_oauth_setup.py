@@ -8,7 +8,6 @@ from backend.app.config import load_settings
 from backend.app.services.youtube_service import (
     YouTubeService,
     YouTubeServiceError,
-    resolve_oauth_paths,
 )
 
 
@@ -53,16 +52,22 @@ def copy_client_secret_if_needed(source_path: Path, destination_path: Path) -> N
 
 def main() -> None:
     args = _parse_args()
-    settings = load_settings()
+    settings = load_settings(validate_oauth_secrets=False)
 
-    token_path, secret_path = resolve_oauth_paths(settings.data_dir)
+    token_path = settings.youtube_token_path
+    secret_path = settings.youtube_client_secret_path
     if args.client_secret is not None:
         copy_client_secret_if_needed(args.client_secret, secret_path)
         print(f"Client secret ready at: {secret_path}")
     else:
         print(f"Expecting client secret at: {secret_path}")
 
-    service = YouTubeService(mode="oauth", data_dir=settings.data_dir)
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=settings.data_dir,
+        oauth_token_path=settings.youtube_token_path,
+        oauth_client_secret_path=settings.youtube_client_secret_path,
+    )
 
     videos = service.list_recent(limit=max(1, min(10, args.limit)), query=args.query)
 

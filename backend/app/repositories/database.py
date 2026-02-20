@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
+
+BUCKET_ITEMS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS bucket_items (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    normalized_title TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    status TEXT NOT NULL,
+    canonical_id TEXT NULL,
+    metadata_json TEXT NOT NULL,
+    source_refs_json TEXT NOT NULL,
+    added_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT NULL,
+    last_recommended_at TEXT NULL,
+    legacy_path TEXT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bucket_items_status_domain
+ON bucket_items(status, domain);
+
+CREATE INDEX IF NOT EXISTS idx_bucket_items_status_added
+ON bucket_items(status, added_at DESC);
+"""
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -151,3 +177,174 @@ class Database:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA_SQL)
+            _maybe_migrate_bucket_items_schema(conn)
+            conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+
+
+def _maybe_migrate_bucket_items_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "bucket_items")
+    if not columns:
+        return
+
+    # Old schema carried many first-class media fields.
+    if "notes" not in columns:
+        return
+
+    rows = conn.execute("SELECT * FROM bucket_items").fetchall()
+    conn.execute("ALTER TABLE bucket_items RENAME TO bucket_items_legacy")
+    conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+
+    for row in rows:
+        metadata = _load_object_dict(row["metadata_json"])
+        source_refs_json = _ensure_json_list_text(row["source_refs_json"])
+
+        notes = _as_text_or_none(row["notes"])
+        if notes is not None:
+            metadata["notes"] = notes
+        year = _as_int_or_none(row["year"])
+        if year is not None:
+            metadata["year"] = year
+        duration_minutes = _as_int_or_none(row["duration_minutes"])
+        if duration_minutes is not None:
+            metadata["duration_minutes"] = duration_minutes
+        rating = _as_float_or_none(row["rating"])
+        if rating is not None:
+            metadata["rating"] = rating
+        popularity = _as_float_or_none(row["popularity"])
+        if popularity is not None:
+            metadata["popularity"] = popularity
+
+        genres = _load_str_list(row["genres_json"])
+        if genres:
+            metadata["genres"] = genres
+        tags = _load_str_list(row["tags_json"])
+        if tags:
+            metadata["tags"] = tags
+        providers = _load_str_list(row["providers_json"])
+        if providers:
+            metadata["providers"] = providers
+
+        external_url = _as_text_or_none(row["external_url"])
+        if external_url is not None:
+            metadata["external_url"] = external_url
+        confidence = _as_float_or_none(row["confidence"])
+        if confidence is not None:
+            metadata["confidence"] = confidence
+
+        conn.execute(
+            """
+            INSERT INTO bucket_items (
+                id, title, normalized_title, domain, status, canonical_id, metadata_json,
+                source_refs_json, added_at, updated_at, completed_at, last_recommended_at,
+                legacy_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(row["id"]),
+                str(row["title"]),
+                str(row["normalized_title"]),
+                str(row["domain"]),
+                str(row["status"]),
+                _as_text_or_none(row["canonical_id"]),
+                json.dumps(metadata, sort_keys=True, ensure_ascii=True),
+                source_refs_json,
+                str(row["added_at"]),
+                str(row["updated_at"]),
+                _as_text_or_none(row["completed_at"]),
+                _as_text_or_none(row["last_recommended_at"]),
+                _as_text_or_none(row["legacy_path"]),
+            ),
+        )
+
+    conn.execute("DROP TABLE bucket_items_legacy")
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _as_text_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return str(value)
+
+
+def _as_int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _as_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _load_object_dict(raw: object) -> dict[str, object]:
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, dict):
+        raw_dict = cast(dict[object, object], parsed)
+        output: dict[str, object] = {}
+        for key, value in raw_dict.items():
+            output[str(key)] = value
+        return output
+    return {}
+
+
+def _load_str_list(raw: object) -> list[str]:
+    if not isinstance(raw, str):
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    raw_items = cast(list[object], parsed)
+    values: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str):
+            stripped = item.strip()
+            if stripped:
+                values.append(stripped)
+    return values
+
+
+def _ensure_json_list_text(raw: object) -> str:
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return "[]"
+        if isinstance(parsed, list):
+            return json.dumps(parsed, sort_keys=True, ensure_ascii=True)
+    return "[]"

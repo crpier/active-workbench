@@ -90,20 +90,23 @@ Tune thresholds with env vars:
 - `ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT`
 
 Workarounds:
-1. Use explicit video IDs/URLs with transcript and summary tools.
-2. Stay in fixture mode for deterministic local development.
-3. Keep cache enabled so repeated queries return `estimated_units_this_call=0`.
+1. Use explicit video IDs/URLs with transcript tools.
+2. Keep cache enabled so repeated queries return `estimated_units_this_call=0`.
 
 ## Inspect Runtime Logs
 
-Backend runtime logs are persisted to:
+Logging outputs:
+- `stdout`: human-readable console logs at `ACTIVE_WORKBENCH_LOG_LEVEL` (colored when attached to a TTY)
+- file: structured JSON logs (`active-workbench.log`) at debug-level detail
+
+Backend file logs are persisted to:
 - `.active-workbench/logs/active-workbench.log` (default)
 
-Custom location and rotation:
+Custom location and level:
 - `ACTIVE_WORKBENCH_LOG_DIR`
-- `ACTIVE_WORKBENCH_LOG_MAX_BYTES`
-- `ACTIVE_WORKBENCH_LOG_BACKUP_COUNT`
 - `ACTIVE_WORKBENCH_LOG_LEVEL`
+
+Rotation is not handled by the app. Use your external log rotation system.
 
 Quick tail:
 ```bash
@@ -119,12 +122,39 @@ If likes feel stale right after you like a video:
 If transcript refreshes too often:
 - increase `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS`
 
+If transcript background sync is too slow:
+- lower `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS`
+- lower `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS`
+
+Transcript cadence is independent from likes cadence:
+- likes loop: `ACTIVE_WORKBENCH_SCHEDULER_POLL_INTERVAL_SECONDS`
+- transcript loop: `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS`
+
 ## Transcript Tool Returns A Different Video Than Requested
 
 Checks:
 1. Call `active_workbench_youtube_transcript_get` with `video_id` or `url`.
 2. Restart OpenCode after pulling latest changes so it reloads updated tool args.
 3. Confirm backend is on latest code and restarted.
+
+## Transcript Tool Says Supadata API Key Is Missing
+
+Current behavior:
+- OAuth transcript fetching uses Supadata.
+- In OAuth mode, backend startup now fails early if `ACTIVE_WORKBENCH_SUPADATA_API_KEY` is unset.
+
+Fix:
+```bash
+cp .env.example .env
+# edit .env and set ACTIVE_WORKBENCH_SUPADATA_API_KEY
+```
+
+Then restart backend:
+```bash
+just run
+```
+
+See `docs/PRODUCTION.md` for required OAuth-mode startup configuration.
 
 ## Want to Keep Secret/Token Outside Project
 

@@ -12,3 +12,9 @@ tools-ts/dist/
 # Generated artifacts
 .DS_Store
 .active-workbench/
+
+# Local env secrets
+.env
+.env.*
+!.env.example
+.envrc

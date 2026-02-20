@@ -41,6 +41,25 @@ export class ToolsService {
         });
     }
     /**
+     * Youtube Likes Search Recent Content
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static youtubeLikesSearchRecentContent(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/youtube.likes.search_recent_content',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Youtube Transcript Get
      * @param requestBody
      * @returns ToolResponse Successful Response
@@ -128,6 +147,120 @@ export class ToolsService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/tools/vault.bucket_list.prioritize',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Item Add
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketItemAdd(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.item.add',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Item Update
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketItemUpdate(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.item.update',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Item Complete
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketItemComplete(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.item.complete',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Item Search
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketItemSearch(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.item.search',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Item Recommend
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketItemRecommend(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.item.recommend',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bucket Health Report
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static bucketHealthReport(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/bucket.health.report',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

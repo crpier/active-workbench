@@ -132,6 +132,84 @@ def bucket_list_prioritize(
 
 
 @router.post(
+    "/tools/bucket.item.add",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_add",
+)
+def bucket_item_add(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.add", request, dispatcher)
+
+
+@router.post(
+    "/tools/bucket.item.update",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_update",
+)
+def bucket_item_update(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.update", request, dispatcher)
+
+
+@router.post(
+    "/tools/bucket.item.complete",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_complete",
+)
+def bucket_item_complete(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.complete", request, dispatcher)
+
+
+@router.post(
+    "/tools/bucket.item.search",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_search",
+)
+def bucket_item_search(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.search", request, dispatcher)
+
+
+@router.post(
+    "/tools/bucket.item.recommend",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_recommend",
+)
+def bucket_item_recommend(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.recommend", request, dispatcher)
+
+
+@router.post(
+    "/tools/bucket.health.report",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_health_report",
+)
+def bucket_health_report(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.health.report", request, dispatcher)
+
+
+@router.post(
     "/tools/memory.create",
     response_model=ToolResponse,
     tags=["tools"],

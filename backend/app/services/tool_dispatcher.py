@@ -17,11 +17,13 @@ from backend.app.models.tool_contracts import (
     ToolResponse,
 )
 from backend.app.repositories.audit_repository import AuditRepository
+from backend.app.repositories.bucket_repository import BucketItem, BucketRepository
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.jobs_repository import JobsRepository, ScheduledJob
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import SavedDocument, VaultRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
+from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.content_analysis import (
     RecipeExtraction,
     build_routine_review_markdown,
@@ -30,7 +32,6 @@ from backend.app.services.content_analysis import (
     extract_actions_from_text,
     extract_recipe_from_transcript,
     extract_summary_from_text,
-    prioritize_bucket_list_items,
 )
 from backend.app.services.youtube_service import (
     YouTubeRateLimitedError,
@@ -51,8 +52,14 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     "vault.recipe.save": "Persist a recipe note in markdown.",
     "vault.note.save": "Persist a generic knowledge note in markdown.",
-    "vault.bucket_list.add": "Add an item to the bucket list.",
-    "vault.bucket_list.prioritize": "Prioritize bucket list items for review.",
+    "vault.bucket_list.add": "Add an item to the bucket list (legacy markdown-compatible flow).",
+    "vault.bucket_list.prioritize": "Prioritize active bucket list items for review.",
+    "bucket.item.add": "Add or merge a structured bucket item with optional metadata enrichment.",
+    "bucket.item.update": "Update a structured bucket item.",
+    "bucket.item.complete": "Mark a bucket item as completed (hidden from active queries).",
+    "bucket.item.search": "Search bucket items with filters.",
+    "bucket.item.recommend": "Recommend best-fit bucket items for the user's constraints.",
+    "bucket.health.report": "Generate a bucket health report with stale items and quick wins.",
     "memory.create": "Create a memory record for future retrieval.",
     "memory.undo": "Undo a memory write action.",
     "reminder.schedule": "Schedule a local reminder job.",
@@ -64,6 +71,22 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "actions.extract_from_notes": "Extract action items from saved notes.",
 }
 
+READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
+    {
+        "youtube.likes.list_recent",
+        "youtube.likes.search_recent_content",
+        "youtube.transcript.get",
+        "vault.bucket_list.add",
+        "vault.bucket_list.prioritize",
+        "bucket.item.add",
+        "bucket.item.update",
+        "bucket.item.complete",
+        "bucket.item.search",
+        "bucket.item.recommend",
+        "bucket.health.report",
+    }
+)
+
 
 class ToolDispatcher:
     def __init__(
@@ -74,6 +97,8 @@ class ToolDispatcher:
         memory_repository: MemoryRepository,
         jobs_repository: JobsRepository,
         vault_repository: VaultRepository,
+        bucket_repository: BucketRepository,
+        bucket_metadata_service: BucketMetadataService,
         youtube_quota_repository: YouTubeQuotaRepository,
         youtube_service: YouTubeService,
         default_timezone: str,
@@ -85,8 +110,11 @@ class ToolDispatcher:
         self._memory_repository = memory_repository
         self._jobs_repository = jobs_repository
         self._vault_repository = vault_repository
+        self._bucket_repository = bucket_repository
+        self._bucket_metadata_service = bucket_metadata_service
         self._youtube_quota_repository = youtube_quota_repository
         self._youtube_service = youtube_service
+        self._bucket_legacy_synced = False
         self._default_timezone = default_timezone
         self._youtube_daily_quota_limit = max(0, youtube_daily_quota_limit)
         bounded_warning_percent = min(1.0, max(0.0, youtube_quota_warning_percent))
@@ -105,6 +133,12 @@ class ToolDispatcher:
                 name=name,
                 description=description,
                 write_operation=name in WRITE_TOOLS,
+                ready_for_use=name in READY_FOR_USE_TOOLS,
+                readiness_note=(
+                    None
+                    if name in READY_FOR_USE_TOOLS
+                    else "Not ready for use yet. Keep this tool disabled for now."
+                ),
             )
             for name, description in TOOL_DESCRIPTIONS.items()
         ]
@@ -146,9 +180,21 @@ class ToolDispatcher:
         if tool_name == "vault.note.save":
             return self._handle_vault_save(request, category="notes")
         if tool_name == "vault.bucket_list.add":
-            return self._handle_vault_save(request, category="bucket-list")
+            return self._handle_bucket_item_add(request, legacy_response=True)
         if tool_name == "vault.bucket_list.prioritize":
             return self._handle_bucket_list_prioritize(request)
+        if tool_name == "bucket.item.add":
+            return self._handle_bucket_item_add(request)
+        if tool_name == "bucket.item.update":
+            return self._handle_bucket_item_update(request)
+        if tool_name == "bucket.item.complete":
+            return self._handle_bucket_item_complete(request)
+        if tool_name == "bucket.item.search":
+            return self._handle_bucket_item_search(request)
+        if tool_name == "bucket.item.recommend":
+            return self._handle_bucket_item_recommend(request)
+        if tool_name == "bucket.health.report":
+            return self._handle_bucket_health_report(request)
         if tool_name == "memory.create":
             return self._handle_memory_create(request)
         if tool_name == "memory.undo":
@@ -454,8 +500,9 @@ class ToolDispatcher:
                 message="payload.query is required",
             )
 
-        window_days = max(
-            1, min(30, _int_or_default(request.payload.get("window_days"), default=7))
+        requested_window_days = _optional_int(request.payload.get("window_days"))
+        window_days = (
+            None if requested_window_days is None else max(1, min(30, requested_window_days))
         )
         limit = max(1, min(25, _int_or_default(request.payload.get("limit"), default=5)))
         recent_probe_pages = max(
@@ -629,9 +676,289 @@ class ToolDispatcher:
             error=None,
         )
 
-    def _handle_bucket_list_prioritize(self, request: ToolRequest) -> ToolResponse:
-        documents = self._vault_repository.list_documents("bucket-list", limit=100)
-        prioritized = prioritize_bucket_list_items(documents)
+    def _handle_bucket_item_add(
+        self,
+        request: ToolRequest,
+        *,
+        legacy_response: bool = False,
+    ) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+
+        title = (
+            _payload_str(request.payload, "title")
+            or _payload_str(request.payload, "name")
+            or _payload_str(request.payload, "item")
+        )
+        if title is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.title (or payload.name/payload.item) is required",
+            )
+
+        domain = (
+            _payload_str(request.payload, "domain")
+            or _payload_str(request.payload, "kind")
+            or _infer_domain_from_title(title)
+        )
+        notes = (
+            _payload_str(request.payload, "notes")
+            or _payload_str(request.payload, "body")
+            or _payload_str(request.payload, "description")
+            or ""
+        )
+        year = _optional_int(request.payload.get("year"))
+        duration_minutes = _optional_int(
+            request.payload.get("duration_minutes") or request.payload.get("duration")
+        )
+        rating = _optional_float(request.payload.get("rating") or request.payload.get("score"))
+        popularity = _optional_float(request.payload.get("popularity"))
+        genres = _payload_str_list(request.payload.get("genres") or request.payload.get("genre"))
+        tags = _payload_str_list(request.payload.get("tags") or request.payload.get("tag"))
+        providers = _payload_str_list(
+            request.payload.get("providers")
+            or request.payload.get("provider")
+            or request.payload.get("platforms")
+        )
+        canonical_id = _payload_str(request.payload, "canonical_id")
+        external_url = _payload_str(request.payload, "external_url") or _payload_str(
+            request.payload, "url"
+        )
+        confidence = _optional_float(request.payload.get("confidence"))
+        metadata = _payload_dict(request.payload.get("metadata"))
+        source_refs = _extract_source_refs(request.payload)
+
+        auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=True)
+        enrichment = None
+        if auto_enrich:
+            enrichment = self._bucket_metadata_service.enrich(
+                title=title,
+                domain=domain,
+                year=year,
+            )
+
+        if enrichment is not None:
+            year = year if year is not None else enrichment.year
+            duration_minutes = (
+                duration_minutes if duration_minutes is not None else enrichment.duration_minutes
+            )
+            rating = rating if rating is not None else enrichment.rating
+            popularity = popularity if popularity is not None else enrichment.popularity
+            if not genres:
+                genres = list(enrichment.genres)
+            if not tags:
+                tags = list(enrichment.tags)
+            if not providers:
+                providers = list(enrichment.providers)
+            canonical_id = canonical_id or enrichment.canonical_id
+            external_url = external_url or enrichment.external_url
+            confidence = confidence if confidence is not None else enrichment.confidence
+            metadata = _merge_dicts(metadata, enrichment.metadata)
+            source_refs = _merge_source_refs(source_refs, enrichment.source_refs)
+
+        item, action = self._bucket_repository.create_or_merge_item(
+            title=title,
+            domain=domain,
+            notes=notes,
+            year=year,
+            duration_minutes=duration_minutes,
+            rating=rating,
+            popularity=popularity,
+            genres=genres,
+            tags=tags,
+            providers=providers,
+            metadata=metadata,
+            source_refs=source_refs,
+            canonical_id=canonical_id,
+            external_url=external_url,
+            confidence=confidence,
+        )
+
+        markdown_body = _bucket_item_markdown(item)
+        saved = self._vault_repository.save_document(
+            category="bucket-list",
+            title=item.title,
+            body=markdown_body,
+            tool_name=request.tool,
+            source_refs=item.source_refs,
+        )
+        self._bucket_repository.create_or_merge_item(
+            title=item.title,
+            domain=item.domain,
+            notes=item.notes,
+            year=item.year,
+            duration_minutes=item.duration_minutes,
+            rating=item.rating,
+            popularity=item.popularity,
+            genres=item.genres,
+            tags=item.tags,
+            providers=item.providers,
+            metadata=item.metadata,
+            source_refs=item.source_refs,
+            canonical_id=item.canonical_id,
+            external_url=item.external_url,
+            confidence=item.confidence,
+            legacy_path=saved.relative_path,
+            added_at=item.added_at,
+            updated_at=item.updated_at,
+        )
+
+        refreshed_item = self._bucket_repository.get_item(item.item_id)
+        if refreshed_item is None:
+            refreshed_item = item
+
+        result: dict[str, Any] = {
+            "tool": request.tool,
+            "status": "saved" if legacy_response else action,
+            "bucket_item": _bucket_item_payload(refreshed_item),
+            "enriched": enrichment is not None and enrichment.provider is not None,
+            "enrichment_provider": enrichment.provider if enrichment is not None else None,
+            "document_id": saved.document_id,
+            "path": saved.relative_path,
+        }
+        if legacy_response:
+            result["bucket_item_id"] = refreshed_item.item_id
+
+        provenance = [
+            _vault_provenance(saved),
+            ProvenanceRef(type="bucket_item", id=refreshed_item.item_id),
+        ]
+        provenance.extend(_source_ref_provenance(refreshed_item.source_refs))
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result=result,
+            provenance=provenance,
+            error=None,
+        )
+
+    def _handle_bucket_item_update(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        item_id = _payload_str(request.payload, "item_id") or _payload_str(request.payload, "id")
+        if item_id is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.item_id is required",
+            )
+
+        metadata = (
+            _payload_dict(request.payload.get("metadata"))
+            if "metadata" in request.payload
+            else None
+        )
+        source_refs = (
+            _extract_source_refs(request.payload) if "source_refs" in request.payload else None
+        )
+        updated = self._bucket_repository.update_item(
+            item_id=item_id,
+            title=_payload_str(request.payload, "title"),
+            domain=_payload_str(request.payload, "domain") or _payload_str(request.payload, "kind"),
+            notes=_payload_str(request.payload, "notes")
+            or _payload_str(request.payload, "body")
+            or _payload_str(request.payload, "description"),
+            year=_optional_int(request.payload.get("year")),
+            duration_minutes=_optional_int(
+                request.payload.get("duration_minutes") or request.payload.get("duration")
+            ),
+            rating=_optional_float(request.payload.get("rating") or request.payload.get("score")),
+            popularity=_optional_float(request.payload.get("popularity")),
+            genres=_payload_optional_str_list(
+                request.payload.get("genres") or request.payload.get("genre")
+            ),
+            tags=_payload_optional_str_list(
+                request.payload.get("tags") or request.payload.get("tag")
+            ),
+            providers=_payload_optional_str_list(
+                request.payload.get("providers")
+                or request.payload.get("provider")
+                or request.payload.get("platforms")
+            ),
+            metadata=metadata,
+            source_refs=source_refs,
+            canonical_id=_payload_str(request.payload, "canonical_id"),
+            external_url=_payload_str(request.payload, "external_url")
+            or _payload_str(request.payload, "url"),
+            confidence=_optional_float(request.payload.get("confidence")),
+        )
+        if updated is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="not_found",
+                message=f"Bucket item was not found: {item_id}",
+            )
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "updated",
+                "bucket_item": _bucket_item_payload(updated),
+            },
+            provenance=[ProvenanceRef(type="bucket_item", id=updated.item_id)],
+            error=None,
+        )
+
+    def _handle_bucket_item_complete(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        item_id = _payload_str(request.payload, "item_id") or _payload_str(request.payload, "id")
+        if item_id is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.item_id is required",
+            )
+
+        completed = self._bucket_repository.mark_completed(item_id)
+        if completed is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="not_found",
+                message=f"Bucket item was not found: {item_id}",
+            )
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "completed",
+                "bucket_item": _bucket_item_payload(completed),
+            },
+            provenance=[ProvenanceRef(type="bucket_item", id=completed.item_id)],
+            error=None,
+        )
+
+    def _handle_bucket_item_search(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        query = _payload_str(request.payload, "query")
+        domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
+        statuses = _bucket_statuses_from_payload(request.payload)
+        min_duration = _optional_int(request.payload.get("min_duration_minutes"))
+        max_duration = _optional_int(
+            request.payload.get("max_duration_minutes") or request.payload.get("max_duration")
+        )
+        genres = _payload_str_list(request.payload.get("genres") or request.payload.get("genre"))
+        min_rating = _optional_float(request.payload.get("min_rating"))
+        limit = _int_or_default(request.payload.get("limit"), default=10)
+
+        matches = self._bucket_repository.search_items(
+            query=query,
+            domain=domain,
+            statuses=statuses,
+            min_duration_minutes=min_duration,
+            max_duration_minutes=max_duration,
+            genres=genres,
+            min_rating=min_rating,
+            limit=max(1, min(100, limit)),
+        )
 
         return ToolResponse(
             ok=True,
@@ -639,13 +966,179 @@ class ToolDispatcher:
             result={
                 "tool": request.tool,
                 "status": "ok",
-                "items": prioritized,
+                "count": len(matches),
+                "items": [_bucket_item_payload(item) for item in matches],
             },
             provenance=[
-                ProvenanceRef(type="vault_document", id=doc.relative_path) for doc in documents
+                ProvenanceRef(type="bucket_item", id=item.item_id) for item in matches[:30]
             ],
             error=None,
         )
+
+    def _handle_bucket_item_recommend(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        query = _payload_str(request.payload, "query")
+        domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
+        statuses = _bucket_statuses_from_payload(request.payload)
+        min_duration = _optional_int(request.payload.get("min_duration_minutes"))
+        max_duration = _optional_int(
+            request.payload.get("max_duration_minutes") or request.payload.get("max_duration")
+        )
+        target_duration = _optional_int(
+            request.payload.get("target_duration_minutes")
+            or request.payload.get("duration_minutes")
+        )
+        genres = _payload_str_list(request.payload.get("genres") or request.payload.get("genre"))
+        min_rating = _optional_float(request.payload.get("min_rating"))
+        limit = max(1, min(20, _int_or_default(request.payload.get("limit"), default=3)))
+
+        candidates = self._bucket_repository.search_items(
+            query=query,
+            domain=domain,
+            statuses=statuses,
+            min_duration_minutes=min_duration,
+            max_duration_minutes=max_duration,
+            genres=genres,
+            min_rating=min_rating,
+            limit=100,
+        )
+
+        ranked: list[dict[str, Any]] = []
+        now = datetime.now(UTC)
+        for candidate in candidates:
+            score, reasons = _bucket_recommendation_score(
+                candidate,
+                now=now,
+                query=query,
+                domain=domain,
+                genres=genres,
+                target_duration_minutes=target_duration,
+                min_duration_minutes=min_duration,
+                max_duration_minutes=max_duration,
+            )
+            if score <= 0:
+                continue
+            ranked.append(
+                {
+                    "item": candidate,
+                    "score": round(score, 4),
+                    "reasons": reasons,
+                }
+            )
+
+        ranked.sort(
+            key=lambda entry: (
+                float(entry["score"]),
+                _waiting_days(cast(BucketItem, entry["item"]), now),
+            ),
+            reverse=True,
+        )
+        selected = ranked[:limit]
+        selected_items = [cast(BucketItem, entry["item"]) for entry in selected]
+        self._bucket_repository.track_recommendations([item.item_id for item in selected_items])
+
+        recommendations: list[dict[str, Any]] = []
+        for entry in selected:
+            item = cast(BucketItem, entry["item"])
+            recommendations.append(
+                {
+                    "bucket_item": _bucket_item_payload(item),
+                    "score": entry["score"],
+                    "reasons": entry["reasons"],
+                }
+            )
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "count": len(recommendations),
+                "recommendations": recommendations,
+            },
+            provenance=[
+                ProvenanceRef(type="bucket_item", id=item.item_id) for item in selected_items
+            ],
+            error=None,
+        )
+
+    def _handle_bucket_health_report(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        stale_after_days = max(
+            1, _int_or_default(request.payload.get("stale_after_days"), default=60)
+        )
+        quick_win_max_minutes = max(
+            15,
+            _int_or_default(request.payload.get("quick_win_max_minutes"), default=100),
+        )
+        quick_win_min_rating = _optional_float(request.payload.get("quick_win_min_rating")) or 7.0
+        limit = max(1, min(50, _int_or_default(request.payload.get("limit"), default=10)))
+
+        report = self._bucket_repository.build_health_report(
+            stale_after_days=stale_after_days,
+            quick_win_max_minutes=quick_win_max_minutes,
+            quick_win_min_rating=quick_win_min_rating,
+            limit=limit,
+        )
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={"tool": request.tool, "status": "ok", "report": report},
+            error=None,
+        )
+
+    def _handle_bucket_list_prioritize(self, request: ToolRequest) -> ToolResponse:
+        self._sync_bucket_legacy_documents()
+        active_items = self._bucket_repository.search_items(
+            query=None,
+            domain=None,
+            statuses={"active"},
+            min_duration_minutes=None,
+            max_duration_minutes=None,
+            genres=[],
+            min_rating=None,
+            limit=200,
+        )
+        now = datetime.now(UTC)
+        prioritized: list[dict[str, Any]] = []
+        for item in active_items:
+            prioritized.append(
+                {
+                    "title": item.title,
+                    "path": item.legacy_path,
+                    "waiting_days": _waiting_days(item, now),
+                    "effort": _metadata_level(item.metadata, "effort"),
+                    "cost": _metadata_level(item.metadata, "cost"),
+                    "domain": item.domain,
+                    "duration_minutes": item.duration_minutes,
+                    "rating": item.rating,
+                    "item_id": item.item_id,
+                }
+            )
+        prioritized = sorted(
+            prioritized,
+            key=lambda entry: int(entry.get("waiting_days", 0)),
+            reverse=True,
+        )
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={"tool": request.tool, "status": "ok", "items": prioritized},
+            provenance=[
+                ProvenanceRef(type="bucket_item", id=item.item_id) for item in active_items[:50]
+            ],
+            error=None,
+        )
+
+    def _sync_bucket_legacy_documents(self) -> None:
+        if self._bucket_legacy_synced:
+            return
+        documents = self._vault_repository.list_documents("bucket-list", limit=500)
+        for document in documents:
+            self._bucket_repository.upsert_legacy_document(document)
+        self._bucket_legacy_synced = True
 
     def _handle_memory_create(self, request: ToolRequest) -> ToolResponse:
         source_refs = _extract_source_refs(request.payload)
@@ -1051,6 +1544,278 @@ def _payload_str(payload: dict[str, Any], key: str) -> str | None:
         stripped = value.strip()
         if stripped:
             return stripped
+    return None
+
+
+def _payload_dict(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    raw_dict = cast(dict[object, object], value)
+    normalized: dict[str, Any] = {}
+    for key, raw_value in raw_dict.items():
+        if isinstance(key, str):
+            normalized[key] = raw_value
+    return normalized
+
+
+def _payload_str_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return _split_str_values([part.strip() for part in value.split(",")])
+    if isinstance(value, list):
+        raw_list = cast(list[object], value)
+        str_items = [item for item in raw_list if isinstance(item, str)]
+        return _split_str_values(str_items)
+    return []
+
+
+def _payload_optional_str_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    return _payload_str_list(value)
+
+
+def _split_str_values(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _merge_dicts(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(first)
+    merged.update(second)
+    return merged
+
+
+def _merge_source_refs(
+    first: list[dict[str, str]],
+    second: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source_ref in [*first, *second]:
+        ref_type = source_ref.get("type")
+        ref_id = source_ref.get("id")
+        if not isinstance(ref_type, str) or not isinstance(ref_id, str):
+            continue
+        key = (ref_type.strip(), ref_id.strip())
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        refs.append({"type": key[0], "id": key[1]})
+    return refs
+
+
+def _source_ref_provenance(source_refs: list[dict[str, str]]) -> list[ProvenanceRef]:
+    return [
+        ProvenanceRef(type=source_ref["type"], id=source_ref["id"])
+        for source_ref in source_refs
+        if source_ref.get("type") and source_ref.get("id")
+    ]
+
+
+def _infer_domain_from_title(title: str) -> str:
+    lowered = title.lower()
+    if any(token in lowered for token in ("season", "episode", "series")):
+        return "tv"
+    return "movie"
+
+
+def _bucket_statuses_from_payload(payload: dict[str, Any]) -> set[str]:
+    include_completed = _bool_or_default(payload.get("include_completed"), default=False)
+    statuses_raw = payload.get("statuses") or payload.get("status")
+    statuses = {"active"}
+    if isinstance(statuses_raw, str):
+        statuses = {statuses_raw.strip().lower()}
+    elif isinstance(statuses_raw, list):
+        parsed = {
+            item.strip().lower()
+            for item in cast(list[object], statuses_raw)
+            if isinstance(item, str) and item.strip()
+        }
+        if parsed:
+            statuses = parsed
+    if include_completed:
+        statuses.add("completed")
+    return statuses
+
+
+def _bucket_item_payload(item: BucketItem) -> dict[str, Any]:
+    return {
+        "item_id": item.item_id,
+        "title": item.title,
+        "domain": item.domain,
+        "status": item.status,
+        "year": item.year,
+        "duration_minutes": item.duration_minutes,
+        "rating": item.rating,
+        "popularity": item.popularity,
+        "genres": item.genres,
+        "tags": item.tags,
+        "providers": item.providers,
+        "notes": item.notes,
+        "canonical_id": item.canonical_id,
+        "external_url": item.external_url,
+        "confidence": item.confidence,
+        "metadata": item.metadata,
+        "source_refs": item.source_refs,
+        "added_at": item.added_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+        "completed_at": item.completed_at.isoformat() if item.completed_at is not None else None,
+        "last_recommended_at": (
+            item.last_recommended_at.isoformat() if item.last_recommended_at is not None else None
+        ),
+        "legacy_path": item.legacy_path,
+    }
+
+
+def _bucket_item_markdown(item: BucketItem) -> str:
+    lines = [
+        f"domain: {item.domain}",
+        f"status: {item.status}",
+    ]
+    if item.year is not None:
+        lines.append(f"year: {item.year}")
+    if item.duration_minutes is not None:
+        lines.append(f"duration_minutes: {item.duration_minutes}")
+    if item.rating is not None:
+        lines.append(f"rating: {item.rating}")
+    if item.genres:
+        lines.append(f"genres: {', '.join(item.genres)}")
+    if item.providers:
+        lines.append(f"providers: {', '.join(item.providers)}")
+    if item.external_url is not None:
+        lines.append(f"url: {item.external_url}")
+    if item.notes:
+        lines.extend(["", item.notes.strip()])
+    return "\n".join(lines).strip()
+
+
+def _bucket_recommendation_score(
+    item: BucketItem,
+    *,
+    now: datetime,
+    query: str | None,
+    domain: str | None,
+    genres: list[str],
+    target_duration_minutes: int | None,
+    min_duration_minutes: int | None,
+    max_duration_minutes: int | None,
+) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+    lowered_title = item.title.lower()
+
+    if query is not None:
+        for token in re.findall(r"[a-z0-9]+", query.lower()):
+            if token and token in lowered_title:
+                score += 2.0
+        if score > 0:
+            reasons.append("matches title/query intent")
+
+    if domain is not None and domain.strip().lower() == item.domain:
+        score += 3.0
+        reasons.append(f"matches domain ({item.domain})")
+
+    normalized_genres = {genre.lower().strip() for genre in genres if genre.strip()}
+    if normalized_genres:
+        item_genres = {genre.lower().strip() for genre in item.genres}
+        overlap = sorted(normalized_genres & item_genres)
+        if overlap:
+            score += 4.0 + float(len(overlap))
+            reasons.append(f"matches genres: {', '.join(overlap)}")
+
+    if target_duration_minutes is not None and item.duration_minutes is not None:
+        distance = abs(item.duration_minutes - target_duration_minutes)
+        duration_score = max(0.0, 8.0 - (distance / 10.0))
+        score += duration_score
+        reasons.append(
+            f"close to target duration ({item.duration_minutes}m vs {target_duration_minutes}m)"
+        )
+    elif (
+        min_duration_minutes is not None
+        and max_duration_minutes is not None
+        and item.duration_minutes is not None
+    ):
+        if min_duration_minutes <= item.duration_minutes <= max_duration_minutes:
+            score += 5.0
+            reasons.append("fits requested duration range")
+
+    if item.rating is not None:
+        score += item.rating / 2.0
+        reasons.append(f"quality score {item.rating}")
+    if item.popularity is not None:
+        score += min(4.0, item.popularity / 10000.0)
+
+    wait_days = _waiting_days(item, now)
+    score += min(6.0, wait_days / 10.0)
+
+    if item.last_recommended_at is not None:
+        days_since_recommended = max(0, int((now - item.last_recommended_at).days))
+        if days_since_recommended < 2:
+            score -= 3.0
+        elif days_since_recommended < 7:
+            score -= 1.0
+
+    if not reasons:
+        reasons.append("strong overall fit")
+    return score, reasons
+
+
+def _waiting_days(item: BucketItem, now: datetime) -> int:
+    return max(0, int((now - item.added_at.astimezone(UTC)).days))
+
+
+def _metadata_level(metadata: dict[str, Any], key: str) -> str | None:
+    value = metadata.get(key)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"low", "medium", "high"}:
+            return normalized
     return None
 
 

@@ -13,6 +13,12 @@ ToolName = Literal[
     "vault.note.save",
     "vault.bucket_list.add",
     "vault.bucket_list.prioritize",
+    "bucket.item.add",
+    "bucket.item.update",
+    "bucket.item.complete",
+    "bucket.item.search",
+    "bucket.item.recommend",
+    "bucket.health.report",
     "memory.create",
     "memory.undo",
     "reminder.schedule",
@@ -29,6 +35,9 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "vault.recipe.save",
         "vault.note.save",
         "vault.bucket_list.add",
+        "bucket.item.add",
+        "bucket.item.update",
+        "bucket.item.complete",
         "memory.create",
         "memory.undo",
         "reminder.schedule",
@@ -96,3 +105,5 @@ class ToolCatalogEntry(BaseModel):
     name: ToolName
     description: str
     write_operation: bool
+    ready_for_use: bool
+    readiness_note: str | None = None

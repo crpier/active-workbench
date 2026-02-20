@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,58 +13,125 @@ from backend.app.repositories.youtube_cache_repository import (
     YouTubeCacheRepository,
 )
 from backend.app.services.youtube_service import (
+    SupadataTranscriptError,
+    TranscriptProviderBlockedError,
     YouTubeRateLimitedError,
     YouTubeService,
     YouTubeServiceError,
     YouTubeTranscript,
-    YouTubeTranscriptIpBlockedError,
     YouTubeTranscriptResult,
     YouTubeVideo,
     resolve_oauth_paths,
 )
 
 
-def test_fixture_mode_likes_and_transcript(tmp_path: Path) -> None:
-    service = YouTubeService(mode="fixture", data_dir=tmp_path)
+class _CaptureLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
 
-    videos = service.list_recent(limit=2, query="cook")
+    def _record(self, message: str, *args: object, **kwargs: object) -> None:
+        _ = kwargs
+        if args:
+            try:
+                rendered = message % args
+            except Exception:
+                rendered = f"{message} {' '.join(str(arg) for arg in args)}"
+        else:
+            rendered = message
+        self.messages.append(rendered)
+
+    def info(self, message: str, *args: object, **kwargs: object) -> None:
+        self._record(message, *args, **kwargs)
+
+    def warning(self, message: str, *args: object, **kwargs: object) -> None:
+        self._record(message, *args, **kwargs)
+
+
+def _build_service_with_seeded_cache(tmp_path: Path) -> YouTubeService:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="test_cooking_001",
+                title="How To Cook Leek And Potato Soup",
+                liked_at="2026-02-06T18:00:00+00:00",
+                video_published_at="2026-02-06T18:00:00+00:00",
+                description="Simple leek soup tutorial with potato and stock.",
+                channel_title="Test Cooking",
+                tags=("soup", "leek", "recipe"),
+            ),
+            CachedLikeVideo(
+                video_id="test_micro_001",
+                title="Microservices Done Right - Real Lessons",
+                liked_at="2026-02-05T19:30:00+00:00",
+                video_published_at="2026-02-05T19:30:00+00:00",
+                description="Architecture trade-offs and distributed systems pitfalls.",
+                channel_title="Test Engineering",
+                tags=("microservices", "architecture"),
+            ),
+            CachedLikeVideo(
+                video_id="test_general_001",
+                title="Weekly Productivity Systems",
+                liked_at="2026-02-04T15:00:00+00:00",
+                video_published_at="2026-02-04T15:00:00+00:00",
+                description="A review of GPT-5.3 pros and cons for coding productivity.",
+                channel_title="Test AI",
+                tags=("gpt-5.3", "llm", "productivity"),
+            ),
+        ],
+        max_items=100,
+    )
+    cache_repo.upsert_transcript(
+        video_id="test_cooking_001",
+        title="How To Cook Leek And Potato Soup",
+        transcript="Today we're cooking a leek and potato soup.",
+        source="supadata_captions",
+        segments=[],
+    )
+    return YouTubeService(mode="oauth", data_dir=tmp_path, cache_repository=cache_repo)
+
+
+def test_cached_likes_and_transcript(tmp_path: Path) -> None:
+    service = _build_service_with_seeded_cache(tmp_path)
+    videos = service.list_recent_cached_only_with_metadata(limit=2, query="cook").videos
     assert videos
-
-    transcript = service.get_transcript(videos[0].video_id)
+    transcript = service.get_transcript("test_cooking_001")
     assert transcript.transcript
 
 
-def test_fixture_mode_natural_language_query_matches_keywords(tmp_path: Path) -> None:
-    service = YouTubeService(mode="fixture", data_dir=tmp_path)
-
-    videos = service.list_recent(
+def test_cached_query_natural_language_matches_keywords(tmp_path: Path) -> None:
+    service = _build_service_with_seeded_cache(tmp_path)
+    videos = service.list_recent_cached_only_with_metadata(
         limit=5,
         query="Somewhere I watched and liked a video about soup. Can you find it?",
-    )
+    ).videos
     assert videos
     assert any("soup" in video.title.lower() for video in videos)
 
 
-def test_fixture_mode_query_without_match_returns_empty(tmp_path: Path) -> None:
-    service = YouTubeService(mode="fixture", data_dir=tmp_path)
-
-    videos = service.list_recent(limit=5, query="quantum cryptography lecture")
+def test_cached_query_without_match_returns_empty(tmp_path: Path) -> None:
+    service = _build_service_with_seeded_cache(tmp_path)
+    videos = service.list_recent_cached_only_with_metadata(
+        limit=5,
+        query="quantum cryptography lecture",
+    ).videos
     assert videos == []
 
 
-def test_fixture_mode_query_matches_description_not_title(tmp_path: Path) -> None:
-    service = YouTubeService(mode="fixture", data_dir=tmp_path)
-
-    videos = service.list_recent(limit=5, query="gpt-5.3")
+def test_cached_query_matches_description_not_title(tmp_path: Path) -> None:
+    service = _build_service_with_seeded_cache(tmp_path)
+    videos = service.list_recent_cached_only_with_metadata(limit=5, query="gpt-5.3").videos
     assert videos
-    assert videos[0].video_id == "fixture_general_001"
+    assert videos[0].video_id == "test_general_001"
 
-    phrase_videos = service.list_recent(
+    phrase_videos = service.list_recent_cached_only_with_metadata(
         limit=5,
         query="I have recently watched a video about gpt-5.3. Can you find it?",
-    )
+    ).videos
     assert phrase_videos
-    assert phrase_videos[0].video_id == "fixture_general_001"
+    assert phrase_videos[0].video_id == "test_general_001"
 
 
 def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
@@ -170,6 +236,9 @@ def test_oauth_refresh_invalid_grant_requires_reauth(
             return FakeCredentials()
 
     def fake_import_module(name: str) -> object:
+        def _build(*_args: object, **_kwargs: object) -> object:
+            return object()
+
         if name == "google.auth.transport.requests":
             return types.SimpleNamespace(Request=object)
         if name == "google.oauth2.credentials":
@@ -177,7 +246,7 @@ def test_oauth_refresh_invalid_grant_requires_reauth(
         if name == "google_auth_oauthlib.flow":
             return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
         if name == "googleapiclient.discovery":
-            return types.SimpleNamespace(build=lambda *_args, **_kwargs: object())
+            return types.SimpleNamespace(build=_build)
         raise AssertionError(f"Unexpected module import: {name}")
 
     monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
@@ -187,25 +256,21 @@ def test_oauth_refresh_invalid_grant_requires_reauth(
         service.list_recent(limit=1)
 
 
-def test_resolve_oauth_paths_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH", raising=False)
-    monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH", raising=False)
-
+def test_resolve_oauth_paths_default(tmp_path: Path) -> None:
     token_path, secret_path = resolve_oauth_paths(tmp_path)
     assert token_path == (tmp_path / "youtube-token.json").resolve()
     assert secret_path == (tmp_path / "youtube-client-secret.json").resolve()
 
 
-def test_resolve_oauth_paths_env_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_resolve_oauth_paths_override(tmp_path: Path) -> None:
     token_override = tmp_path / "custom-token.json"
     secret_override = tmp_path / "custom-secret.json"
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH", str(token_override))
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH", str(secret_override))
 
-    token_path, secret_path = resolve_oauth_paths(tmp_path)
+    token_path, secret_path = resolve_oauth_paths(
+        tmp_path,
+        token_override=token_override,
+        secret_override=secret_override,
+    )
     assert token_path == token_override.resolve()
     assert secret_path == secret_override.resolve()
 
@@ -299,25 +364,35 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
 
-    class FakeFetchedTranscript:
-        def to_raw_data(self) -> list[dict[str, Any]]:
-            return [{"text": "first line", "start": 0.0, "duration": 1.0}]
+    def _supadata_success(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        assert api_key == "supadata-test-key"
+        assert timeout_seconds > 0
+        assert params is not None
+        assert params.get("url") == "https://www.youtube.com/watch?v=oauth_video_1"
+        assert params.get("text") == "false"
+        assert params.get("lang") == "ro"
+        assert url.endswith("/transcript")
+        return (
+            200,
+            {
+                "content": [
+                    {"text": "first line", "offset": 0, "duration": 1.0},
+                    {"text": "second line", "offset": 1.0, "duration": 0.8},
+                ]
+            },
+        )
 
-    class FakeTranscriptApi:
-        def fetch(
-            self,
-            _video_id: str,
-            languages: list[str] | None = None,
-            preserve_formatting: bool = False,
-        ) -> FakeFetchedTranscript:
-            _ = languages
-            _ = preserve_formatting
-            return FakeFetchedTranscript()
+    monkeypatch.setattr(
+        "backend.app.services.youtube_service._fetch_supadata_json", _supadata_success
+    )
 
-    transcript_module = types.SimpleNamespace(YouTubeTranscriptApi=FakeTranscriptApi)
-    monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module)
-
-    service = YouTubeService(mode="oauth", data_dir=tmp_path)
+    service = YouTubeService(mode="oauth", data_dir=tmp_path, supadata_api_key="supadata-test-key")
     videos = service.list_recent(limit=1)
     assert videos and videos[0].video_id == "oauth_video_1"
     assert videos[0].liked_at == "2026-02-01T12:00:00Z"
@@ -327,54 +402,7 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     transcript = service.get_transcript("oauth_video_1")
     assert "first line" in transcript.transcript
-
-    class FailingTranscriptApi:
-        def fetch(
-            self,
-            _video_id: str,
-            languages: list[str] | None = None,
-            preserve_formatting: bool = False,
-        ) -> FakeFetchedTranscript:
-            _ = languages
-            _ = preserve_formatting
-            raise RuntimeError("forced failure")
-
-    transcript_module_failing = types.SimpleNamespace(YouTubeTranscriptApi=FailingTranscriptApi)
-    monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module_failing)
-
-    fallback = service.get_transcript("oauth_video_1")
-    assert fallback.source == "video_description_fallback"
-
-    class IpBlockedError(RuntimeError):
-        pass
-
-    class BlockingTrack:
-        language_code = "en"
-        is_generated = True
-        is_translatable = True
-
-        def fetch(self) -> list[dict[str, Any]]:
-            raise IpBlockedError("blocking requests from your IP")
-
-    class IpBlockedTranscriptApi:
-        def fetch(
-            self,
-            _video_id: str,
-            languages: list[str] | None = None,
-            preserve_formatting: bool = False,
-        ) -> FakeFetchedTranscript:
-            _ = languages
-            _ = preserve_formatting
-            raise IpBlockedError("blocking requests from your IP")
-
-        def list(self, _video_id: str) -> list[BlockingTrack]:
-            return [BlockingTrack()]
-
-    transcript_module_blocked = types.SimpleNamespace(YouTubeTranscriptApi=IpBlockedTranscriptApi)
-    monkeypatch.setitem(sys.modules, "youtube_transcript_api", transcript_module_blocked)
-
-    with pytest.raises(YouTubeTranscriptIpBlockedError):
-        service.get_transcript("oauth_video_1")
+    assert transcript.source == "supadata_captions"
 
 
 def test_oauth_likes_cache_hit_returns_zero_units(tmp_path: Path) -> None:
@@ -548,6 +576,51 @@ def test_oauth_search_recent_content_matches_transcript(tmp_path: Path) -> None:
     assert result.transcripts_available_count == 1
 
 
+def test_oauth_search_recent_content_without_window_searches_full_cache(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="old_kimi",
+                title="Kimi K2.5 deep dive",
+                liked_at="2025-07-01T10:00:00+00:00",
+                description="older but still relevant",
+            ),
+        ],
+        max_items=100,
+    )
+    cache_repo.upsert_transcript(
+        video_id="old_kimi",
+        title="Kimi K2.5 deep dive",
+        transcript="Great notes about Kimi K2.5",
+        source="supadata_captions",
+        segments=[],
+    )
+
+    service = YouTubeService(mode="oauth", data_dir=tmp_path, cache_repository=cache_repo)
+
+    all_time_result = service.search_recent_content_with_metadata(
+        query="Kimi K2.5",
+        window_days=None,
+        limit=5,
+        probe_recent_on_miss=False,
+        recent_probe_pages=1,
+    )
+    assert all_time_result.matches
+    assert all_time_result.matches[0].video.video_id == "old_kimi"
+
+    limited_result = service.search_recent_content_with_metadata(
+        query="Kimi K2.5",
+        window_days=7,
+        limit=5,
+        probe_recent_on_miss=False,
+        recent_probe_pages=1,
+    )
+    assert limited_result.matches == []
+
+
 def test_oauth_likes_recent_query_refreshes_when_cache_is_fresh(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -640,6 +713,202 @@ def test_oauth_transcript_cache_hit_returns_zero_units(tmp_path: Path) -> None:
     assert result.cache_hit is True
     assert result.estimated_api_units == 0
     assert result.transcript.transcript == "cached transcript text"
+
+
+def test_oauth_transcript_requires_supadata_key_when_cache_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", raising=False)
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=None,
+    )
+    with pytest.raises(YouTubeServiceError, match="ACTIVE_WORKBENCH_SUPADATA_API_KEY"):
+        service.get_transcript_with_metadata("video_without_cache")
+
+
+def test_oauth_transcript_polls_supadata_job_until_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        supadata_api_key="supadata-test-key",
+        supadata_poll_interval_seconds=0.01,
+        supadata_poll_max_attempts=5,
+    )
+
+    def _fake_snippet(
+        video_id: str,
+        data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = video_id
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        return types.SimpleNamespace(title="Polled Title", description=None)
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
+
+    calls: list[str] = []
+
+    def _fake_supadata(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        _ = timeout_seconds
+        assert api_key == "supadata-test-key"
+        calls.append(url)
+        if url.endswith("/transcript"):
+            assert params is not None and params["mode"] == "native"
+            assert params["lang"] == "ro"
+            return 202, {"jobId": "job_123", "status": "queued"}
+        if url.endswith("/transcript/job_123"):
+            if len(calls) == 2:
+                return 200, {"status": "processing"}
+            return 200, {"status": "completed", "content": [{"text": "done", "offset": 0.0}]}
+        raise AssertionError(f"Unexpected url: {url}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+
+    def _fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", _fake_sleep)
+
+    result = service.get_transcript_with_metadata("oauth_video_1")
+
+    assert result.transcript.source == "supadata_captions"
+    assert result.transcript.transcript == "done"
+    assert result.transcript.segments == [{"text": "done", "start": 0.0}]
+
+
+def test_oauth_transcript_unavailable_includes_supadata_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        supadata_api_key="supadata-test-key",
+    )
+
+    def _fake_snippet(
+        video_id: str,
+        data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = video_id
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        return types.SimpleNamespace(title="No Transcript", description=None)
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
+
+    calls = 0
+
+    def _fake_supadata(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        _ = url
+        _ = api_key
+        _ = timeout_seconds
+        _ = params
+        return 206, {
+            "request_id": "supa_req_123",
+            "error": "transcript-unavailable",
+            "message": "Transcript Unavailable",
+            "details": "No transcript is available for this video",
+        }
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        SupadataTranscriptError,
+        match="supadata_request_id=supa_req_123",
+    ):
+        service.get_transcript_with_metadata("oauth_video_1")
+    assert calls == 3
+
+
+def test_oauth_transcript_unavailable_immediate_retries_can_recover(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        supadata_api_key="supadata-test-key",
+    )
+
+    def _fake_snippet(
+        video_id: str,
+        data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = video_id
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        return types.SimpleNamespace(title="Retry Target", description=None)
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
+
+    calls = 0
+
+    def _fake_supadata(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        nonlocal calls
+        _ = url
+        _ = api_key
+        _ = timeout_seconds
+        _ = params
+        calls += 1
+        if calls < 3:
+            return 206, {
+                "request_id": f"supa_req_retry_{calls}",
+                "error": "transcript-unavailable",
+                "message": "Transcript Unavailable",
+                "details": "No transcript is available for this video",
+            }
+        return 200, {
+            "request_id": "supa_req_retry_3",
+            "content": [{"text": "recovered transcript", "offset": 0.0}],
+        }
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", lambda _seconds: None)
+
+    result = service.get_transcript_with_metadata("oauth_video_1")
+    assert result.transcript.transcript == "recovered transcript"
+    assert result.provider_request_id == "supa_req_retry_3"
+    assert calls == 3
 
 
 def test_oauth_background_sync_populates_likes_with_metadata(
@@ -865,6 +1134,8 @@ def test_oauth_background_transcript_sync_success(
         )
 
     monkeypatch.setattr(service, "get_transcript_with_metadata", _fake_get_transcript)
+    captured_logger = _CaptureLogger()
+    monkeypatch.setattr("backend.app.services.youtube_service.LOGGER", captured_logger)
 
     service.run_background_transcript_sync()
 
@@ -872,6 +1143,63 @@ def test_oauth_background_transcript_sync_success(
     assert cached is not None
     assert cached.transcript == "hello from background sync"
     assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_1") == 1
+    assert any("youtube transcript background_sync start" in msg for msg in captured_logger.messages)
+    assert any("provider=youtube" in msg for msg in captured_logger.messages)
+
+
+def test_oauth_background_transcript_sync_start_log_includes_supadata_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_t_supadata",
+                title="Transcript Target",
+                liked_at="2026-02-10T12:00:00+00:00",
+            )
+        ],
+        max_items=100,
+    )
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_background_min_interval_seconds=0,
+        supadata_api_key="supadata-test-key",
+    )
+
+    def _fake_get_transcript(video_id: str) -> YouTubeTranscriptResult:
+        cache_repo.upsert_transcript(
+            video_id=video_id,
+            title="Transcript Target",
+            transcript="hello from supadata provider run",
+            source="supadata_captions",
+            segments=[],
+        )
+        return YouTubeTranscriptResult(
+            transcript=YouTubeTranscript(
+                video_id=video_id,
+                title="Transcript Target",
+                transcript="hello from supadata provider run",
+                source="supadata_captions",
+                segments=[],
+            ),
+            estimated_api_units=1,
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr(service, "get_transcript_with_metadata", _fake_get_transcript)
+    captured_logger = _CaptureLogger()
+    monkeypatch.setattr("backend.app.services.youtube_service.LOGGER", captured_logger)
+
+    service.run_background_transcript_sync()
+
+    assert any("youtube transcript background_sync start" in msg for msg in captured_logger.messages)
+    assert any("provider=supadata" in msg for msg in captured_logger.messages)
 
 
 def test_oauth_background_transcript_sync_failure_backoff(
@@ -904,11 +1232,17 @@ def test_oauth_background_transcript_sync_failure_backoff(
         raise YouTubeServiceError("forced transcript failure")
 
     monkeypatch.setattr(service, "get_transcript_with_metadata", _failing_get_transcript)
+    captured_logger = _CaptureLogger()
+    monkeypatch.setattr("backend.app.services.youtube_service.LOGGER", captured_logger)
 
     service.run_background_transcript_sync()
     service.run_background_transcript_sync()
 
     assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_fail") == 1
+    assert any("youtube transcript background_sync failed" in msg for msg in captured_logger.messages)
+    assert any("provider=youtube" in msg for msg in captured_logger.messages)
+    assert any("error_type=YouTubeServiceError" in msg for msg in captured_logger.messages)
+    assert any("error=forced transcript failure" in msg for msg in captured_logger.messages)
 
 
 def test_oauth_background_transcript_sync_ip_block_global_pause(
@@ -944,7 +1278,7 @@ def test_oauth_background_transcript_sync_ip_block_global_pause(
     )
 
     def _ip_blocked(_video_id: str) -> YouTubeTranscriptResult:
-        raise YouTubeTranscriptIpBlockedError("IpBlocked")
+        raise TranscriptProviderBlockedError("IpBlocked")
 
     monkeypatch.setattr(service, "get_transcript_with_metadata", _ip_blocked)
 
@@ -973,7 +1307,14 @@ def test_oauth_recent_probe_rate_limit_sets_pause_and_skips_api_while_paused(
 
     calls: dict[str, int] = {"build_client": 0}
 
-    def _failing_build_client(_data_dir: Path) -> object:
+    def _failing_build_client(
+        _data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = token_path
+        _ = secrets_path
         calls["build_client"] += 1
         raise RuntimeError("quotaExceeded")
 

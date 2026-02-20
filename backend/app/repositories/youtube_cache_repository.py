@@ -10,6 +10,10 @@ from backend.app.repositories.common import utc_now_iso
 from backend.app.repositories.database import Database
 
 
+def _empty_thumbnails() -> dict[str, str]:
+    return {}
+
+
 @dataclass(frozen=True)
 class CachedLikeVideo:
     video_id: str
@@ -30,7 +34,7 @@ class CachedLikeVideo:
     live_broadcast_content: str | None = None
     definition: str | None = None
     dimension: str | None = None
-    thumbnails: dict[str, str] = field(default_factory=dict)
+    thumbnails: dict[str, str] = field(default_factory=_empty_thumbnails)
     topic_categories: tuple[str, ...] = ()
     statistics_view_count: int | None = None
     statistics_like_count: int | None = None

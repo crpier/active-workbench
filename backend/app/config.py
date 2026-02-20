@@ -1,49 +1,58 @@
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Literal
 
-
-@dataclass(frozen=True)
-class AppSettings:
-    data_dir: Path
-    vault_dir: Path
-    db_path: Path
-    default_timezone: str
-    youtube_mode: str
-    scheduler_enabled: bool
-    scheduler_poll_interval_seconds: int
-    youtube_daily_quota_limit: int
-    youtube_quota_warning_percent: float
-    youtube_likes_cache_ttl_seconds: int
-    youtube_likes_recent_guard_seconds: int
-    youtube_likes_cache_max_items: int
-    youtube_background_sync_enabled: bool
-    youtube_background_min_interval_seconds: int
-    youtube_background_hot_pages: int
-    youtube_background_backfill_pages_per_run: int
-    youtube_background_page_size: int
-    youtube_background_target_items: int
-    youtube_transcript_cache_ttl_seconds: int
-    youtube_transcript_background_sync_enabled: bool
-    youtube_transcript_background_min_interval_seconds: int
-    youtube_transcript_background_recent_limit: int
-    youtube_transcript_background_backoff_base_seconds: int
-    youtube_transcript_background_backoff_max_seconds: int
-    youtube_transcript_background_ip_block_pause_seconds: int
-    log_dir: Path
-    log_level: str
-    log_max_bytes: int
-    log_backup_count: int
-
+from pydantic import Field, ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATA_DIR = ".active-workbench"
+YOUTUBE_MODES: frozenset[str] = frozenset({"oauth"})
+_DATA_DIR_RELATIVE_DEFAULTS: tuple[tuple[str, Path], ...] = (
+    ("vault_dir", Path("vault")),
+    ("db_path", Path("state.db")),
+    ("youtube_token_path", Path("youtube-token.json")),
+    ("youtube_client_secret_path", Path("youtube-client-secret.json")),
+    ("log_dir", Path("logs")),
+)
+_PATH_FIELDS: tuple[str, ...] = (
+    "data_dir",
+    *(field_name for field_name, _ in _DATA_DIR_RELATIVE_DEFAULTS),
+)
+_BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
+    "scheduler_enabled",
+    "youtube_background_sync_enabled",
+    "youtube_transcript_background_sync_enabled",
+    "bucket_enrichment_enabled",
+)
 
 
-def _env_bool(value: str | None, *, default: bool) -> bool:
+def _default_in_data_dir(relative_path: Path) -> Path:
+    return Path(DEFAULT_DATA_DIR) / relative_path
+
+
+def _data_dir_default_note(relative_path: Path) -> str:
+    return f"Defaults to `${{ACTIVE_WORKBENCH_DATA_DIR}}/{relative_path}` when not explicitly set."
+
+
+def _resolve_path(value: str | Path) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+def _parse_bool_with_default(value: Any, *, default: bool) -> bool:
     if value is None:
         return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return default
+    if not isinstance(value, str):
+        return default
+
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
         return True
@@ -52,116 +61,314 @@ def _env_bool(value: str | None, *, default: bool) -> bool:
     return default
 
 
-def load_settings() -> AppSettings:
-    data_dir = Path(os.getenv("ACTIVE_WORKBENCH_DATA_DIR", DEFAULT_DATA_DIR)).resolve()
-    vault_dir = Path(os.getenv("ACTIVE_WORKBENCH_VAULT_DIR", str(data_dir / "vault"))).resolve()
-    db_path = Path(os.getenv("ACTIVE_WORKBENCH_DB_PATH", str(data_dir / "state.db"))).resolve()
-    default_timezone = os.getenv("ACTIVE_WORKBENCH_DEFAULT_TIMEZONE", "Europe/Bucharest")
-    youtube_mode = os.getenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "fixture")
-    scheduler_enabled = _env_bool(
-        os.getenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER"),
-        default=True,
-    )
-    scheduler_poll_interval_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_SCHEDULER_POLL_INTERVAL_SECONDS", "30")
-    )
-    youtube_daily_quota_limit = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "10000")
-    )
-    youtube_quota_warning_percent = float(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.8")
-    )
-    youtube_likes_cache_ttl_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "600")
-    )
-    youtube_likes_recent_guard_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS", "45")
-    )
-    youtube_likes_cache_max_items = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS", "500")
-    )
-    youtube_background_sync_enabled = _env_bool(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_SYNC_ENABLED"),
-        default=True,
-    )
-    youtube_background_min_interval_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_MIN_INTERVAL_SECONDS", "120")
-    )
-    youtube_background_hot_pages = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_HOT_PAGES", "2")
-    )
-    youtube_background_backfill_pages_per_run = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_BACKFILL_PAGES_PER_RUN", "1")
-    )
-    youtube_background_page_size = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_PAGE_SIZE", "50")
-    )
-    youtube_background_target_items = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_TARGET_ITEMS", "1000")
-    )
-    youtube_transcript_cache_ttl_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS", "86400")
-    )
-    youtube_transcript_background_sync_enabled = _env_bool(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_SYNC_ENABLED"),
-        default=True,
-    )
-    youtube_transcript_background_min_interval_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS", "20")
-    )
-    youtube_transcript_background_recent_limit = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_RECENT_LIMIT", "1000")
-    )
-    youtube_transcript_background_backoff_base_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_BACKOFF_BASE_SECONDS", "300")
-    )
-    youtube_transcript_background_backoff_max_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_BACKOFF_MAX_SECONDS", "86400")
-    )
-    youtube_transcript_background_ip_block_pause_seconds = int(
-        os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_IP_BLOCK_PAUSE_SECONDS", "7200")
-    )
-    log_dir = Path(os.getenv("ACTIVE_WORKBENCH_LOG_DIR", str(data_dir / "logs"))).resolve()
-    log_level = os.getenv("ACTIVE_WORKBENCH_LOG_LEVEL", "INFO")
-    log_max_bytes = int(os.getenv("ACTIVE_WORKBENCH_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
-    log_backup_count = int(os.getenv("ACTIVE_WORKBENCH_LOG_BACKUP_COUNT", "5"))
+def _normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if normalized:
+        return normalized
+    return None
 
-    return AppSettings(
-        data_dir=data_dir,
-        vault_dir=vault_dir,
-        db_path=db_path,
-        default_timezone=default_timezone,
-        youtube_mode=youtube_mode,
-        scheduler_enabled=scheduler_enabled,
-        scheduler_poll_interval_seconds=scheduler_poll_interval_seconds,
-        youtube_daily_quota_limit=youtube_daily_quota_limit,
-        youtube_quota_warning_percent=youtube_quota_warning_percent,
-        youtube_likes_cache_ttl_seconds=youtube_likes_cache_ttl_seconds,
-        youtube_likes_recent_guard_seconds=youtube_likes_recent_guard_seconds,
-        youtube_likes_cache_max_items=youtube_likes_cache_max_items,
-        youtube_background_sync_enabled=youtube_background_sync_enabled,
-        youtube_background_min_interval_seconds=youtube_background_min_interval_seconds,
-        youtube_background_hot_pages=youtube_background_hot_pages,
-        youtube_background_backfill_pages_per_run=youtube_background_backfill_pages_per_run,
-        youtube_background_page_size=youtube_background_page_size,
-        youtube_background_target_items=youtube_background_target_items,
-        youtube_transcript_cache_ttl_seconds=youtube_transcript_cache_ttl_seconds,
-        youtube_transcript_background_sync_enabled=youtube_transcript_background_sync_enabled,
-        youtube_transcript_background_min_interval_seconds=(
-            youtube_transcript_background_min_interval_seconds
-        ),
-        youtube_transcript_background_recent_limit=youtube_transcript_background_recent_limit,
-        youtube_transcript_background_backoff_base_seconds=(
-            youtube_transcript_background_backoff_base_seconds
-        ),
-        youtube_transcript_background_backoff_max_seconds=(
-            youtube_transcript_background_backoff_max_seconds
-        ),
-        youtube_transcript_background_ip_block_pause_seconds=(
-            youtube_transcript_background_ip_block_pause_seconds
-        ),
-        log_dir=log_dir,
-        log_level=log_level,
-        log_max_bytes=log_max_bytes,
-        log_backup_count=log_backup_count,
+
+class AppSettings(BaseSettings):
+    """
+    Canonical runtime configuration.
+
+    This class is the single source of truth for config options:
+    - what each option controls,
+    - where it comes from (`ACTIVE_WORKBENCH_*`),
+    - and what its default is.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="ACTIVE_WORKBENCH_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
     )
+
+    # Core paths and mode.
+    data_dir: Path = Field(
+        default=Path(DEFAULT_DATA_DIR),
+        description="Root runtime directory for local state, logs, and OAuth artifacts.",
+    )
+    vault_dir: Path = Field(
+        default=_default_in_data_dir(Path("vault")),
+        description=f"Directory for vault data. {_data_dir_default_note(Path('vault'))}",
+    )
+    db_path: Path = Field(
+        default=_default_in_data_dir(Path("state.db")),
+        description=f"SQLite database path. {_data_dir_default_note(Path('state.db'))}",
+    )
+    default_timezone: str = Field(
+        default="Europe/Bucharest",
+        description="Default timezone used for scheduled jobs and date interpretation.",
+    )
+    youtube_mode: Literal["oauth"] = Field(
+        default="oauth",
+        description="YouTube runtime mode. Only OAuth-backed production mode is supported.",
+    )
+
+    # Scheduler and quota guardrails.
+    scheduler_enabled: bool = Field(
+        default=True,
+        validation_alias="ACTIVE_WORKBENCH_ENABLE_SCHEDULER",
+        description=(
+            "Enable background scheduler loop. Uses ACTIVE_WORKBENCH_ENABLE_SCHEDULER "
+            "for backward-compatible env naming."
+        ),
+    )
+    scheduler_poll_interval_seconds: int = Field(
+        default=60,
+        description="Main scheduler polling cadence (jobs + likes background loop).",
+    )
+    youtube_transcript_scheduler_poll_interval_seconds: int = Field(
+        default=20,
+        description="Transcript background loop cadence, independent from likes cadence.",
+    )
+    youtube_daily_quota_limit: int = Field(
+        default=10_000,
+        description="Expected daily YouTube Data API quota budget used for warnings.",
+    )
+    youtube_quota_warning_percent: float = Field(
+        default=0.8,
+        description="Warn when estimated daily usage exceeds this fraction of quota limit.",
+    )
+
+    # Likes cache and background sync behavior.
+    youtube_likes_cache_ttl_seconds: int = Field(
+        default=600,
+        description="TTL for liked-video cache freshness checks.",
+    )
+    youtube_likes_recent_guard_seconds: int = Field(
+        default=45,
+        description="Fresh-cache guard window for recency-sensitive likes queries.",
+    )
+    youtube_likes_cache_max_items: int = Field(
+        default=500,
+        description="Maximum liked videos retained in cache.",
+    )
+    youtube_background_sync_enabled: bool = Field(
+        default=True,
+        description="Enable background liked-videos cache synchronization.",
+    )
+    youtube_background_min_interval_seconds: int = Field(
+        default=180,
+        description="Minimum time between liked-videos background sync runs.",
+    )
+    youtube_background_hot_pages: int = Field(
+        default=2,
+        description="Number of newest likes pages fetched every background run.",
+    )
+    youtube_background_backfill_pages_per_run: int = Field(
+        default=1,
+        description="Additional older likes pages fetched per run for cache backfill.",
+    )
+    youtube_background_page_size: int = Field(
+        default=50,
+        description="Page size for likes background fetching (capped by YouTube API).",
+    )
+    youtube_background_target_items: int = Field(
+        default=1_000,
+        description="Target likes cache size after background sync and trimming.",
+    )
+
+    # Transcript cache and background sync behavior.
+    youtube_transcript_cache_ttl_seconds: int = Field(
+        default=86_400,
+        description="TTL for transcript cache freshness.",
+    )
+    youtube_transcript_background_sync_enabled: bool = Field(
+        default=True,
+        description="Enable background transcript prefetching for cached liked videos.",
+    )
+    youtube_transcript_background_min_interval_seconds: int = Field(
+        default=20,
+        description="Minimum time between transcript background sync attempts.",
+    )
+    youtube_transcript_background_recent_limit: int = Field(
+        default=1_000,
+        description="Only this many most-recent likes are considered for transcript sync.",
+    )
+    youtube_transcript_background_backoff_base_seconds: int = Field(
+        default=300,
+        description="Base exponential backoff for transcript sync failures.",
+    )
+    youtube_transcript_background_backoff_max_seconds: int = Field(
+        default=86_400,
+        description="Maximum backoff for transcript sync retries.",
+    )
+    youtube_transcript_background_ip_block_pause_seconds: int = Field(
+        default=7_200,
+        description="Global pause baseline when transcript sync IP-block errors are detected.",
+    )
+
+    # OAuth and Supadata transcript provider settings.
+    youtube_token_path: Path = Field(
+        default=_default_in_data_dir(Path("youtube-token.json")),
+        description=(
+            "OAuth token JSON path. "
+            f"{_data_dir_default_note(Path('youtube-token.json'))}"
+        ),
+    )
+    youtube_client_secret_path: Path = Field(
+        default=_default_in_data_dir(Path("youtube-client-secret.json")),
+        description=(
+            "OAuth client secret JSON path. "
+            f"{_data_dir_default_note(Path('youtube-client-secret.json'))}"
+        ),
+    )
+    supadata_api_key: str | None = Field(
+        default=None,
+        description="Supadata API key for OAuth transcript retrieval.",
+    )
+    supadata_base_url: str = Field(
+        default="https://api.supadata.ai/v1",
+        description="Supadata API base URL.",
+    )
+    supadata_transcript_mode: str = Field(
+        default="native",
+        description="Supadata transcript mode passed to transcript requests.",
+    )
+    supadata_http_timeout_seconds: float = Field(
+        default=30.0,
+        description="HTTP timeout for Supadata requests.",
+    )
+    supadata_poll_interval_seconds: float = Field(
+        default=1.0,
+        description="Polling interval for async Supadata transcript jobs.",
+    )
+    supadata_poll_max_attempts: int = Field(
+        default=30,
+        description="Maximum polling attempts for async Supadata transcript jobs.",
+    )
+
+    # Bucket enrichment.
+    bucket_enrichment_enabled: bool = Field(
+        default=True,
+        description="Enable optional metadata enrichment for bucket items.",
+    )
+    bucket_enrichment_http_timeout_seconds: float = Field(
+        default=2.0,
+        description="HTTP timeout for bucket metadata enrichment calls.",
+    )
+    bucket_omdb_api_key: str | None = Field(
+        default=None,
+        description="Optional OMDb API key used by enrichment providers.",
+    )
+
+    # Logging.
+    log_dir: Path = Field(
+        default=_default_in_data_dir(Path("logs")),
+        description=f"Directory for backend log files. {_data_dir_default_note(Path('logs'))}",
+    )
+    log_level: str = Field(
+        default="INFO",
+        description="Console log level (stdout).",
+    )
+    log_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description="Legacy compatibility setting for file rotation size (currently unused).",
+    )
+    log_backup_count: int = Field(
+        default=5,
+        description="Legacy compatibility setting for rotated file count (currently unused).",
+    )
+
+    @field_validator("youtube_mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_YOUTUBE_MODE must be a string.")
+
+        normalized = value.strip().lower()
+        if normalized in YOUTUBE_MODES:
+            return normalized
+
+        raise ValueError("ACTIVE_WORKBENCH_YOUTUBE_MODE must be set to: oauth.")
+
+    @field_validator(*_PATH_FIELDS, mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _resolve_path(value)
+
+    @field_validator(*_BOOLEAN_COERCION_FIELDS, mode="before")
+    @classmethod
+    def _normalize_booleans(cls, value: Any, info: ValidationInfo) -> bool:
+        field_name = info.field_name
+        assert field_name is not None
+        default_value = cls.model_fields[field_name].default
+        assert isinstance(default_value, bool)
+        return _parse_bool_with_default(value, default=default_value)
+
+    @field_validator("supadata_api_key", "bucket_omdb_api_key", mode="before")
+    @classmethod
+    def _normalize_optional_strings(cls, value: Any) -> str | None:
+        return _normalize_optional_text(value)
+
+
+def _validate_oauth_configuration(
+    *,
+    youtube_client_secret_path: Path,
+    youtube_token_path: Path,
+    supadata_api_key: str | None,
+) -> None:
+    errors: list[str] = []
+
+    if supadata_api_key is None:
+        errors.append(
+            "ACTIVE_WORKBENCH_SUPADATA_API_KEY is required for OAuth runtime mode."
+        )
+    if not youtube_client_secret_path.is_file():
+        errors.append(f"Missing OAuth client secret JSON: {youtube_client_secret_path}")
+    if not youtube_token_path.is_file():
+        errors.append(
+            "Missing OAuth token JSON: "
+            f"{youtube_token_path} (run `just youtube-auth` or `just youtube-auth-secret ...`)."
+        )
+
+    if errors:
+        bullets = "\n".join(f"- {message}" for message in errors)
+        raise ValueError(
+            "Invalid production configuration for OAuth runtime mode:\n"
+            f"{bullets}"
+        )
+
+
+def _apply_path_defaults(settings: AppSettings) -> AppSettings:
+    updates: dict[str, Path] = {}
+    for field_name, relative_default in _DATA_DIR_RELATIVE_DEFAULTS:
+        if field_name in settings.model_fields_set:
+            continue
+        updates[field_name] = settings.data_dir / relative_default
+    if not updates:
+        return settings
+    return settings.model_copy(update=updates)
+
+
+def _resolve_path_fields(settings: AppSettings) -> AppSettings:
+    resolved_updates = {
+        field_name: _resolve_path(getattr(settings, field_name))
+        for field_name in _PATH_FIELDS
+    }
+    return settings.model_copy(update=resolved_updates)
+
+
+def load_settings(*, validate_oauth_secrets: bool = True) -> AppSettings:
+    settings = AppSettings()
+    settings = _apply_path_defaults(settings)
+    settings = _resolve_path_fields(settings)
+
+    if validate_oauth_secrets:
+        _validate_oauth_configuration(
+            youtube_client_secret_path=settings.youtube_client_secret_path,
+            youtube_token_path=settings.youtube_token_path,
+            supadata_api_key=settings.supadata_api_key,
+        )
+
+    return settings

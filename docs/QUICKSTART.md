@@ -1,13 +1,12 @@
 # Active Workbench - Quick Start
 
-**Updated:** 2026-02-08
+**Updated:** 2026-02-20
 
 ## What This Runs
 
-This project is a local-first assistant backend + OpenCode custom tools setup:
-- FastAPI backend (`backend/`) for tool contracts and persistence
+Local-first assistant backend + OpenCode tools:
+- FastAPI backend (`backend/`)
 - SQLite state database (`.active-workbench/state.db`)
-- Markdown vault (`.active-workbench/vault/`)
 - OpenCode custom tools (`.opencode/tools/active_workbench.ts`)
 
 ## Prerequisites
@@ -48,69 +47,21 @@ cd /home/crpier/Projects/active-workbench
 opencode .
 ```
 
-Project agent:
-- This repo config sets `default_agent` to `workbench-assistant` in `opencode.json`.
-- Agent prompt is stored at `.opencode/agents/workbench-assistant.md`.
-- It is tuned to treat "watched/saw video" requests as liked-videos lookups.
-- It is also tuned to proactively persist durable user context through `active_workbench_memory_create`.
+## Run With YouTube OAuth
 
-## Use OpenCode Custom Tools
+OAuth mode is the only supported runtime mode.
 
-OpenCode auto-loads project tools from `.opencode/tools/`.
-
-Examples:
-- `active_workbench_youtube_likes_list_recent`
-- `active_workbench_youtube_transcript_get`
-- `active_workbench_recipe_extract_from_transcript`
-- `active_workbench_vault_recipe_save`
-- `active_workbench_memory_create`
-- `active_workbench_reminder_schedule`
-
-The tool returns are JSON envelopes from the backend (`ok`, `result`, `provenance`, `audit_event_id`, `undo_token`, `error`).
-
-YouTube tool argument hints:
-- `active_workbench_youtube_likes_list_recent`: pass `query`, `topic`, `limit`.
-- `active_workbench_youtube_transcript_get`: pass `video_id` or `url`.
-
-Query behavior:
-- Likes lookup matches against title plus fetched video metadata (description, tags, channel), not title only.
-- Query lookups use one extra YouTube Data API call for metadata enrichment.
-
-Likes tool response fields:
-- `liked_at`: when the video was liked (playlist item timestamp)
-- `video_published_at`: original YouTube publish time
-- `published_at`: kept for compatibility (same value as `liked_at`)
-- `quota`: estimated daily YouTube Data API usage snapshot and warning flag
-
-## YouTube Modes
-
-### Fixture Mode (default)
-
-No OAuth required. Used for local development and deterministic tests.
-
-### OAuth Mode (real account)
-
-Set mode when running backend:
+Run backend:
 
 ```bash
 ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth just run
 ```
 
-One-command auth bootstrap:
+Bootstrap OAuth once:
 
 ```bash
 just youtube-auth-secret /path/to/google_client_secret.json
 ```
-
-This will:
-1. Copy the client secret to the configured location
-2. Run OAuth browser flow
-3. Save token to `.active-workbench/youtube-token.json`
-4. Verify OAuth token setup
-
-Note:
-- `youtube.likes.list_recent` returns your recently liked videos (YouTube Data API `myRating=like`) and is used as the watched-video signal in agent flows.
-- It does not use watch-history APIs.
 
 If secret is already in place:
 
@@ -118,54 +69,116 @@ If secret is already in place:
 just youtube-auth
 ```
 
+## Production Mode
+
+Use the production runbook:
+- `docs/PRODUCTION.md`
+
+Short version:
+1. `cp .env.example .env`
+2. Set `ACTIVE_WORKBENCH_SUPADATA_API_KEY` (and optionally `ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth`).
+3. Ensure OAuth files exist (`youtube-client-secret.json`, `youtube-token.json`).
+4. Run `uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`.
+
+## Ready OpenCode Tools
+
+OpenCode auto-loads tools from `.opencode/tools/`.
+
+Only ready tools:
+- `active_workbench_youtube_likes_list_recent`
+- `active_workbench_youtube_likes_search_recent_content`
+- `active_workbench_youtube_transcript_get`
+- `active_workbench_vault_bucket_list_add`
+- `active_workbench_vault_bucket_list_prioritize`
+- `active_workbench_bucket_item_add`
+- `active_workbench_bucket_item_update`
+- `active_workbench_bucket_item_complete`
+- `active_workbench_bucket_item_search`
+- `active_workbench_bucket_item_recommend`
+- `active_workbench_bucket_health_report`
+
+## Typical User Flows
+
+1. Find recently liked videos:
+```text
+List my 5 most recent liked YouTube videos about cooking.
+```
+
+2. Search recent liked content:
+```text
+Search my recent liked videos for ideas about microservices trade-offs.
+```
+
+3. Get transcript for a selected video:
+```text
+Get transcript for https://www.youtube.com/watch?v=<video_id>
+```
+
+4. Manage bucket list items:
+```text
+Add "Watch Andor" to my bucket list.
+Recommend what I should watch next under 45 minutes.
+Mark item <id> as completed.
+```
+
+## YouTube + Supadata Notes
+
+- Liked videos come from YouTube Data API (`myRating=like`) via OAuth.
+- Transcript retrieval uses Supadata.
+- Likes and transcripts are cached in SQLite (`youtube_likes_cache`, `youtube_transcript_cache`).
+
+## Supadata Key Management (Recommended)
+
+```bash
+mkdir -p ~/.config/active-workbench
+chmod 700 ~/.config/active-workbench
+printf 'export ACTIVE_WORKBENCH_SUPADATA_API_KEY="YOUR_KEY"\n' > ~/.config/active-workbench/secrets.env
+chmod 600 ~/.config/active-workbench/secrets.env
+source ~/.config/active-workbench/secrets.env
+```
+
 ## Useful Environment Variables
 
-- `ACTIVE_WORKBENCH_YOUTUBE_MODE=fixture|oauth`
-- `ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT` (default `10000`)
-- `ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT` (default `0.8`)
-- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS` (default `600`)
-- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS` (default `45`)
-- `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_MAX_ITEMS` (default `500`)
-- `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS` (default `86400`)
+- `ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth` (optional; any other value fails startup)
+- `ACTIVE_WORKBENCH_SUPADATA_API_KEY` (required at startup for OAuth mode)
+- `ACTIVE_WORKBENCH_SUPADATA_BASE_URL` (default `https://api.supadata.ai/v1`)
+- `ACTIVE_WORKBENCH_SUPADATA_TRANSCRIPT_MODE` (default `native`)
 - `ACTIVE_WORKBENCH_DATA_DIR` (default `.active-workbench`)
-- `ACTIVE_WORKBENCH_DEFAULT_TIMEZONE` (default `Europe/Bucharest`)
-- `ACTIVE_WORKBENCH_ENABLE_SCHEDULER=1|0`
-- `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
-- `ACTIVE_WORKBENCH_LOG_LEVEL` (default `INFO`)
-- `ACTIVE_WORKBENCH_LOG_MAX_BYTES` (default `10485760`)
-- `ACTIVE_WORKBENCH_LOG_BACKUP_COUNT` (default `5`)
 - `ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH`
 - `ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH`
-- `ACTIVE_WORKBENCH_API_BASE_URL` (used by OpenCode custom tools; default `http://127.0.0.1:8000`)
+- `ACTIVE_WORKBENCH_SCHEDULER_POLL_INTERVAL_SECONDS` (default `60`, jobs + likes sync)
+- `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS` (default `20`, transcript sync loop)
+- `ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_MIN_INTERVAL_SECONDS` (default `180`)
+- `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS` (default `20`)
+- `ACTIVE_WORKBENCH_API_BASE_URL` (default `http://127.0.0.1:8000`)
+- `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
 
-Caching behavior:
-- Likes and transcript results are cached in SQLite tables (`youtube_likes_cache`, `youtube_transcript_cache`).
-- Tool responses include `result.cache` metadata and quota snapshots show `estimated_units_this_call=0` on cache hits.
+## Quick Runtime Checks
 
-Runtime logs:
-- Rotating backend logs are written to `ACTIVE_WORKBENCH_LOG_DIR/active-workbench.log`.
+Health endpoint:
 
-## Inspect Data Quickly
+```bash
+curl -s http://127.0.0.1:8000/health
+```
 
-Latest memories:
+Latest cached liked videos:
 
 ```bash
 sqlite3 .active-workbench/state.db "
-SELECT id, created_at, deleted_at, content_json
-FROM memory_entries
-ORDER BY created_at DESC
+SELECT video_id, title, liked_at
+FROM youtube_likes_cache
+ORDER BY liked_at DESC
 LIMIT 10;
 "
 ```
 
-Latest memory audit events:
+Latest bucket items:
 
 ```bash
 sqlite3 .active-workbench/state.db "
-SELECT id, tool_name, created_at
-FROM audit_events
-WHERE tool_name = 'memory.create'
-ORDER BY created_at DESC
+SELECT id, title, domain, status, added_at
+FROM bucket_items
+ORDER BY added_at DESC
 LIMIT 10;
 "
 ```

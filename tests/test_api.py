@@ -17,6 +17,12 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "vault.note.save",
     "vault.bucket_list.add",
     "vault.bucket_list.prioritize",
+    "bucket.item.add",
+    "bucket.item.update",
+    "bucket.item.complete",
+    "bucket.item.search",
+    "bucket.item.recommend",
+    "bucket.health.report",
     "memory.create",
     "memory.undo",
     "reminder.schedule",
@@ -60,6 +66,36 @@ def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:
     data = response.json()
     names = [item["name"] for item in data]
     assert set(names) == set(ALL_TOOLS)
+
+
+def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None:
+    response = client.get("/tools")
+    assert response.status_code == 200
+    data = response.json()
+
+    ready_tools = {item["name"] for item in data if item["ready_for_use"] is True}
+    not_ready_tools = {item["name"] for item in data if item["ready_for_use"] is False}
+
+    assert ready_tools == {
+        "youtube.likes.list_recent",
+        "youtube.likes.search_recent_content",
+        "youtube.transcript.get",
+        "vault.bucket_list.add",
+        "vault.bucket_list.prioritize",
+        "bucket.item.add",
+        "bucket.item.update",
+        "bucket.item.complete",
+        "bucket.item.search",
+        "bucket.item.recommend",
+        "bucket.health.report",
+    }
+    assert not_ready_tools == set(ALL_TOOLS) - ready_tools
+
+    for item in data:
+        if item["name"] in ready_tools:
+            assert item["readiness_note"] is None
+        else:
+            assert isinstance(item["readiness_note"], str) and item["readiness_note"]
 
 
 def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
@@ -199,11 +235,11 @@ def test_transcript_accepts_youtube_url_payload(client: TestClient) -> None:
         "/tools/youtube.transcript.get",
         json=_request_body(
             "youtube.transcript.get",
-            payload={"url": "https://www.youtube.com/watch?v=fixture_micro_001"},
+            payload={"url": "https://www.youtube.com/watch?v=test_micro_001"},
         ),
     )
     assert response.status_code == 200
-    assert response.json()["result"]["video_id"] == "fixture_micro_001"
+    assert response.json()["result"]["video_id"] == "test_micro_001"
 
 
 def test_transcript_rejects_invalid_video_identifier(client: TestClient) -> None:
@@ -240,13 +276,13 @@ def test_youtube_likes_cache_miss_policy_explicit_probe(client: TestClient) -> N
     response = client.post(
         "/tools/youtube.likes.list_recent",
         json=_request_body(
-            "youtube.likes.list_recent",
-            payload={
-                "query": "random missing topic",
-                "time_scope": "recent",
-                "cache_miss_policy": "probe_recent",
-                "recent_probe_pages": 2,
-            },
+                "youtube.likes.list_recent",
+                payload={
+                    "query": "soup",
+                    "time_scope": "recent",
+                    "cache_miss_policy": "probe_recent",
+                    "recent_probe_pages": 2,
+                },
         ),
     )
     assert response.status_code == 200
@@ -296,6 +332,117 @@ def test_bucket_list_and_prioritization(client: TestClient) -> None:
     assert prioritized.status_code == 200
     items = prioritized.json()["result"]["items"]
     assert len(items) >= 2
+
+
+def test_structured_bucket_recommend_completion_and_health(client: TestClient) -> None:
+    add_john_wick = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "John Wick: Chapter 2",
+                "domain": "movie",
+                "duration_minutes": 122,
+                "genres": ["Action", "Crime", "Thriller"],
+                "rating": 7.4,
+                "auto_enrich": False,
+            },
+        ),
+    )
+    add_short_action = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "Fast Action Short",
+                "domain": "movie",
+                "duration_minutes": 88,
+                "genres": ["Action"],
+                "rating": 6.8,
+                "auto_enrich": False,
+            },
+        ),
+    )
+    add_drama = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "Slow Drama",
+                "domain": "movie",
+                "duration_minutes": 140,
+                "genres": ["Drama"],
+                "rating": 8.3,
+                "auto_enrich": False,
+            },
+        ),
+    )
+    assert add_john_wick.status_code == 200
+    assert add_short_action.status_code == 200
+    assert add_drama.status_code == 200
+
+    recommend = client.post(
+        "/tools/bucket.item.recommend",
+        json=_request_body(
+            "bucket.item.recommend",
+            payload={
+                "domain": "movie",
+                "genre": "action",
+                "target_duration_minutes": 90,
+                "limit": 2,
+            },
+        ),
+    )
+    assert recommend.status_code == 200
+    recommendations = recommend.json()["result"]["recommendations"]
+    assert recommendations
+    first_title = recommendations[0]["bucket_item"]["title"]
+    assert first_title in {"Fast Action Short", "John Wick: Chapter 2"}
+
+    fast_item_id = add_short_action.json()["result"]["bucket_item"]["item_id"]
+    complete_fast = client.post(
+        "/tools/bucket.item.complete",
+        json=_request_body(
+            "bucket.item.complete",
+            payload={"item_id": fast_item_id},
+        ),
+    )
+    assert complete_fast.status_code == 200
+    assert complete_fast.json()["result"]["bucket_item"]["status"] == "completed"
+
+    active_search = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={"domain": "movie", "query": "Fast Action Short"},
+        ),
+    )
+    assert active_search.status_code == 200
+    assert active_search.json()["result"]["count"] == 0
+
+    include_completed_search = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={
+                "domain": "movie",
+                "query": "Fast Action Short",
+                "include_completed": True,
+            },
+        ),
+    )
+    assert include_completed_search.status_code == 200
+    assert include_completed_search.json()["result"]["count"] == 1
+
+    health = client.post(
+        "/tools/bucket.health.report",
+        json=_request_body("bucket.health.report", payload={"stale_after_days": 0, "limit": 5}),
+    )
+    assert health.status_code == 200
+    report = health.json()["result"]["report"]
+    assert report["totals"]["active"] >= 2
+    assert report["totals"]["completed"] >= 1
+    assert isinstance(report["quick_wins"], list)
 
 
 def test_memory_create_and_undo(client: TestClient) -> None:

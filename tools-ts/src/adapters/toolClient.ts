@@ -12,11 +12,19 @@ type ToolCall = (request: ToolRequest) => Promise<ToolResponse>;
 
 const TOOL_METHODS: Record<ToolName, ToolCall> = {
   "youtube.likes.list_recent": (request) => ToolsService.youtubeLikesListRecent(request),
+  "youtube.likes.search_recent_content": (request) =>
+    ToolsService.youtubeLikesSearchRecentContent(request),
   "youtube.transcript.get": (request) => ToolsService.youtubeTranscriptGet(request),
   "vault.recipe.save": (request) => ToolsService.vaultRecipeSave(request),
   "vault.note.save": (request) => ToolsService.vaultNoteSave(request),
   "vault.bucket_list.add": (request) => ToolsService.vaultBucketListAdd(request),
   "vault.bucket_list.prioritize": (request) => ToolsService.bucketListPrioritize(request),
+  "bucket.item.add": (request) => ToolsService.bucketItemAdd(request),
+  "bucket.item.update": (request) => ToolsService.bucketItemUpdate(request),
+  "bucket.item.complete": (request) => ToolsService.bucketItemComplete(request),
+  "bucket.item.search": (request) => ToolsService.bucketItemSearch(request),
+  "bucket.item.recommend": (request) => ToolsService.bucketItemRecommend(request),
+  "bucket.health.report": (request) => ToolsService.bucketHealthReport(request),
   "memory.create": (request) => ToolsService.memoryCreate(request),
   "memory.undo": (request) => ToolsService.memoryUndo(request),
   "reminder.schedule": (request) => ToolsService.reminderSchedule(request),

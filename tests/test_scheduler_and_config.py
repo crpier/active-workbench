@@ -18,6 +18,18 @@ class _FakeDispatcher:
         self.calls += 1
 
 
+class _FakeYouTubeService:
+    def __init__(self) -> None:
+        self.likes_calls = 0
+        self.transcript_calls = 0
+
+    def run_background_likes_sync(self) -> None:
+        self.likes_calls += 1
+
+    def run_background_transcript_sync(self) -> None:
+        self.transcript_calls += 1
+
+
 def test_scheduler_service_runs_jobs() -> None:
     dispatcher = _FakeDispatcher()
     scheduler = SchedulerService(
@@ -30,12 +42,37 @@ def test_scheduler_service_runs_jobs() -> None:
     assert dispatcher.calls >= 1
 
 
+def test_scheduler_service_decouples_transcript_polling() -> None:
+    dispatcher = _FakeDispatcher()
+    youtube_service = _FakeYouTubeService()
+    scheduler = SchedulerService(
+        dispatcher=cast(Any, dispatcher),
+        poll_interval_seconds=2,
+        transcript_poll_interval_seconds=1,
+        youtube_service=cast(Any, youtube_service),
+    )
+    scheduler.start()
+    time.sleep(2.3)
+    scheduler.stop()
+
+    assert youtube_service.likes_calls >= 1
+    assert youtube_service.transcript_calls >= 2
+    assert youtube_service.transcript_calls > youtube_service.likes_calls
+
+
 def test_load_settings_parses_bool_and_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(tmp_path / "data"))
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
     monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "false")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "fixture")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS", "22")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "120")
@@ -70,7 +107,8 @@ def test_load_settings_parses_bool_and_paths(
     settings = load_settings()
     assert settings.data_dir == (tmp_path / "data").resolve()
     assert settings.scheduler_enabled is False
-    assert settings.youtube_mode == "fixture"
+    assert settings.youtube_transcript_scheduler_poll_interval_seconds == 22
+    assert settings.youtube_mode == "oauth"
     assert settings.youtube_daily_quota_limit == 12_000
     assert settings.youtube_quota_warning_percent == 0.75
     assert settings.youtube_likes_cache_ttl_seconds == 120
@@ -93,3 +131,69 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.log_level == "DEBUG"
     assert settings.log_max_bytes == 2048
     assert settings.log_backup_count == 3
+
+
+def test_load_settings_rejects_invalid_youtube_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "invalid-mode")
+
+    with pytest.raises(ValueError, match="ACTIVE_WORKBENCH_YOUTUBE_MODE"):
+        load_settings()
+
+
+def test_load_settings_oauth_mode_requires_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.delenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="Invalid production configuration"):
+        load_settings()
+
+
+def test_load_settings_oauth_mode_succeeds_with_required_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "  test-key  ")
+
+    settings = load_settings()
+    assert settings.youtube_mode == "oauth"
+    assert settings.supadata_api_key == "test-key"
+
+
+def test_load_settings_reads_dotenv_for_oauth_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "runtime"
+    data_dir.mkdir(parents=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth",
+                "ACTIVE_WORKBENCH_SUPADATA_API_KEY=dotenv-key",
+                f"ACTIVE_WORKBENCH_DATA_DIR={data_dir}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", raising=False)
+    monkeypatch.delenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", raising=False)
+    monkeypatch.delenv("ACTIVE_WORKBENCH_DATA_DIR", raising=False)
+
+    settings = load_settings()
+    assert settings.youtube_mode == "oauth"
+    assert settings.supadata_api_key == "dotenv-key"
+    assert settings.data_dir == data_dir.resolve()

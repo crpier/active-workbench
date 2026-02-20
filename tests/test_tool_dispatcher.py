@@ -6,12 +6,14 @@ from uuid import uuid4
 
 from backend.app.models.tool_contracts import ToolRequest
 from backend.app.repositories.audit_repository import AuditRepository
+from backend.app.repositories.bucket_repository import BucketRepository
 from backend.app.repositories.database import Database
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.jobs_repository import JobsRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import VaultRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
+from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeRateLimitedError
 
@@ -46,6 +48,12 @@ def test_youtube_likes_rate_limit_error_is_explicit_and_retryable(tmp_path: Path
         memory_repository=MemoryRepository(database),
         jobs_repository=JobsRepository(database),
         vault_repository=VaultRepository(tmp_path / "vault"),
+        bucket_repository=BucketRepository(database),
+        bucket_metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            omdb_api_key=None,
+        ),
         youtube_quota_repository=YouTubeQuotaRepository(database),
         youtube_service=cast(Any, _RateLimitedYouTubeService()),
         default_timezone="Europe/Bucharest",

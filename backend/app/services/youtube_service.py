@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import logging
-import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from backend.app.repositories.youtube_cache_repository import (
     CachedLikeVideo,
@@ -70,6 +74,7 @@ class YouTubeTranscriptResult:
     transcript: YouTubeTranscript
     estimated_api_units: int
     cache_hit: bool
+    provider_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,14 @@ class YouTubeServiceError(Exception):
     pass
 
 
+class TranscriptProviderError(YouTubeServiceError):
+    pass
+
+
+class SupadataTranscriptError(TranscriptProviderError):
+    pass
+
+
 class YouTubeRateLimitedError(YouTubeServiceError):
     def __init__(
         self,
@@ -109,7 +122,12 @@ class YouTubeRateLimitedError(YouTubeServiceError):
         self.scope = scope
 
 
-class YouTubeTranscriptIpBlockedError(YouTubeServiceError):
+class TranscriptProviderBlockedError(TranscriptProviderError):
+    pass
+
+
+class YouTubeTranscriptIpBlockedError(TranscriptProviderBlockedError):
+    # Backward-compatible alias retained for tests and callers.
     pass
 
 
@@ -158,17 +176,6 @@ class _VideoMetadata:
 
 
 LOGGER = logging.getLogger("active_workbench.youtube")
-
-PREFERRED_TRANSCRIPT_LANGUAGES: tuple[str, ...] = (
-    "en",
-    "en-US",
-    "en-GB",
-    "ro",
-    "de",
-    "fr",
-    "es",
-    "it",
-)
 
 QUERY_STOPWORDS: frozenset[str] = frozenset(
     {
@@ -254,70 +261,18 @@ LIKES_RECENT_PROBE_RATE_LIMIT_MAX_SECONDS = 86_400
 ISO8601_DURATION_PATTERN = re.compile(
     r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
 )
-
-
-FIXTURE_VIDEOS: list[YouTubeVideo] = [
-    YouTubeVideo(
-        video_id="fixture_cooking_001",
-        title="How To Cook Leek And Potato Soup",
-        published_at="2026-02-06T18:00:00+00:00",
-        liked_at="2026-02-06T18:00:00+00:00",
-        video_published_at="2026-02-06T18:00:00+00:00",
-        description="Simple leek soup tutorial with potato and stock.",
-        channel_title="Fixture Cooking",
-        tags=("soup", "leek", "recipe"),
-    ),
-    YouTubeVideo(
-        video_id="fixture_micro_001",
-        title="Microservices Done Right - Real Lessons",
-        published_at="2026-02-05T19:30:00+00:00",
-        liked_at="2026-02-05T19:30:00+00:00",
-        video_published_at="2026-02-05T19:30:00+00:00",
-        description="Architecture trade-offs and distributed systems pitfalls.",
-        channel_title="Fixture Engineering",
-        tags=("microservices", "architecture"),
-    ),
-    YouTubeVideo(
-        video_id="fixture_general_001",
-        title="Weekly Productivity Systems",
-        published_at="2026-02-04T15:00:00+00:00",
-        liked_at="2026-02-04T15:00:00+00:00",
-        video_published_at="2026-02-04T15:00:00+00:00",
-        description="A review of GPT-5.3 pros and cons for coding productivity.",
-        channel_title="Fixture AI",
-        tags=("gpt-5.3", "llm", "productivity"),
-    ),
-]
-
-FIXTURE_TRANSCRIPTS: dict[str, YouTubeTranscript] = {
-    "fixture_cooking_001": YouTubeTranscript(
-        video_id="fixture_cooking_001",
-        title="How To Cook Leek And Potato Soup",
-        source="fixture",
-        transcript="""
-Today we're cooking a leek and potato soup.
-Ingredients: 2 leeks, 3 potatoes, 2 tbsp olive oil, 1 liter vegetable stock, salt, pepper.
-Chop the leeks and potatoes.
-Heat oil in a pot and add chopped leeks. Stir for 5 minutes.
-Add potatoes and stock, then simmer for 25 minutes.
-Blend until smooth, add salt and pepper, and serve warm.
-""".strip(),
-        segments=[],
-    ),
-    "fixture_micro_001": YouTubeTranscript(
-        video_id="fixture_micro_001",
-        title="Microservices Done Right - Real Lessons",
-        source="fixture",
-        transcript="""
-Microservices help teams deploy independently, but they increase operational complexity.
-Start with clear service boundaries and avoid sharing databases.
-Observability is critical: tracing, metrics, and logs must be designed from day one.
-Failure isolation and retries are useful, but uncontrolled retries can create cascading failures.
-Use asynchronous messaging when latency tolerance allows it.
-""".strip(),
-        segments=[],
-    ),
-}
+SUPADATA_PENDING_JOB_STATUSES: frozenset[str] = frozenset(
+    {
+        "queued",
+        "pending",
+        "processing",
+        "running",
+        "in_progress",
+        "in progress",
+    }
+)
+SUPADATA_TRANSCRIPT_UNAVAILABLE_IMMEDIATE_RETRIES = 2
+SUPADATA_TRANSCRIPT_UNAVAILABLE_RETRY_DELAY_SECONDS = 1.0
 
 
 class YouTubeService:
@@ -338,13 +293,25 @@ class YouTubeService:
         likes_background_target_items: int = 1_000,
         transcript_cache_ttl_seconds: int = 86_400,
         transcript_background_sync_enabled: bool = True,
-        transcript_background_min_interval_seconds: int = 20,
+        transcript_background_min_interval_seconds: int = 120,
         transcript_background_recent_limit: int = 1_000,
         transcript_background_backoff_base_seconds: int = 300,
         transcript_background_backoff_max_seconds: int = 86_400,
         transcript_background_ip_block_pause_seconds: int = 7_200,
+        oauth_token_path: Path | None = None,
+        oauth_client_secret_path: Path | None = None,
+        supadata_api_key: str | None = None,
+        supadata_base_url: str = "https://api.supadata.ai/v1",
+        supadata_transcript_mode: str = "native",
+        supadata_http_timeout_seconds: float = 30.0,
+        supadata_poll_interval_seconds: float = 1.0,
+        supadata_poll_max_attempts: int = 30,
     ) -> None:
-        self._mode = mode
+        normalized_mode = mode.strip().lower()
+        if normalized_mode != "oauth":
+            raise YouTubeServiceError(
+                "Unsupported YouTube mode. Only OAuth-backed mode is available."
+            )
         self._data_dir = data_dir
         self._cache_repository = cache_repository
         self._likes_cache_ttl_seconds = max(0, likes_cache_ttl_seconds)
@@ -378,17 +345,51 @@ class YouTubeService:
             60,
             transcript_background_ip_block_pause_seconds,
         )
+        resolved_oauth_paths = resolve_oauth_paths(
+            data_dir,
+            token_override=oauth_token_path,
+            secret_override=oauth_client_secret_path,
+        )
+        self._oauth_token_path, self._oauth_client_secret_path = resolved_oauth_paths
+        self._supadata_api_key = _normalize_env_text(supadata_api_key)
+        self._supadata_base_url = _normalize_supadata_base_url(supadata_base_url)
+        self._supadata_transcript_mode = _normalize_supadata_transcript_mode(
+            supadata_transcript_mode
+        )
+        self._supadata_http_timeout_seconds = max(1.0, supadata_http_timeout_seconds)
+        self._supadata_poll_interval_seconds = max(0.2, supadata_poll_interval_seconds)
+        self._supadata_poll_max_attempts = max(1, supadata_poll_max_attempts)
 
     @property
     def is_oauth_mode(self) -> bool:
-        return self._mode == "oauth"
+        return True
+
+    @property
+    def supadata_configured(self) -> bool:
+        return self._supadata_api_key is not None
+
+    def _transcript_background_provider(self) -> str:
+        if self._supadata_api_key is not None:
+            return "supadata"
+        return "youtube"
+
+    def _build_oauth_client(self) -> Any:
+        return _build_youtube_client(
+            self._data_dir,
+            token_path=self._oauth_token_path,
+            secrets_path=self._oauth_client_secret_path,
+        )
+
+    def _fetch_video_snippet(self, video_id: str) -> _VideoSnippet:
+        return _fetch_video_snippet(
+            video_id,
+            self._data_dir,
+            token_path=self._oauth_token_path,
+            secrets_path=self._oauth_client_secret_path,
+        )
 
     def run_background_likes_sync(self) -> None:
-        if (
-            self._mode != "oauth"
-            or not self._likes_background_sync_enabled
-            or self._cache_repository is None
-        ):
+        if not self._likes_background_sync_enabled or self._cache_repository is None:
             return
 
         if not self._background_sync_interval_elapsed():
@@ -408,7 +409,7 @@ class YouTubeService:
             likes_rows_before,
             start_progress,
         )
-        client = _build_youtube_client(self._data_dir)
+        client = self._build_oauth_client()
         likes_playlist_id = _resolve_likes_playlist_id(client)
 
         hot_next_page_token: str | None = None
@@ -612,9 +613,7 @@ class YouTubeService:
     def _clear_likes_recent_probe_rate_limit_streak(self) -> None:
         if self._cache_repository is None:
             return
-        self._cache_repository.clear_cache_state_value(
-            key=LIKES_RECENT_PROBE_RATE_LIMIT_STREAK_KEY
-        )
+        self._cache_repository.clear_cache_state_value(key=LIKES_RECENT_PROBE_RATE_LIMIT_STREAK_KEY)
 
     def _compute_likes_recent_probe_rate_limit_backoff_seconds(
         self,
@@ -635,7 +634,7 @@ class YouTubeService:
         recent_probe_pages: int,
         enrich_metadata: bool,
     ) -> tuple[int, int]:
-        if self._cache_repository is None or self._mode != "oauth":
+        if self._cache_repository is None:
             return 0, 0
 
         now = datetime.now(UTC)
@@ -652,7 +651,7 @@ class YouTubeService:
             )
 
         try:
-            client = _build_youtube_client(self._data_dir)
+            client = self._build_oauth_client()
             likes_playlist_id = _resolve_likes_playlist_id(client)
 
             pages_to_fetch = max(1, min(3, recent_probe_pages))
@@ -722,11 +721,7 @@ class YouTubeService:
             ) from exc
 
     def run_background_transcript_sync(self) -> None:
-        if (
-            self._mode != "oauth"
-            or not self._transcript_background_sync_enabled
-            or self._cache_repository is None
-        ):
+        if not self._transcript_background_sync_enabled or self._cache_repository is None:
             return
 
         if not self._transcript_background_interval_elapsed():
@@ -734,6 +729,7 @@ class YouTubeService:
 
         now = datetime.now(UTC)
         pause_until = self._transcript_global_pause_until(now)
+        provider = self._transcript_background_provider()
         if pause_until is not None:
             self._mark_transcript_background_run()
             remaining_seconds = max(0, int((pause_until - now).total_seconds()))
@@ -741,8 +737,9 @@ class YouTubeService:
             LOGGER.warning(
                 (
                     "youtube transcript background_sync skip reason=ip_block_pause "
-                    "remaining_seconds=%s ip_block_streak=%s"
+                    "provider=%s remaining_seconds=%s ip_block_streak=%s"
                 ),
+                provider,
                 remaining_seconds,
                 ip_block_streak,
             )
@@ -762,9 +759,11 @@ class YouTubeService:
             LOGGER.info(
                 (
                     "youtube transcript background_sync skip reason=no_candidate recent_limit=%s "
-                    "likes_rows=%s transcript_rows=%s coverage=%s%% done=%s retry_wait=%s"
+                    "provider=%s likes_rows=%s transcript_rows=%s coverage=%s%% "
+                    "done=%s retry_wait=%s"
                 ),
                 self._transcript_background_recent_limit,
+                provider,
                 likes_rows,
                 transcript_rows_before,
                 coverage_before,
@@ -775,10 +774,11 @@ class YouTubeService:
 
         LOGGER.info(
             (
-                "youtube transcript background_sync start video_id=%s liked_at=%s "
+                "youtube transcript background_sync start video_id=%s provider=%s liked_at=%s "
                 "likes_rows=%s transcript_rows=%s coverage=%s%% done=%s retry_wait=%s"
             ),
             candidate.video_id,
+            provider,
             candidate.liked_at,
             likes_rows,
             transcript_rows_before,
@@ -789,6 +789,8 @@ class YouTubeService:
         try:
             transcript_result = self.get_transcript_with_metadata(candidate.video_id)
         except Exception as exc:
+            error_type = exc.__class__.__name__
+            error_message = _summarize_exception_message(exc)
             ip_blocked = _is_transcript_ip_block_error(exc)
             attempts = (
                 self._cache_repository.get_transcript_sync_attempts(video_id=candidate.video_id) + 1
@@ -811,22 +813,27 @@ class YouTubeService:
                 video_id=candidate.video_id,
                 attempts=attempts,
                 next_attempt_at=next_attempt_at,
-                error=str(exc),
+                error=f"{error_type}: {error_message}",
             )
             self._mark_transcript_background_run()
             status_counts_after = self._cache_repository.count_transcript_sync_state_by_status()
             LOGGER.warning(
                 (
                     "youtube transcript background_sync failed video_id=%s attempts=%s "
-                    "backoff_seconds=%s ip_blocked=%s ip_block_streak=%s done=%s retry_wait=%s"
+                    "provider=%s backoff_seconds=%s ip_blocked=%s ip_block_streak=%s "
+                    "error_type=%s error=%s done=%s retry_wait=%s"
                 ),
                 candidate.video_id,
                 attempts,
+                provider,
                 backoff_seconds,
                 ip_blocked,
                 ip_block_streak,
+                error_type,
+                error_message,
                 status_counts_after.get("done", 0),
                 status_counts_after.get("retry_wait", 0),
+                exc_info=True,
             )
             return
 
@@ -838,13 +845,16 @@ class YouTubeService:
         status_counts_after = self._cache_repository.count_transcript_sync_state_by_status()
         LOGGER.info(
             (
-                "youtube transcript background_sync done video_id=%s cache_hit=%s source=%s "
+                "youtube transcript background_sync done video_id=%s provider=%s "
+                "cache_hit=%s source=%s provider_request_id=%s "
                 "transcript_rows_before=%s transcript_rows_after=%s coverage=%s%% "
                 "done=%s retry_wait=%s"
             ),
             candidate.video_id,
+            provider,
             transcript_result.cache_hit,
             transcript_result.transcript.source,
+            transcript_result.provider_request_id,
             transcript_rows_before,
             transcript_rows_after,
             coverage_after,
@@ -960,37 +970,27 @@ class YouTubeService:
         self,
         *,
         query: str,
-        window_days: int,
+        window_days: int | None,
         limit: int,
         probe_recent_on_miss: bool,
         recent_probe_pages: int,
     ) -> YouTubeRecentContentSearchResult:
         normalized_limit = max(1, min(25, limit))
-        normalized_window_days = max(1, min(30, window_days))
+        normalized_window_days = (
+            None if window_days is None else max(1, min(30, window_days))
+        )
         normalized_query = query.strip()
         if not normalized_query:
             raise YouTubeServiceError("payload.query is required")
 
-        cutoff = datetime.now(UTC) - timedelta(days=normalized_window_days)
+        cutoff = (
+            None
+            if normalized_window_days is None
+            else datetime.now(UTC) - timedelta(days=normalized_window_days)
+        )
         estimated_api_units = 0
         recent_probe_applied = False
         recent_probe_pages_used = 0
-
-        if self._mode != "oauth":
-            matches, recent_count, transcript_count = _search_fixture_recent_content(
-                query=normalized_query,
-                cutoff=cutoff,
-            )
-            return YouTubeRecentContentSearchResult(
-                matches=matches[:normalized_limit],
-                recent_videos_count=recent_count,
-                transcripts_available_count=transcript_count,
-                transcript_coverage_percent=_percent_progress(transcript_count, recent_count),
-                estimated_api_units=0,
-                cache_miss=not matches,
-                recent_probe_applied=False,
-                recent_probe_pages_used=0,
-            )
 
         if self._cache_repository is None:
             raise YouTubeServiceError("YouTube cache repository is required for cached likes flow")
@@ -1015,6 +1015,9 @@ class YouTubeService:
             cache_miss = not matches
 
         transcript_count = len(transcript_texts)
+        window_log_value: int | str = (
+            "all" if normalized_window_days is None else normalized_window_days
+        )
         LOGGER.info(
             (
                 "youtube recent_content_search query=%s window_days=%s matches=%s "
@@ -1022,7 +1025,7 @@ class YouTubeService:
                 "probe_pages=%s"
             ),
             normalized_query,
-            normalized_window_days,
+            window_log_value,
             len(matches),
             len(recent_videos),
             transcript_count,
@@ -1045,7 +1048,7 @@ class YouTubeService:
         self,
         *,
         query: str,
-        cutoff: datetime,
+        cutoff: datetime | None,
     ) -> tuple[list[YouTubeRecentContentMatch], list[YouTubeVideo], dict[str, str]]:
         if self._cache_repository is None:
             return [], [], {}
@@ -1056,7 +1059,9 @@ class YouTubeService:
         recent_videos: list[YouTubeVideo] = []
         for row in cached_rows:
             liked_at = _parse_datetime_utc(row.liked_at)
-            if liked_at is None or liked_at < cutoff:
+            if liked_at is None:
+                continue
+            if cutoff is not None and liked_at < cutoff:
                 continue
             recent_videos.append(_cached_like_to_video(row))
         transcript_texts = self._cache_repository.get_cached_transcript_texts(
@@ -1078,16 +1083,6 @@ class YouTubeService:
         recent_probe_pages: int = 1,
     ) -> YouTubeListRecentResult:
         normalized_limit = max(1, min(100, limit))
-        if self._mode != "oauth":
-            videos = _filter_fixture_videos(limit=normalized_limit, query=query)
-            return YouTubeListRecentResult(
-                videos=videos,
-                estimated_api_units=0,
-                cache_hit=False,
-                refreshed=False,
-                cache_miss=query is not None and not videos,
-            )
-
         if self._cache_repository is None:
             raise YouTubeServiceError("YouTube cache repository is required for cached likes flow")
 
@@ -1144,14 +1139,6 @@ class YouTubeService:
         self, limit: int, query: str | None = None
     ) -> YouTubeListRecentResult:
         normalized_limit = max(1, min(100, limit))
-        if self._mode != "oauth":
-            return YouTubeListRecentResult(
-                videos=_filter_fixture_videos(limit=normalized_limit, query=query),
-                estimated_api_units=0,
-                cache_hit=False,
-                refreshed=False,
-            )
-
         if self._cache_repository is None:
             oauth_fetch = self._list_recent_oauth(
                 limit=normalized_limit,
@@ -1174,16 +1161,6 @@ class YouTubeService:
         return self.get_transcript_with_metadata(video_id).transcript
 
     def get_transcript_with_metadata(self, video_id: str) -> YouTubeTranscriptResult:
-        if self._mode != "oauth":
-            transcript = FIXTURE_TRANSCRIPTS.get(video_id)
-            if transcript is None:
-                raise YouTubeServiceError(f"No fixture transcript found for video_id={video_id}")
-            return YouTubeTranscriptResult(
-                transcript=transcript,
-                estimated_api_units=0,
-                cache_hit=False,
-            )
-
         if self._cache_repository is not None:
             cached_transcript = self._cache_repository.get_fresh_transcript(
                 video_id=video_id,
@@ -1204,11 +1181,11 @@ class YouTubeService:
                 )
 
         try:
-            transcript = self._fetch_transcript_with_api(video_id)
-        except YouTubeTranscriptIpBlockedError:
+            transcript, provider_request_id = self._fetch_transcript_with_supadata(video_id)
+        except YouTubeServiceError:
             raise
         except Exception as exc:
-            raise YouTubeServiceError(f"Failed to fetch YouTube transcript payload: {exc}") from exc
+            raise YouTubeServiceError(f"Failed to fetch transcript from provider: {exc}") from exc
         if transcript is not None:
             if self._cache_repository is not None:
                 segments_payload: list[dict[str, object]] = []
@@ -1239,10 +1216,14 @@ class YouTubeService:
                 transcript=transcript,
                 estimated_api_units=1,
                 cache_hit=False,
+                provider_request_id=provider_request_id,
             )
 
-        raise YouTubeServiceError(
-            "Transcript unavailable from YouTube captions and no fallback provider succeeded"
+        raise SupadataTranscriptError(
+            _with_provider_request_id(
+                "Transcript unavailable from the configured transcript provider.",
+                provider_request_id,
+            )
         )
 
     def _list_recent_oauth_with_cache(
@@ -1364,7 +1345,7 @@ class YouTubeService:
         return oauth_fetch
 
     def _list_recent_oauth(self, limit: int, *, enrich_metadata: bool) -> _OAuthLikedFetch:
-        client = _build_youtube_client(self._data_dir)
+        client = self._build_oauth_client()
 
         try:
             oauth_fetch = _list_from_liked_videos(client, limit, enrich_metadata=enrich_metadata)
@@ -1381,66 +1362,138 @@ class YouTubeService:
             estimated_api_units=oauth_fetch.estimated_api_units,
         )
 
-    def _fetch_transcript_with_api(self, video_id: str) -> YouTubeTranscript | None:
-        snippet = _fetch_video_snippet(video_id, self._data_dir)
+    def _fetch_transcript_with_supadata(
+        self, video_id: str
+    ) -> tuple[YouTubeTranscript | None, str | None]:
+        if self._supadata_api_key is None:
+            raise SupadataTranscriptError(
+                "Supadata API key is missing. Set ACTIVE_WORKBENCH_SUPADATA_API_KEY."
+            )
+
+        snippet = self._fetch_video_snippet(video_id)
         title = snippet.title
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        max_attempts = 1 + SUPADATA_TRANSCRIPT_UNAVAILABLE_IMMEDIATE_RETRIES
+        last_request_id: str | None = None
+        for attempt in range(max_attempts):
+            status_code, payload = _fetch_supadata_json(
+                url=f"{self._supadata_base_url}/transcript",
+                api_key=self._supadata_api_key,
+                timeout_seconds=self._supadata_http_timeout_seconds,
+                params={
+                    "url": video_url,
+                    "text": "false",
+                    "mode": self._supadata_transcript_mode,
+                    "lang": "ro",
+                },
+            )
+            request_id = _extract_supadata_request_id(payload)
+            if request_id is not None:
+                last_request_id = request_id
 
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
+            if status_code == 202:
+                job_id = _extract_supadata_job_id(payload)
+                if job_id is None:
+                    raise SupadataTranscriptError(
+                        "Supadata transcript job was accepted but no job ID was returned."
+                    )
+                payload, poll_request_id = self._poll_supadata_transcript_job(job_id)
+                if poll_request_id is not None:
+                    request_id = poll_request_id
+                    last_request_id = poll_request_id
+                status_code = 200
 
-            transcript_api = cast(Any, YouTubeTranscriptApi)
-            segments_raw = _fetch_captions_segments(video_id, transcript_api)
+            if status_code >= 400:
+                message = _extract_supadata_error_message(payload)
+                if message is None:
+                    message = f"Supadata transcript request failed (status {status_code})."
+                raise SupadataTranscriptError(_with_provider_request_id(message, request_id))
 
-            text = "\n".join(str(segment.get("text", "")) for segment in segments_raw).strip()
-            if text:
-                parsed_segments = _normalize_segments(segments_raw)
-
-                return YouTubeTranscript(
-                    video_id=video_id,
-                    title=title,
-                    transcript=text,
-                    source="youtube_captions",
-                    segments=parsed_segments,
+            segments = _extract_supadata_segments(payload)
+            transcript_text = _extract_supadata_transcript_text(payload, segments=segments)
+            if transcript_text:
+                return (
+                    YouTubeTranscript(
+                        video_id=video_id,
+                        title=title,
+                        transcript=transcript_text,
+                        source="supadata_captions",
+                        segments=segments,
+                    ),
+                    request_id,
                 )
-        except Exception as exc:
-            if _is_transcript_ip_block_error(exc):
-                raise YouTubeTranscriptIpBlockedError(
-                    "YouTube transcript endpoint is temporarily blocking this IP "
-                    "(IpBlocked/RequestBlocked)."
-                ) from exc
 
-        description = snippet.description
-        if description is None:
-            return None
+            unavailable_message = _build_supadata_transcript_unavailable_message(
+                payload=payload,
+                status_code=status_code,
+            )
+            has_retry_budget = attempt < max_attempts - 1
+            should_retry = has_retry_budget and _is_supadata_transcript_unavailable(payload)
+            if should_retry:
+                LOGGER.info(
+                    (
+                        "youtube transcript supadata immediate_retry "
+                        "video_id=%s attempt=%s max_attempts=%s provider_request_id=%s "
+                        "reason=%s"
+                    ),
+                    video_id,
+                    attempt + 1,
+                    max_attempts,
+                    request_id,
+                    unavailable_message,
+                )
+                time.sleep(SUPADATA_TRANSCRIPT_UNAVAILABLE_RETRY_DELAY_SECONDS)
+                continue
+            raise SupadataTranscriptError(_with_provider_request_id(unavailable_message, request_id))
 
-        return YouTubeTranscript(
-            video_id=video_id,
-            title=title,
-            transcript=description,
-            source="video_description_fallback",
-            segments=[],
+        raise SupadataTranscriptError(
+            _with_provider_request_id(
+                "Supadata transcript unavailable after immediate retries.",
+                last_request_id,
+            )
         )
 
+    def _poll_supadata_transcript_job(self, job_id: str) -> tuple[dict[str, Any], str | None]:
+        request_id: str | None = None
+        for attempt in range(self._supadata_poll_max_attempts):
+            status_code, payload = _fetch_supadata_json(
+                url=f"{self._supadata_base_url}/transcript/{job_id}",
+                api_key=self._supadata_api_key or "",
+                timeout_seconds=self._supadata_http_timeout_seconds,
+                params=None,
+            )
+            current_request_id = _extract_supadata_request_id(payload)
+            if current_request_id is not None:
+                request_id = current_request_id
 
-def _search_fixture_recent_content(
-    *,
-    query: str,
-    cutoff: datetime,
-) -> tuple[list[YouTubeRecentContentMatch], int, int]:
-    recent_videos = [video for video in FIXTURE_VIDEOS if _video_liked_datetime(video) >= cutoff]
-    transcript_texts: dict[str, str] = {}
-    for video in recent_videos:
-        transcript = FIXTURE_TRANSCRIPTS.get(video.video_id)
-        if transcript is not None and transcript.transcript.strip():
-            transcript_texts[video.video_id] = transcript.transcript
+            if status_code == 206:
+                return payload, request_id
+            if status_code >= 400:
+                message = _extract_supadata_error_message(payload)
+                if message is None:
+                    message = f"Supadata transcript job failed (status {status_code})."
+                raise SupadataTranscriptError(_with_provider_request_id(message, request_id))
 
-    matches = _search_recent_content_matches(
-        query=query,
-        videos=recent_videos,
-        transcript_texts=transcript_texts,
-    )
-    return matches, len(recent_videos), len(transcript_texts)
+            job_status = _extract_supadata_job_status(payload)
+            if job_status is not None and job_status in SUPADATA_PENDING_JOB_STATUSES:
+                if attempt < self._supadata_poll_max_attempts - 1:
+                    time.sleep(self._supadata_poll_interval_seconds)
+                    continue
+                raise SupadataTranscriptError(
+                    _with_provider_request_id(
+                        "Supadata transcript job timed out before completion.",
+                        request_id,
+                    )
+                )
 
+            return payload, request_id
+
+        raise SupadataTranscriptError(
+            _with_provider_request_id(
+                "Supadata transcript job timed out before completion.",
+                request_id,
+            )
+        )
 
 def _search_recent_content_matches(
     *,
@@ -1583,15 +1636,6 @@ def _video_liked_datetime(video: YouTubeVideo) -> datetime:
     if parsed is not None:
         return parsed
     return datetime.fromtimestamp(0, tz=UTC)
-
-
-def _filter_fixture_videos(limit: int, query: str | None) -> list[YouTubeVideo]:
-    if query is None:
-        return FIXTURE_VIDEOS[:limit]
-
-    filtered = _filter_videos_by_query(FIXTURE_VIDEOS, query)
-    return filtered[:limit]
-
 
 def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouTubeVideo]:
     normalized_query = query.lower().strip()
@@ -1737,7 +1781,301 @@ def _clone_segments(segments: list[dict[str, object]]) -> list[dict[str, Any]]:
     return cloned
 
 
-def _build_youtube_client(data_dir: Path) -> Any:
+def _fetch_supadata_json(
+    *,
+    url: str,
+    api_key: str,
+    timeout_seconds: float,
+    params: dict[str, str] | None,
+) -> tuple[int, dict[str, Any]]:
+    query = urlencode(params or {})
+    request_url = f"{url}?{query}" if query else url
+    request = Request(
+        request_url,
+        headers={
+            "x-api-key": api_key,
+            "accept": "application/json",
+            "user-agent": "active-workbench/1.0",
+        },
+        method="GET",
+    )
+
+    status_code = 0
+    raw_body = ""
+    response_headers: Any = None
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            status_code = int(response.getcode() or 0)
+            raw_body = response.read().decode("utf-8", errors="replace")
+            response_headers = response.headers
+    except HTTPError as exc:
+        status_code = int(exc.code)
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        response_headers = exc.headers
+    except (URLError, TimeoutError, OSError) as exc:
+        raise SupadataTranscriptError(f"Supadata request failed: {exc}") from exc
+
+    payload = _parse_json_dict(raw_body)
+    request_id = _extract_request_id_from_headers(response_headers) or _extract_supadata_request_id(
+        payload
+    )
+    if request_id is not None:
+        payload = dict(payload)
+        payload["_active_workbench_supadata_request_id"] = request_id
+    return status_code, payload
+
+
+def _with_provider_request_id(message: str, request_id: str | None) -> str:
+    if request_id is None:
+        return message
+    return f"{message} (supadata_request_id={request_id})"
+
+
+def _extract_request_id_from_headers(headers: Any) -> str | None:
+    if headers is None or not hasattr(headers, "get"):
+        return None
+
+    for key in ("x-request-id", "X-Request-Id", "request-id", "Request-Id"):
+        raw_value = headers.get(key)
+        if isinstance(raw_value, str) and raw_value.strip():
+            return raw_value.strip()
+    return None
+
+
+def _parse_json_dict(raw_body: str) -> dict[str, Any]:
+    if not raw_body.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return {}
+    return _as_dict(parsed)
+
+
+def _extract_supadata_transcript_text(
+    payload: dict[str, Any],
+    *,
+    segments: list[dict[str, Any]],
+) -> str:
+    candidate_texts = [
+        _coerce_nonempty_string(payload.get("content")),
+        _coerce_nonempty_string(payload.get("text")),
+        _coerce_nonempty_string(payload.get("transcript")),
+    ]
+    for container_key in ("data", "result"):
+        container = _as_dict(payload.get(container_key))
+        candidate_texts.extend(
+            [
+                _coerce_nonempty_string(container.get("content")),
+                _coerce_nonempty_string(container.get("text")),
+                _coerce_nonempty_string(container.get("transcript")),
+            ]
+        )
+
+    for candidate in candidate_texts:
+        if candidate is not None:
+            return candidate
+
+    lines = [segment.get("text", "").strip() for segment in segments]
+    return "\n".join(line for line in lines if line)
+
+
+def _extract_supadata_segments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        raw_content = container.get("content")
+        segments = _normalize_supadata_segments(raw_content)
+        if segments:
+            return segments
+
+        raw_segments = container.get("segments")
+        segments = _normalize_supadata_segments(raw_segments)
+        if segments:
+            return segments
+    return []
+
+
+def _normalize_supadata_segments(raw_segments: object) -> list[dict[str, Any]]:
+    if not isinstance(raw_segments, list):
+        return []
+
+    segments: list[dict[str, Any]] = []
+    for raw_segment in cast(list[Any], raw_segments):
+        segment = _as_dict(raw_segment)
+        text = _coerce_nonempty_string(segment.get("text")) or _coerce_nonempty_string(
+            segment.get("content")
+        )
+        if text is None:
+            continue
+
+        start = _coerce_segment_time(segment.get("offset"), milliseconds=False)
+        if start is None:
+            start = _coerce_segment_time(segment.get("start"), milliseconds=False)
+        if start is None:
+            start = _coerce_segment_time(segment.get("offsetMs"), milliseconds=True)
+        if start is None:
+            start = _coerce_segment_time(segment.get("startMs"), milliseconds=True)
+
+        duration = _coerce_segment_time(segment.get("duration"), milliseconds=False)
+        if duration is None:
+            duration = _coerce_segment_time(segment.get("durationMs"), milliseconds=True)
+
+        normalized: dict[str, Any] = {"text": text}
+        if start is not None:
+            normalized["start"] = start
+        if duration is not None:
+            normalized["duration"] = duration
+        segments.append(normalized)
+    return segments
+
+
+def _coerce_segment_time(raw_value: object, *, milliseconds: bool) -> float | None:
+    numeric: float | None = None
+    if isinstance(raw_value, (int, float)):
+        numeric = float(raw_value)
+    elif isinstance(raw_value, str):
+        try:
+            numeric = float(raw_value.strip())
+        except ValueError:
+            numeric = None
+
+    if numeric is None:
+        return None
+    if milliseconds:
+        numeric /= 1000.0
+    return max(0.0, numeric)
+
+
+def _extract_supadata_job_id(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        for key in ("jobId", "job_id", "id"):
+            value = _coerce_nonempty_string(container.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _extract_supadata_job_status(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        raw_status = _coerce_nonempty_string(container.get("status"))
+        if raw_status is not None:
+            return raw_status.strip().lower()
+    return None
+
+
+def _extract_supadata_error_message(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        for key in ("message", "detail", "error"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = _as_dict(value)
+                nested_message = nested.get("message")
+                if isinstance(nested_message, str) and nested_message.strip():
+                    return nested_message.strip()
+    return None
+
+
+def _extract_supadata_request_id(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        for key in (
+            "_active_workbench_supadata_request_id",
+            "request_id",
+            "requestId",
+            "x_request_id",
+            "xRequestId",
+        ):
+            value = _coerce_nonempty_string(container.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _is_supadata_transcript_unavailable(payload: dict[str, Any]) -> bool:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        for key in ("error", "message", "detail", "details"):
+            value = container.get(key)
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().lower()
+            if not normalized:
+                continue
+            if "transcript-unavailable" in normalized or "transcript unavailable" in normalized:
+                return True
+    return False
+
+
+def _build_supadata_transcript_unavailable_message(
+    *,
+    payload: dict[str, Any],
+    status_code: int,
+) -> str:
+    parts: list[str] = ["Supadata transcript unavailable"]
+    code = _extract_supadata_error_code(payload)
+    message = _extract_supadata_error_message(payload)
+    details = _extract_supadata_error_details(payload)
+
+    if code is not None:
+        parts.append(f"code={code}")
+    if message is not None:
+        parts.append(f"message={message}")
+    if details is not None:
+        parts.append(f"details={details}")
+    parts.append(f"http_status={status_code}")
+    return "; ".join(parts)
+
+
+def _extract_supadata_error_code(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        value = _coerce_nonempty_string(container.get("error"))
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_supadata_error_details(payload: dict[str, Any]) -> str | None:
+    for container in (payload, _as_dict(payload.get("data")), _as_dict(payload.get("result"))):
+        for key in ("details", "detail"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = _as_dict(value)
+                nested_message = nested.get("message")
+                if isinstance(nested_message, str) and nested_message.strip():
+                    return nested_message.strip()
+    return None
+
+
+def _normalize_supadata_transcript_mode(raw_value: str) -> str:
+    normalized = raw_value.strip().lower()
+    if normalized in {"native", "auto", "generate"}:
+        return normalized
+    return "native"
+
+
+def _normalize_supadata_base_url(raw_value: str) -> str:
+    trimmed = raw_value.strip()
+    if not trimmed:
+        return "https://api.supadata.ai/v1"
+    return trimmed.rstrip("/")
+
+
+def _normalize_env_text(raw_value: str | None) -> str | None:
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _build_youtube_client(
+    data_dir: Path,
+    *,
+    token_path: Path | None = None,
+    secrets_path: Path | None = None,
+) -> Any:
     try:
         requests_module = import_module("google.auth.transport.requests")
         credentials_module = import_module("google.oauth2.credentials")
@@ -1749,7 +2087,11 @@ def _build_youtube_client(data_dir: Path) -> Any:
         ) from exc
 
     scope = ["https://www.googleapis.com/auth/youtube.readonly"]
-    token_path, secrets_path = resolve_oauth_paths(data_dir)
+    resolved_token_path, resolved_secrets_path = resolve_oauth_paths(
+        data_dir,
+        token_override=token_path,
+        secret_override=secrets_path,
+    )
 
     request_cls: Any = requests_module.Request
     credentials_cls: Any = credentials_module.Credentials
@@ -1757,8 +2099,8 @@ def _build_youtube_client(data_dir: Path) -> Any:
     build_fn: Any = discovery_module.build
 
     credentials: Any | None = None
-    if token_path.exists():
-        credentials = credentials_cls.from_authorized_user_file(str(token_path), scope)
+    if resolved_token_path.exists():
+        credentials = credentials_cls.from_authorized_user_file(str(resolved_token_path), scope)
 
     if credentials is None or not credentials.valid:
         if credentials is not None and credentials.expired and credentials.refresh_token:
@@ -1767,42 +2109,46 @@ def _build_youtube_client(data_dir: Path) -> Any:
             except Exception as exc:
                 LOGGER.warning(
                     "youtube oauth token_refresh_failed token_path=%s",
-                    token_path,
+                    resolved_token_path,
                     exc_info=True,
                 )
                 if _oauth_refresh_requires_reauth(exc):
                     raise YouTubeServiceError(
                         "YouTube OAuth token has expired or was revoked. "
-                        f"Remove {token_path} and run `just youtube-auth` to re-authorize."
+                        f"Remove {resolved_token_path} and run `just youtube-auth` to re-authorize."
                     ) from exc
                 raise YouTubeServiceError(f"Failed to refresh YouTube OAuth token: {exc}") from exc
         else:
-            if not secrets_path.exists():
-                raise YouTubeServiceError(f"Missing OAuth client secret file at {secrets_path}")
+            if not resolved_secrets_path.exists():
+                raise YouTubeServiceError(
+                    f"Missing OAuth client secret file at {resolved_secrets_path}"
+                )
 
-            flow = flow_cls.from_client_secrets_file(str(secrets_path), scope)
+            flow = flow_cls.from_client_secrets_file(str(resolved_secrets_path), scope)
             credentials = flow.run_local_server(port=0)
 
         if credentials is None:
             raise YouTubeServiceError("OAuth flow did not return credentials")
 
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        token_path.write_text(str(credentials.to_json()), encoding="utf-8")
+        resolved_token_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_token_path.write_text(str(credentials.to_json()), encoding="utf-8")
 
     return build_fn("youtube", "v3", credentials=credentials, cache_discovery=False)
 
 
-def resolve_oauth_paths(data_dir: Path) -> tuple[Path, Path]:
-    token_override = os.getenv("ACTIVE_WORKBENCH_YOUTUBE_TOKEN_PATH")
-    secret_override = os.getenv("ACTIVE_WORKBENCH_YOUTUBE_CLIENT_SECRET_PATH")
-
+def resolve_oauth_paths(
+    data_dir: Path,
+    *,
+    token_override: Path | None = None,
+    secret_override: Path | None = None,
+) -> tuple[Path, Path]:
     token_path = (
-        Path(token_override).expanduser().resolve()
+        token_override.expanduser().resolve()
         if token_override
         else (data_dir / "youtube-token.json").resolve()
     )
     secrets_path = (
-        Path(secret_override).expanduser().resolve()
+        secret_override.expanduser().resolve()
         if secret_override
         else (data_dir / "youtube-client-secret.json").resolve()
     )
@@ -2218,154 +2564,27 @@ def _parse_retry_after_duration_seconds(raw_value: str) -> int | None:
     return amount
 
 
-def _fetch_captions_segments(video_id: str, transcript_api_ref: Any) -> list[dict[str, Any]]:
-    preferred_languages = list(PREFERRED_TRANSCRIPT_LANGUAGES)
-    api_instance = _build_transcript_api_instance(transcript_api_ref)
-
-    fetch_callable = getattr(api_instance, "fetch", None)
-    if callable(fetch_callable):
-        try:
-            fetched = fetch_callable(
-                video_id,
-                languages=preferred_languages,
-                preserve_formatting=False,
-            )
-            segments = _normalize_segments(fetched)
-            if segments:
-                return segments
-        except Exception as exc:
-            if _is_transcript_ip_block_error(exc):
-                raise
-
-    list_callable = getattr(api_instance, "list", None)
-    if callable(list_callable):
-        try:
-            transcript_list = list_callable(video_id)
-            selected = _select_transcript_track(transcript_list, preferred_languages)
-            if selected is not None:
-                track_fetch = getattr(selected, "fetch", None)
-                if callable(track_fetch):
-                    fetched = track_fetch()
-                    segments = _normalize_segments(fetched)
-                    if segments:
-                        return segments
-        except Exception as exc:
-            if _is_transcript_ip_block_error(exc):
-                raise
-
-    legacy_get = getattr(transcript_api_ref, "get_transcript", None)
-    if callable(legacy_get):
-        try:
-            legacy_segments = legacy_get(video_id, languages=preferred_languages)
-            return _normalize_segments(legacy_segments)
-        except Exception as exc:
-            if _is_transcript_ip_block_error(exc):
-                raise
-
-    legacy_get_instance = getattr(api_instance, "get_transcript", None)
-    if callable(legacy_get_instance):
-        try:
-            legacy_segments = legacy_get_instance(video_id, languages=preferred_languages)
-            return _normalize_segments(legacy_segments)
-        except Exception as exc:
-            if _is_transcript_ip_block_error(exc):
-                raise
-
-    return []
+def _summarize_exception_message(exc: Exception, *, max_length: int = 400) -> str:
+    raw = str(exc).strip()
+    if not raw:
+        raw = repr(exc)
+    if len(raw) <= max_length:
+        return raw
+    return f"{raw[: max_length - 3]}..."
 
 
-def _build_transcript_api_instance(transcript_api_ref: Any) -> Any:
-    try:
-        return transcript_api_ref()
-    except Exception:
-        return transcript_api_ref
-
-
-def _select_transcript_track(transcript_list: Any, preferred_languages: list[str]) -> Any | None:
-    for selector_name in (
-        "find_manually_created_transcript",
-        "find_generated_transcript",
-        "find_transcript",
-    ):
-        selector = getattr(transcript_list, selector_name, None)
-        if callable(selector):
-            try:
-                track = selector(preferred_languages)
-                if track is not None:
-                    return track
-            except Exception:
-                continue
-
-    try:
-        for track in transcript_list:
-            return track
-    except Exception:
-        return None
-
-    return None
-
-
-def _normalize_segments(raw_segments: Any) -> list[dict[str, Any]]:
-    to_raw_data = getattr(raw_segments, "to_raw_data", None)
-    if callable(to_raw_data):
-        raw_segments = to_raw_data()
-
-    segments: list[dict[str, Any]] = []
-    for raw_segment in _iterable_items(raw_segments):
-        segment_dict = _segment_to_dict(raw_segment)
-        if segment_dict is not None:
-            segments.append(segment_dict)
-    return segments
-
-
-def _iterable_items(raw_value: Any) -> list[Any]:
-    if isinstance(raw_value, list):
-        raw_list = cast(list[Any], raw_value)
-        return list(raw_list)
-    if isinstance(raw_value, tuple):
-        raw_tuple = cast(tuple[Any, ...], raw_value)
-        return list(raw_tuple)
-
-    try:
-        iterator: Any = iter(raw_value)
-    except Exception:
-        return []
-
-    items: list[Any] = []
-    for item in iterator:
-        items.append(item)
-    return items
-
-
-def _segment_to_dict(raw_segment: Any) -> dict[str, Any] | None:
-    if isinstance(raw_segment, dict):
-        source = cast(dict[object, object], raw_segment)
-        text = source.get("text")
-        start = source.get("start")
-        duration = source.get("duration")
-    else:
-        text = getattr(raw_segment, "text", None)
-        start = getattr(raw_segment, "start", None)
-        duration = getattr(raw_segment, "duration", None)
-
-    if not isinstance(text, str):
-        return None
-
-    return {
-        "text": text,
-        "start": _coerce_float(start),
-        "duration": _coerce_float(duration),
-    }
-
-
-def _coerce_float(value: Any) -> float:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return 0.0
-
-
-def _fetch_video_snippet(video_id: str, data_dir: Path) -> _VideoSnippet:
-    client = _build_youtube_client(data_dir)
+def _fetch_video_snippet(
+    video_id: str,
+    data_dir: Path,
+    *,
+    token_path: Path | None = None,
+    secrets_path: Path | None = None,
+) -> _VideoSnippet:
+    client = _build_youtube_client(
+        data_dir,
+        token_path=token_path,
+        secrets_path=secrets_path,
+    )
     response = cast(
         dict[str, Any],
         client.videos().list(part="snippet", id=video_id, maxResults=1).execute(),

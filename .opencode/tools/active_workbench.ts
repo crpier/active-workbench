@@ -7,11 +7,18 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
 
 const TOOL_NAMES = {
   youtube_likes_list_recent: "youtube.likes.list_recent",
+  youtube_likes_search_recent_content: "youtube.likes.search_recent_content",
   youtube_transcript_get: "youtube.transcript.get",
   vault_recipe_save: "vault.recipe.save",
   vault_note_save: "vault.note.save",
   vault_bucket_list_add: "vault.bucket_list.add",
   vault_bucket_list_prioritize: "vault.bucket_list.prioritize",
+  bucket_item_add: "bucket.item.add",
+  bucket_item_update: "bucket.item.update",
+  bucket_item_complete: "bucket.item.complete",
+  bucket_item_search: "bucket.item.search",
+  bucket_item_recommend: "bucket.item.recommend",
+  bucket_health_report: "bucket.health.report",
   memory_create: "memory.create",
   memory_undo: "memory.undo",
   reminder_schedule: "reminder.schedule",
@@ -140,6 +147,23 @@ export const youtube_transcript_get = backendTool(
   },
 );
 
+export const youtube_likes_search_recent_content = backendTool(
+  TOOL_NAMES.youtube_likes_search_recent_content,
+  "Search recent liked YouTube content by title/description/transcript matches.",
+  {
+    extraArgs: {
+      query: tool.schema.string().optional().describe("Search query text."),
+      window_days: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Optional lookback window in days. Omit to search across all cached likes."),
+      limit: tool.schema.number().int().optional().describe("Maximum number of matches."),
+    },
+    payloadFields: ["query", "window_days", "limit"],
+  },
+);
+
 export const vault_recipe_save = backendTool(
   TOOL_NAMES.vault_recipe_save,
   "Save a recipe document into the vault.",
@@ -158,6 +182,36 @@ export const vault_bucket_list_add = backendTool(
 export const vault_bucket_list_prioritize = backendTool(
   TOOL_NAMES.vault_bucket_list_prioritize,
   "Get bucket list prioritization from backend context.",
+);
+
+export const bucket_item_add = backendTool(
+  TOOL_NAMES.bucket_item_add,
+  "Add or merge a structured bucket item with optional metadata enrichment.",
+);
+
+export const bucket_item_update = backendTool(
+  TOOL_NAMES.bucket_item_update,
+  "Update a structured bucket item. Include item_id plus changed fields.",
+);
+
+export const bucket_item_complete = backendTool(
+  TOOL_NAMES.bucket_item_complete,
+  "Mark a structured bucket item as completed (kept in storage but hidden from active views).",
+);
+
+export const bucket_item_search = backendTool(
+  TOOL_NAMES.bucket_item_search,
+  "Search structured bucket items by query/domain/genre/duration/rating.",
+);
+
+export const bucket_item_recommend = backendTool(
+  TOOL_NAMES.bucket_item_recommend,
+  "Recommend best-fit bucket items from constraints such as genre and duration.",
+);
+
+export const bucket_health_report = backendTool(
+  TOOL_NAMES.bucket_health_report,
+  "Generate bucket health diagnostics including stale items, metadata gaps, and quick wins.",
 );
 
 export const memory_create = backendTool(
