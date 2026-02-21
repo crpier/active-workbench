@@ -28,10 +28,11 @@ class _RateLimitedYouTubeService:
         limit: int,
         query: str | None = None,
         *,
+        cursor: int = 0,
         probe_recent_on_miss: bool = False,
         recent_probe_pages: int = 1,
     ) -> object:
-        _ = (limit, query, probe_recent_on_miss, recent_probe_pages)
+        _ = (limit, query, cursor, probe_recent_on_miss, recent_probe_pages)
         raise YouTubeRateLimitedError(
             "YouTube Data API is currently rate-limiting recent-likes refresh requests.",
             retry_after_seconds=600,
@@ -83,3 +84,50 @@ def test_youtube_likes_rate_limit_error_is_explicit_and_retryable(tmp_path: Path
     assert rate_limit["retry_after_seconds"] == 600
     assert rate_limit["action"] == "wait_and_retry"
     assert "retry_after_utc" in rate_limit
+
+
+def test_bucket_annotation_poll_marks_pending_attempts(tmp_path: Path) -> None:
+    database = Database(tmp_path / "state.db")
+    database.initialize()
+    dispatcher = ToolDispatcher(
+        audit_repository=AuditRepository(database),
+        idempotency_repository=IdempotencyRepository(database),
+        memory_repository=MemoryRepository(database),
+        jobs_repository=JobsRepository(database),
+        vault_repository=VaultRepository(tmp_path / "vault"),
+        bucket_repository=BucketRepository(database),
+        bucket_metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            omdb_api_key=None,
+        ),
+        youtube_quota_repository=YouTubeQuotaRepository(database),
+        youtube_service=cast(Any, _RateLimitedYouTubeService()),
+        default_timezone="Europe/Bucharest",
+        youtube_daily_quota_limit=10_000,
+        youtube_quota_warning_percent=0.8,
+    )
+
+    add_request = ToolRequest(
+        tool="bucket.item.add",
+        request_id=uuid4(),
+        payload={"title": "Unknown Title", "domain": "movie", "auto_enrich": False},
+    )
+    add_response = dispatcher.execute("bucket.item.add", add_request)
+    assert add_response.ok is True
+
+    poll_result = dispatcher.run_bucket_annotation_poll(limit=10)
+    assert poll_result["attempted"] >= 1
+    assert poll_result["pending"] >= 1
+
+    search_request = ToolRequest(
+        tool="bucket.item.search",
+        request_id=uuid4(),
+        payload={"query": "Unknown Title", "domain": "movie"},
+    )
+    search_response = dispatcher.execute("bucket.item.search", search_request)
+    assert search_response.ok is True
+    assert search_response.result["count"] == 1
+    item = search_response.result["items"][0]
+    assert item["annotated"] is False
+    assert item["annotation_last_attempt_at"] is not None

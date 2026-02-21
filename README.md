@@ -27,9 +27,7 @@ YouTube:
 - `youtube.likes.search_recent_content`
 - `youtube.transcript.get`
 
-Bucket list (legacy + structured):
-- `vault.bucket_list.add`
-- `vault.bucket_list.prioritize`
+Bucket list:
 - `bucket.item.add`
 - `bucket.item.update`
 - `bucket.item.complete`

@@ -11,8 +11,6 @@ ToolName = Literal[
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",
-    "vault.bucket_list.add",
-    "vault.bucket_list.prioritize",
     "bucket.item.add",
     "bucket.item.update",
     "bucket.item.complete",
@@ -34,7 +32,6 @@ WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "vault.recipe.save",
         "vault.note.save",
-        "vault.bucket_list.add",
         "bucket.item.add",
         "bucket.item.update",
         "bucket.item.complete",

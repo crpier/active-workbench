@@ -11,8 +11,6 @@ const TOOL_NAMES = {
   youtube_transcript_get: "youtube.transcript.get",
   vault_recipe_save: "vault.recipe.save",
   vault_note_save: "vault.note.save",
-  vault_bucket_list_add: "vault.bucket_list.add",
-  vault_bucket_list_prioritize: "vault.bucket_list.prioritize",
   bucket_item_add: "bucket.item.add",
   bucket_item_update: "bucket.item.update",
   bucket_item_complete: "bucket.item.complete",
@@ -112,10 +110,19 @@ function backendTool(
 
 export const youtube_likes_list_recent = backendTool(
   TOOL_NAMES.youtube_likes_list_recent,
-  "List recently liked YouTube videos; use this for user requests like watched/saw/seen videos and filter by query/topic.",
+  "List recently liked YouTube videos; use this for user requests like watched/saw/seen videos and filter by query/topic. Supports cursor pagination for full-history scans.",
   {
     extraArgs: {
-      limit: tool.schema.any().optional().describe("Maximum number of liked videos to fetch."),
+      limit: tool.schema.any().optional().describe("Maximum number of liked videos to fetch for this page."),
+      cursor: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Optional page cursor from result.next_cursor; start at 0 or omit."),
+      compact: tool.schema
+        .boolean()
+        .optional()
+        .describe("Return compact video payload (recommended for full-history analysis)."),
       query: tool.schema
         .string()
         .optional()
@@ -125,7 +132,7 @@ export const youtube_likes_list_recent = backendTool(
         .optional()
         .describe("Alias for query."),
     },
-    payloadFields: ["limit", "query", "topic"],
+    payloadFields: ["limit", "cursor", "compact", "query", "topic"],
   },
 );
 
@@ -174,19 +181,17 @@ export const vault_note_save = backendTool(
   "Save a general note document into the vault.",
 );
 
-export const vault_bucket_list_add = backendTool(
-  TOOL_NAMES.vault_bucket_list_add,
-  "Add an item to the bucket list vault.",
-);
-
-export const vault_bucket_list_prioritize = backendTool(
-  TOOL_NAMES.vault_bucket_list_prioritize,
-  "Get bucket list prioritization from backend context.",
-);
-
 export const bucket_item_add = backendTool(
   TOOL_NAMES.bucket_item_add,
-  "Add or merge a structured bucket item with optional metadata enrichment.",
+  "Add or merge a structured bucket item. Domain is required; infer it only when highly confident, otherwise ask the user first.",
+  {
+    extraArgs: {
+      title: tool.schema.string().describe("Item title."),
+      domain: tool.schema.string().describe("Required domain (for example movie, tv, book, game, place, travel)."),
+      notes: tool.schema.string().optional().describe("Optional notes/description."),
+    },
+    payloadFields: ["title", "domain", "notes"],
+  },
 );
 
 export const bucket_item_update = backendTool(
@@ -201,12 +206,12 @@ export const bucket_item_complete = backendTool(
 
 export const bucket_item_search = backendTool(
   TOOL_NAMES.bucket_item_search,
-  "Search structured bucket items by query/domain/genre/duration/rating.",
+  "Search structured bucket items by query/domain/genre/duration/rating. Includes annotation status so unannotated items can be identified.",
 );
 
 export const bucket_item_recommend = backendTool(
   TOOL_NAMES.bucket_item_recommend,
-  "Recommend best-fit bucket items from constraints such as genre and duration.",
+  "Recommend best-fit bucket items from constraints such as genre and duration. Unannotated items are excluded.",
 );
 
 export const bucket_health_report = backendTool(

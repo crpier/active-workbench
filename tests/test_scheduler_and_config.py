@@ -18,6 +18,21 @@ class _FakeDispatcher:
         self.calls += 1
 
 
+class _FakeDispatcherWithBucketPoll(_FakeDispatcher):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bucket_annotation_calls = 0
+
+    def run_bucket_annotation_poll(self) -> dict[str, int]:
+        self.bucket_annotation_calls += 1
+        return {
+            "attempted": 0,
+            "annotated": 0,
+            "pending": 0,
+            "failed": 0,
+        }
+
+
 class _FakeYouTubeService:
     def __init__(self) -> None:
         self.likes_calls = 0
@@ -40,6 +55,20 @@ def test_scheduler_service_runs_jobs() -> None:
     time.sleep(1.2)
     scheduler.stop()
     assert dispatcher.calls >= 1
+
+
+def test_scheduler_service_throttles_bucket_annotation_poll() -> None:
+    dispatcher = _FakeDispatcherWithBucketPoll()
+    scheduler = SchedulerService(
+        dispatcher=cast(Any, dispatcher),
+        poll_interval_seconds=1,
+    )
+    scheduler.start()
+    time.sleep(2.2)
+    scheduler.stop()
+
+    assert dispatcher.calls >= 2
+    assert dispatcher.bucket_annotation_calls == 1
 
 
 def test_scheduler_service_decouples_transcript_polling() -> None:
@@ -103,6 +132,8 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_MAX_BYTES", "2048")
     monkeypatch.setenv("ACTIVE_WORKBENCH_LOG_BACKUP_COUNT", "3")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_TELEMETRY_ENABLED", "true")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_TELEMETRY_SINK", "log")
 
     settings = load_settings()
     assert settings.data_dir == (tmp_path / "data").resolve()
@@ -131,6 +162,8 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.log_level == "DEBUG"
     assert settings.log_max_bytes == 2048
     assert settings.log_backup_count == 3
+    assert settings.telemetry_enabled is True
+    assert settings.telemetry_sink == "log"
 
 
 def test_load_settings_rejects_invalid_youtube_mode(monkeypatch: pytest.MonkeyPatch) -> None:

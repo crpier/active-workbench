@@ -71,6 +71,47 @@
         }
       }
     },
+    "/tools/youtube.likes.search_recent_content": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Youtube Likes Search Recent Content",
+        "operationId": "youtube_likes_search_recent_content",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tools/youtube.transcript.get": {
       "post": {
         "tags": [
@@ -194,13 +235,13 @@
         }
       }
     },
-    "/tools/vault.bucket_list.add": {
+    "/tools/bucket.item.add": {
       "post": {
         "tags": [
           "tools"
         ],
-        "summary": "Vault Bucket List Add",
-        "operationId": "vault_bucket_list_add",
+        "summary": "Bucket Item Add",
+        "operationId": "bucket_item_add",
         "requestBody": {
           "content": {
             "application/json": {
@@ -235,13 +276,177 @@
         }
       }
     },
-    "/tools/vault.bucket_list.prioritize": {
+    "/tools/bucket.item.update": {
       "post": {
         "tags": [
           "tools"
         ],
-        "summary": "Bucket List Prioritize",
-        "operationId": "bucket_list_prioritize",
+        "summary": "Bucket Item Update",
+        "operationId": "bucket_item_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/bucket.item.complete": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Bucket Item Complete",
+        "operationId": "bucket_item_complete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/bucket.item.search": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Bucket Item Search",
+        "operationId": "bucket_item_search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/bucket.item.recommend": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Bucket Item Recommend",
+        "operationId": "bucket_item_recommend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/bucket.health.report": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Bucket Health Report",
+        "operationId": "bucket_health_report",
         "requestBody": {
           "content": {
             "application/json": {
@@ -711,11 +916,16 @@
             "type": "string",
             "enum": [
               "youtube.likes.list_recent",
+              "youtube.likes.search_recent_content",
               "youtube.transcript.get",
               "vault.recipe.save",
               "vault.note.save",
-              "vault.bucket_list.add",
-              "vault.bucket_list.prioritize",
+              "bucket.item.add",
+              "bucket.item.update",
+              "bucket.item.complete",
+              "bucket.item.search",
+              "bucket.item.recommend",
+              "bucket.health.report",
               "memory.create",
               "memory.undo",
               "reminder.schedule",
@@ -735,6 +945,21 @@
           "write_operation": {
             "type": "boolean",
             "title": "Write Operation"
+          },
+          "ready_for_use": {
+            "type": "boolean",
+            "title": "Ready For Use"
+          },
+          "readiness_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness Note"
           }
         },
         "additionalProperties": false,
@@ -742,7 +967,8 @@
         "required": [
           "name",
           "description",
-          "write_operation"
+          "write_operation",
+          "ready_for_use"
         ],
         "title": "ToolCatalogEntry"
       },
@@ -799,11 +1025,16 @@
             "type": "string",
             "enum": [
               "youtube.likes.list_recent",
+              "youtube.likes.search_recent_content",
               "youtube.transcript.get",
               "vault.recipe.save",
               "vault.note.save",
-              "vault.bucket_list.add",
-              "vault.bucket_list.prioritize",
+              "bucket.item.add",
+              "bucket.item.update",
+              "bucket.item.complete",
+              "bucket.item.search",
+              "bucket.item.recommend",
+              "bucket.health.report",
               "memory.create",
               "memory.undo",
               "reminder.schedule",

@@ -58,16 +58,6 @@ What it does:
 
 ## Bucket List Workflow
 
-### Legacy markdown-compatible bucket list
-
-Use:
-- `vault.bucket_list.add`
-- `vault.bucket_list.prioritize`
-
-What it does:
-- Adds items through the vault-compatible flow.
-- Produces a prioritization view.
-
 ### Structured bucket list
 
 Use:
@@ -81,6 +71,10 @@ Use:
 What it does:
 - Keeps items as structured records in SQLite.
 - Supports filtering, recommendations, and health diagnostics.
+- Requires explicit domain on add (for example movie, tv, book, game, place, travel).
+- Background annotation runs periodically (scheduler loop) to enrich low-detail items.
+- Search results include unannotated items and expose their annotation status.
+- Recommendations exclude unannotated items.
 
 ## OpenCode Tool Names
 
@@ -89,8 +83,6 @@ In OpenCode, these are exposed as:
 - `active_workbench_youtube_likes_list_recent`
 - `active_workbench_youtube_likes_search_recent_content`
 - `active_workbench_youtube_transcript_get`
-- `active_workbench_vault_bucket_list_add`
-- `active_workbench_vault_bucket_list_prioritize`
 - `active_workbench_bucket_item_add`
 - `active_workbench_bucket_item_update`
 - `active_workbench_bucket_item_complete`

@@ -117,44 +117,6 @@ export class ToolsService {
         });
     }
     /**
-     * Vault Bucket List Add
-     * @param requestBody
-     * @returns ToolResponse Successful Response
-     * @throws ApiError
-     */
-    public static vaultBucketListAdd(
-        requestBody: ToolRequest,
-    ): CancelablePromise<ToolResponse> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/tools/vault.bucket_list.add',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * Bucket List Prioritize
-     * @param requestBody
-     * @returns ToolResponse Successful Response
-     * @throws ApiError
-     */
-    public static bucketListPrioritize(
-        requestBody: ToolRequest,
-    ): CancelablePromise<ToolResponse> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/tools/vault.bucket_list.prioritize',
-            body: requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
      * Bucket Item Add
      * @param requestBody
      * @returns ToolResponse Successful Response

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, time, timedelta
+from time import perf_counter
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
@@ -38,11 +39,12 @@ from backend.app.services.youtube_service import (
     YouTubeService,
     YouTubeServiceError,
 )
+from backend.app.telemetry import TelemetryClient
 
 TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "youtube.likes.list_recent": (
         "List recently liked YouTube videos from local cache populated by background sync. "
-        "Use payload.query/topic and optional payload.time_scope/cache_miss_policy hints."
+        "Use payload.query/topic and optional payload.cursor/time_scope/cache_miss_policy hints."
     ),
     "youtube.likes.search_recent_content": (
         "Search recent liked videos by content (title/description/transcript) in a recent window."
@@ -52,9 +54,10 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ),
     "vault.recipe.save": "Persist a recipe note in markdown.",
     "vault.note.save": "Persist a generic knowledge note in markdown.",
-    "vault.bucket_list.add": "Add an item to the bucket list (legacy markdown-compatible flow).",
-    "vault.bucket_list.prioritize": "Prioritize active bucket list items for review.",
-    "bucket.item.add": "Add or merge a structured bucket item with optional metadata enrichment.",
+    "bucket.item.add": (
+        "Add or merge a structured bucket item. "
+        "payload.domain (or payload.kind) is required."
+    ),
     "bucket.item.update": "Update a structured bucket item.",
     "bucket.item.complete": "Mark a bucket item as completed (hidden from active queries).",
     "bucket.item.search": "Search bucket items with filters.",
@@ -76,8 +79,6 @@ READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
         "youtube.likes.list_recent",
         "youtube.likes.search_recent_content",
         "youtube.transcript.get",
-        "vault.bucket_list.add",
-        "vault.bucket_list.prioritize",
         "bucket.item.add",
         "bucket.item.update",
         "bucket.item.complete",
@@ -104,6 +105,7 @@ class ToolDispatcher:
         default_timezone: str,
         youtube_daily_quota_limit: int,
         youtube_quota_warning_percent: float,
+        telemetry: TelemetryClient | None = None,
     ) -> None:
         self._audit_repository = audit_repository
         self._idempotency_repository = idempotency_repository
@@ -114,7 +116,7 @@ class ToolDispatcher:
         self._bucket_metadata_service = bucket_metadata_service
         self._youtube_quota_repository = youtube_quota_repository
         self._youtube_service = youtube_service
-        self._bucket_legacy_synced = False
+        self._telemetry = telemetry if telemetry is not None else TelemetryClient.disabled()
         self._default_timezone = default_timezone
         self._youtube_daily_quota_limit = max(0, youtube_daily_quota_limit)
         bounded_warning_percent = min(1.0, max(0.0, youtube_quota_warning_percent))
@@ -149,24 +151,156 @@ class ToolDispatcher:
 
     def run_due_jobs(self) -> None:
         due_jobs = self._jobs_repository.list_due_jobs(datetime.now(UTC))
+        self._telemetry.emit(
+            "scheduler.jobs.due",
+            due_jobs_count=len(due_jobs),
+        )
         for job in due_jobs:
-            result = self._run_single_job(job)
+            started_at = perf_counter()
+            self._telemetry.emit(
+                "scheduler.job.start",
+                job_id=job.job_id,
+                job_type=job.job_type,
+                recurrence=job.recurrence,
+            )
+            try:
+                result = self._run_single_job(job)
+            except Exception as exc:
+                self._telemetry.emit(
+                    "scheduler.job.error",
+                    job_id=job.job_id,
+                    job_type=job.job_type,
+                    error_type=type(exc).__name__,
+                    duration_ms=int((perf_counter() - started_at) * 1000),
+                )
+                raise
             if job.recurrence == "weekly":
                 self._jobs_repository.reschedule_weekly(job.job_id, job.run_at + timedelta(days=7))
             else:
                 self._jobs_repository.mark_completed(job.job_id, result)
+            self._telemetry.emit(
+                "scheduler.job.finish",
+                job_id=job.job_id,
+                job_type=job.job_type,
+                recurrence=job.recurrence,
+                duration_ms=int((perf_counter() - started_at) * 1000),
+                status=result.get("status"),
+            )
+
+    def run_bucket_annotation_poll(self, *, limit: int = 20) -> dict[str, int]:
+        candidates = self._bucket_repository.list_unannotated_active_items(limit=max(1, limit))
+        attempted = 0
+        annotated = 0
+        pending = 0
+        failed = 0
+
+        for item in candidates:
+            attempted += 1
+            attempt_at = datetime.now(UTC).isoformat()
+            enrichment = self._bucket_metadata_service.enrich(
+                title=item.title,
+                domain=item.domain,
+                year=item.year,
+            )
+
+            metadata_updates: dict[str, Any] = {
+                "annotation_last_attempt_at": attempt_at,
+            }
+            if enrichment.provider is None:
+                metadata_updates["annotation_status"] = "pending"
+                metadata_updates["annotation_error"] = "no_match"
+                updated = self._bucket_repository.update_item(
+                    item_id=item.item_id,
+                    metadata=metadata_updates,
+                )
+                if updated is None:
+                    failed += 1
+                else:
+                    pending += 1
+                continue
+
+            metadata_updates = _merge_dicts(metadata_updates, enrichment.metadata)
+            metadata_updates["annotation_status"] = "annotated"
+            metadata_updates["annotation_provider"] = enrichment.provider
+            metadata_updates["annotation_updated_at"] = attempt_at
+            metadata_updates.pop("annotation_error", None)
+
+            updated = self._bucket_repository.update_item(
+                item_id=item.item_id,
+                year=enrichment.year if item.year is None else None,
+                duration_minutes=(
+                    enrichment.duration_minutes if item.duration_minutes is None else None
+                ),
+                rating=enrichment.rating if item.rating is None else None,
+                popularity=enrichment.popularity if item.popularity is None else None,
+                genres=enrichment.genres if not item.genres else None,
+                tags=enrichment.tags if not item.tags else None,
+                providers=enrichment.providers if not item.providers else None,
+                metadata=metadata_updates,
+                source_refs=enrichment.source_refs,
+                canonical_id=enrichment.canonical_id if item.canonical_id is None else None,
+                external_url=enrichment.external_url if item.external_url is None else None,
+                confidence=enrichment.confidence if item.confidence is None else None,
+            )
+            if updated is None:
+                failed += 1
+                continue
+            annotated += 1
+
+        result = {
+            "attempted": attempted,
+            "annotated": annotated,
+            "pending": pending,
+            "failed": failed,
+        }
+        return result
 
     def execute(self, tool_name: ToolName, request: ToolRequest) -> ToolResponse:
-        self.run_due_jobs()
+        started_at = perf_counter()
+        request_id = str(request.request_id)
+        self._telemetry.emit(
+            "tool.execute.start",
+            tool_name=tool_name,
+            request_id=request_id,
+            write_operation=tool_name in WRITE_TOOLS,
+            has_idempotency_key=request.idempotency_key is not None,
+        )
+        try:
+            self.run_due_jobs()
 
-        cached = self._load_idempotent_response(tool_name, request.idempotency_key)
-        if cached is not None:
-            return cached
+            cached = self._load_idempotent_response(tool_name, request.idempotency_key)
+            if cached is not None:
+                self._telemetry.emit(
+                    "tool.execute.finish",
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    duration_ms=int((perf_counter() - started_at) * 1000),
+                    outcome="ok" if cached.ok else "error",
+                    idempotency_cache_hit=True,
+                )
+                return cached
 
-        response = self._execute_tool(tool_name, request)
-        response = self._attach_audit_event(tool_name, request, response)
-        self._store_idempotent_response(tool_name, request.idempotency_key, response)
-        return response
+            response = self._execute_tool(tool_name, request)
+            response = self._attach_audit_event(tool_name, request, response)
+            self._store_idempotent_response(tool_name, request.idempotency_key, response)
+            self._telemetry.emit(
+                "tool.execute.finish",
+                tool_name=tool_name,
+                request_id=request_id,
+                duration_ms=int((perf_counter() - started_at) * 1000),
+                outcome="ok" if response.ok else "error",
+                idempotency_cache_hit=False,
+            )
+            return response
+        except Exception as exc:
+            self._telemetry.emit(
+                "tool.execute.error",
+                tool_name=tool_name,
+                request_id=request_id,
+                duration_ms=int((perf_counter() - started_at) * 1000),
+                error_type=type(exc).__name__,
+            )
+            raise
 
     def _execute_tool(self, tool_name: ToolName, request: ToolRequest) -> ToolResponse:
         if tool_name == "youtube.likes.list_recent":
@@ -179,10 +313,6 @@ class ToolDispatcher:
             return self._handle_vault_save(request, category="recipes")
         if tool_name == "vault.note.save":
             return self._handle_vault_save(request, category="notes")
-        if tool_name == "vault.bucket_list.add":
-            return self._handle_bucket_item_add(request, legacy_response=True)
-        if tool_name == "vault.bucket_list.prioritize":
-            return self._handle_bucket_list_prioritize(request)
         if tool_name == "bucket.item.add":
             return self._handle_bucket_item_add(request)
         if tool_name == "bucket.item.update":
@@ -266,7 +396,14 @@ class ToolDispatcher:
         return response.model_copy(update={"audit_event_id": audit_event_id})
 
     def _handle_youtube_likes(self, request: ToolRequest) -> ToolResponse:
-        limit = _int_or_default(request.payload.get("limit"), default=5)
+        requested_limit = _int_or_default(request.payload.get("limit"), default=5)
+        applied_limit = max(1, min(100, requested_limit))
+        raw_cursor = request.payload.get("cursor")
+        if raw_cursor is None:
+            raw_cursor = request.payload.get("offset")
+        requested_cursor = _optional_int(raw_cursor)
+        cursor = max(0, requested_cursor or 0)
+        compact = _bool_or_default(request.payload.get("compact"), default=False)
         query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
         time_scope = _normalize_time_scope(request.payload.get("time_scope"))
         cache_miss_policy = _normalize_cache_miss_policy(request.payload.get("cache_miss_policy"))
@@ -290,8 +427,9 @@ class ToolDispatcher:
 
         try:
             likes_result = self._youtube_service.list_recent_cached_only_with_metadata(
-                limit=max(1, min(25, limit)),
+                limit=applied_limit,
                 query=query,
+                cursor=cursor,
                 probe_recent_on_miss=probe_recent_on_miss,
                 recent_probe_pages=recent_probe_pages,
             )
@@ -321,37 +459,52 @@ class ToolDispatcher:
                 estimated_units_this_call=0,
             )
 
-        payload_videos = [
-            {
-                "video_id": item.video_id,
-                "title": item.title,
-                "published_at": item.published_at,
-                "liked_at": item.liked_at,
-                "video_published_at": item.video_published_at,
-                "description": item.description,
-                "channel_id": item.channel_id,
-                "channel_title": item.channel_title,
-                "duration_seconds": item.duration_seconds,
-                "category_id": item.category_id,
-                "default_language": item.default_language,
-                "default_audio_language": item.default_audio_language,
-                "caption_available": item.caption_available,
-                "privacy_status": item.privacy_status,
-                "licensed_content": item.licensed_content,
-                "made_for_kids": item.made_for_kids,
-                "live_broadcast_content": item.live_broadcast_content,
-                "definition": item.definition,
-                "dimension": item.dimension,
-                "thumbnails": item.thumbnails or {},
-                "topic_categories": list(item.topic_categories),
-                "statistics_view_count": item.statistics_view_count,
-                "statistics_like_count": item.statistics_like_count,
-                "statistics_comment_count": item.statistics_comment_count,
-                "statistics_fetched_at": item.statistics_fetched_at,
-                "tags": list(item.tags),
-            }
-            for item in likes_result.videos
-        ]
+        if compact:
+            payload_videos = [
+                {
+                    "video_id": item.video_id,
+                    "title": item.title,
+                    "liked_at": item.liked_at,
+                    "video_published_at": item.video_published_at,
+                    "channel_title": item.channel_title,
+                    "duration_seconds": item.duration_seconds,
+                    "topic_categories": list(item.topic_categories),
+                    "tags": list(item.tags),
+                }
+                for item in likes_result.videos
+            ]
+        else:
+            payload_videos = [
+                {
+                    "video_id": item.video_id,
+                    "title": item.title,
+                    "published_at": item.published_at,
+                    "liked_at": item.liked_at,
+                    "video_published_at": item.video_published_at,
+                    "description": item.description,
+                    "channel_id": item.channel_id,
+                    "channel_title": item.channel_title,
+                    "duration_seconds": item.duration_seconds,
+                    "category_id": item.category_id,
+                    "default_language": item.default_language,
+                    "default_audio_language": item.default_audio_language,
+                    "caption_available": item.caption_available,
+                    "privacy_status": item.privacy_status,
+                    "licensed_content": item.licensed_content,
+                    "made_for_kids": item.made_for_kids,
+                    "live_broadcast_content": item.live_broadcast_content,
+                    "definition": item.definition,
+                    "dimension": item.dimension,
+                    "thumbnails": item.thumbnails or {},
+                    "topic_categories": list(item.topic_categories),
+                    "statistics_view_count": item.statistics_view_count,
+                    "statistics_like_count": item.statistics_like_count,
+                    "statistics_comment_count": item.statistics_comment_count,
+                    "statistics_fetched_at": item.statistics_fetched_at,
+                    "tags": list(item.tags),
+                }
+                for item in likes_result.videos
+            ]
 
         provenance = [
             ProvenanceRef(type="youtube_video", id=item.video_id) for item in likes_result.videos
@@ -362,7 +515,16 @@ class ToolDispatcher:
             result={
                 "tool": request.tool,
                 "status": "ok",
+                "compact": compact,
                 "videos": payload_videos,
+                "requested_limit": requested_limit,
+                "applied_limit": likes_result.applied_limit,
+                "requested_cursor": cursor,
+                "cursor": likes_result.cursor,
+                "next_cursor": likes_result.next_cursor,
+                "has_more": likes_result.has_more,
+                "total_matches": likes_result.total_matches,
+                "truncated": likes_result.has_more,
                 "cache": {
                     "hit": likes_result.cache_hit,
                     "refreshed": likes_result.refreshed,
@@ -676,14 +838,7 @@ class ToolDispatcher:
             error=None,
         )
 
-    def _handle_bucket_item_add(
-        self,
-        request: ToolRequest,
-        *,
-        legacy_response: bool = False,
-    ) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
-
+    def _handle_bucket_item_add(self, request: ToolRequest) -> ToolResponse:
         title = (
             _payload_str(request.payload, "title")
             or _payload_str(request.payload, "name")
@@ -697,11 +852,14 @@ class ToolDispatcher:
                 message="payload.title (or payload.name/payload.item) is required",
             )
 
-        domain = (
-            _payload_str(request.payload, "domain")
-            or _payload_str(request.payload, "kind")
-            or _infer_domain_from_title(title)
-        )
+        domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
+        if domain is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.domain (or payload.kind) is required",
+            )
         notes = (
             _payload_str(request.payload, "notes")
             or _payload_str(request.payload, "body")
@@ -729,7 +887,7 @@ class ToolDispatcher:
         metadata = _payload_dict(request.payload.get("metadata"))
         source_refs = _extract_source_refs(request.payload)
 
-        auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=True)
+        auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=False)
         enrichment = None
         if auto_enrich:
             enrichment = self._bucket_metadata_service.enrich(
@@ -775,55 +933,19 @@ class ToolDispatcher:
             confidence=confidence,
         )
 
-        markdown_body = _bucket_item_markdown(item)
-        saved = self._vault_repository.save_document(
-            category="bucket-list",
-            title=item.title,
-            body=markdown_body,
-            tool_name=request.tool,
-            source_refs=item.source_refs,
-        )
-        self._bucket_repository.create_or_merge_item(
-            title=item.title,
-            domain=item.domain,
-            notes=item.notes,
-            year=item.year,
-            duration_minutes=item.duration_minutes,
-            rating=item.rating,
-            popularity=item.popularity,
-            genres=item.genres,
-            tags=item.tags,
-            providers=item.providers,
-            metadata=item.metadata,
-            source_refs=item.source_refs,
-            canonical_id=item.canonical_id,
-            external_url=item.external_url,
-            confidence=item.confidence,
-            legacy_path=saved.relative_path,
-            added_at=item.added_at,
-            updated_at=item.updated_at,
-        )
-
         refreshed_item = self._bucket_repository.get_item(item.item_id)
         if refreshed_item is None:
             refreshed_item = item
 
         result: dict[str, Any] = {
             "tool": request.tool,
-            "status": "saved" if legacy_response else action,
+            "status": action,
             "bucket_item": _bucket_item_payload(refreshed_item),
             "enriched": enrichment is not None and enrichment.provider is not None,
             "enrichment_provider": enrichment.provider if enrichment is not None else None,
-            "document_id": saved.document_id,
-            "path": saved.relative_path,
         }
-        if legacy_response:
-            result["bucket_item_id"] = refreshed_item.item_id
 
-        provenance = [
-            _vault_provenance(saved),
-            ProvenanceRef(type="bucket_item", id=refreshed_item.item_id),
-        ]
+        provenance = [ProvenanceRef(type="bucket_item", id=refreshed_item.item_id)]
         provenance.extend(_source_ref_provenance(refreshed_item.source_refs))
 
         return ToolResponse(
@@ -835,7 +957,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_update(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
         item_id = _payload_str(request.payload, "item_id") or _payload_str(request.payload, "id")
         if item_id is None:
             return _tool_error_response(
@@ -905,7 +1026,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_complete(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
         item_id = _payload_str(request.payload, "item_id") or _payload_str(request.payload, "id")
         if item_id is None:
             return _tool_error_response(
@@ -937,7 +1057,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_search(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
         query = _payload_str(request.payload, "query")
         domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
         statuses = _bucket_statuses_from_payload(request.payload)
@@ -967,6 +1086,8 @@ class ToolDispatcher:
                 "tool": request.tool,
                 "status": "ok",
                 "count": len(matches),
+                "annotated_count": sum(1 for item in matches if item.is_annotated),
+                "unannotated_count": sum(1 for item in matches if not item.is_annotated),
                 "items": [_bucket_item_payload(item) for item in matches],
             },
             provenance=[
@@ -976,7 +1097,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_recommend(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
         query = _payload_str(request.payload, "query")
         domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
         statuses = _bucket_statuses_from_payload(request.payload)
@@ -1002,10 +1122,12 @@ class ToolDispatcher:
             min_rating=min_rating,
             limit=100,
         )
+        annotated_candidates = [item for item in candidates if item.is_annotated]
+        skipped_unannotated_count = len(candidates) - len(annotated_candidates)
 
         ranked: list[dict[str, Any]] = []
         now = datetime.now(UTC)
-        for candidate in candidates:
+        for candidate in annotated_candidates:
             score, reasons = _bucket_recommendation_score(
                 candidate,
                 now=now,
@@ -1055,6 +1177,7 @@ class ToolDispatcher:
                 "tool": request.tool,
                 "status": "ok",
                 "count": len(recommendations),
+                "skipped_unannotated_count": skipped_unannotated_count,
                 "recommendations": recommendations,
             },
             provenance=[
@@ -1064,7 +1187,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_health_report(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
         stale_after_days = max(
             1, _int_or_default(request.payload.get("stale_after_days"), default=60)
         )
@@ -1087,58 +1209,6 @@ class ToolDispatcher:
             result={"tool": request.tool, "status": "ok", "report": report},
             error=None,
         )
-
-    def _handle_bucket_list_prioritize(self, request: ToolRequest) -> ToolResponse:
-        self._sync_bucket_legacy_documents()
-        active_items = self._bucket_repository.search_items(
-            query=None,
-            domain=None,
-            statuses={"active"},
-            min_duration_minutes=None,
-            max_duration_minutes=None,
-            genres=[],
-            min_rating=None,
-            limit=200,
-        )
-        now = datetime.now(UTC)
-        prioritized: list[dict[str, Any]] = []
-        for item in active_items:
-            prioritized.append(
-                {
-                    "title": item.title,
-                    "path": item.legacy_path,
-                    "waiting_days": _waiting_days(item, now),
-                    "effort": _metadata_level(item.metadata, "effort"),
-                    "cost": _metadata_level(item.metadata, "cost"),
-                    "domain": item.domain,
-                    "duration_minutes": item.duration_minutes,
-                    "rating": item.rating,
-                    "item_id": item.item_id,
-                }
-            )
-        prioritized = sorted(
-            prioritized,
-            key=lambda entry: int(entry.get("waiting_days", 0)),
-            reverse=True,
-        )
-
-        return ToolResponse(
-            ok=True,
-            request_id=request.request_id,
-            result={"tool": request.tool, "status": "ok", "items": prioritized},
-            provenance=[
-                ProvenanceRef(type="bucket_item", id=item.item_id) for item in active_items[:50]
-            ],
-            error=None,
-        )
-
-    def _sync_bucket_legacy_documents(self) -> None:
-        if self._bucket_legacy_synced:
-            return
-        documents = self._vault_repository.list_documents("bucket-list", limit=500)
-        for document in documents:
-            self._bucket_repository.upsert_legacy_document(document)
-        self._bucket_legacy_synced = True
 
     def _handle_memory_create(self, request: ToolRequest) -> ToolResponse:
         source_refs = _extract_source_refs(request.payload)
@@ -1270,19 +1340,28 @@ class ToolDispatcher:
         title = _payload_str(request.payload, "title") or f"Routine Review {now.date().isoformat()}"
 
         upcoming_items = self._jobs_repository.list_upcoming_reminder_items(limit=10)
-        bucket_items = self._vault_repository.list_documents("bucket-list", limit=100)
+        bucket_items = self._bucket_repository.search_items(
+            query=None,
+            domain=None,
+            statuses={"active"},
+            min_duration_minutes=None,
+            max_duration_minutes=None,
+            genres=[],
+            min_rating=None,
+            limit=100,
+        )
         recent_notes = self._vault_repository.list_documents("notes", limit=20)
 
         markdown = build_routine_review_markdown(
             upcoming_items=upcoming_items,
-            bucket_items=bucket_items,
+            bucket_item_titles=[item.title for item in bucket_items],
             recent_notes=recent_notes,
             now=now,
         )
 
         source_refs: list[dict[str, str]] = [{"type": "job", "id": "reminder_queue"}]
         source_refs.extend(
-            {"type": "vault_document", "id": doc.relative_path} for doc in bucket_items[:20]
+            {"type": "bucket_item", "id": item.item_id} for item in bucket_items[:20]
         )
         source_refs.extend(
             {"type": "vault_document", "id": doc.relative_path} for doc in recent_notes[:20]
@@ -1658,13 +1737,6 @@ def _source_ref_provenance(source_refs: list[dict[str, str]]) -> list[Provenance
     ]
 
 
-def _infer_domain_from_title(title: str) -> str:
-    lowered = title.lower()
-    if any(token in lowered for token in ("season", "episode", "series")):
-        return "tv"
-    return "movie"
-
-
 def _bucket_statuses_from_payload(payload: dict[str, Any]) -> set[str]:
     include_completed = _bool_or_default(payload.get("include_completed"), default=False)
     statuses_raw = payload.get("statuses") or payload.get("status")
@@ -1703,36 +1775,17 @@ def _bucket_item_payload(item: BucketItem) -> dict[str, Any]:
         "confidence": item.confidence,
         "metadata": item.metadata,
         "source_refs": item.source_refs,
+        "annotation_status": item.annotation_status,
+        "annotated": item.is_annotated,
+        "annotation_provider": item.annotation_provider,
+        "annotation_last_attempt_at": item.annotation_last_attempt_at,
         "added_at": item.added_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
         "completed_at": item.completed_at.isoformat() if item.completed_at is not None else None,
         "last_recommended_at": (
             item.last_recommended_at.isoformat() if item.last_recommended_at is not None else None
         ),
-        "legacy_path": item.legacy_path,
     }
-
-
-def _bucket_item_markdown(item: BucketItem) -> str:
-    lines = [
-        f"domain: {item.domain}",
-        f"status: {item.status}",
-    ]
-    if item.year is not None:
-        lines.append(f"year: {item.year}")
-    if item.duration_minutes is not None:
-        lines.append(f"duration_minutes: {item.duration_minutes}")
-    if item.rating is not None:
-        lines.append(f"rating: {item.rating}")
-    if item.genres:
-        lines.append(f"genres: {', '.join(item.genres)}")
-    if item.providers:
-        lines.append(f"providers: {', '.join(item.providers)}")
-    if item.external_url is not None:
-        lines.append(f"url: {item.external_url}")
-    if item.notes:
-        lines.extend(["", item.notes.strip()])
-    return "\n".join(lines).strip()
 
 
 def _bucket_recommendation_score(
@@ -1808,15 +1861,6 @@ def _bucket_recommendation_score(
 
 def _waiting_days(item: BucketItem, now: datetime) -> int:
     return max(0, int((now - item.added_at.astimezone(UTC)).days))
-
-
-def _metadata_level(metadata: dict[str, Any], key: str) -> str | None:
-    value = metadata.get(key)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"low", "medium", "high"}:
-            return normalized
-    return None
 
 
 def _normalize_time_scope(value: object) -> str:

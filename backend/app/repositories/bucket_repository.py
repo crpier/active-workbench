@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from backend.app.repositories.common import utc_now_iso
 from backend.app.repositories.database import Database
-from backend.app.repositories.vault_repository import VaultDocument
 
 ACTIVE_STATUS = "active"
 COMPLETED_STATUS = "completed"
@@ -30,7 +29,6 @@ class BucketItem:
     updated_at: datetime
     completed_at: datetime | None
     last_recommended_at: datetime | None
-    legacy_path: str | None
 
     @property
     def notes(self) -> str:
@@ -75,6 +73,22 @@ class BucketItem:
     def confidence(self) -> float | None:
         return _float_from_metadata(self.metadata.get("confidence"))
 
+    @property
+    def annotation_status(self) -> str:
+        return _annotation_status(self.metadata, canonical_id=self.canonical_id)
+
+    @property
+    def is_annotated(self) -> bool:
+        return self.annotation_status == "annotated"
+
+    @property
+    def annotation_provider(self) -> str | None:
+        return _text_or_none(self.metadata.get("annotation_provider"))
+
+    @property
+    def annotation_last_attempt_at(self) -> str | None:
+        return _text_or_none(self.metadata.get("annotation_last_attempt_at"))
+
 
 class BucketRepository:
     def __init__(self, db: Database) -> None:
@@ -98,14 +112,10 @@ class BucketRepository:
         canonical_id: str | None,
         external_url: str | None,
         confidence: float | None,
-        legacy_path: str | None = None,
-        added_at: datetime | None = None,
-        updated_at: datetime | None = None,
     ) -> tuple[BucketItem, str]:
         normalized_domain = _normalize_domain(domain)
         normalized_title = _normalize_title(title)
         normalized_canonical_id = _normalize_optional_text(canonical_id)
-        normalized_legacy_path = _normalize_optional_text(legacy_path)
 
         incoming_metadata = _merge_item_metadata(
             base={},
@@ -121,17 +131,20 @@ class BucketRepository:
             confidence=confidence,
             metadata=metadata,
         )
+        incoming_metadata = _normalize_annotation_metadata(
+            incoming_metadata,
+            canonical_id=normalized_canonical_id,
+        )
         incoming_source_refs = _normalize_source_refs(source_refs)
 
         now = datetime.now(UTC)
-        added_timestamp = (added_at or now).astimezone(UTC).isoformat()
-        updated_timestamp = (updated_at or now).astimezone(UTC).isoformat()
+        added_timestamp = now.astimezone(UTC).isoformat()
+        updated_timestamp = now.astimezone(UTC).isoformat()
 
         with self._db.connection() as conn:
             existing_row = _find_existing_item_row(
                 conn,
                 canonical_id=normalized_canonical_id,
-                legacy_path=normalized_legacy_path,
                 domain=normalized_domain,
                 normalized_title=normalized_title,
                 year=_int_from_metadata(incoming_metadata.get("year")),
@@ -142,10 +155,9 @@ class BucketRepository:
                     """
                     INSERT INTO bucket_items (
                         id, title, normalized_title, domain, status, canonical_id, metadata_json,
-                        source_refs_json, added_at, updated_at, completed_at, last_recommended_at,
-                        legacy_path
+                        source_refs_json, added_at, updated_at, completed_at, last_recommended_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
                     """,
                     (
                         item_id,
@@ -158,7 +170,6 @@ class BucketRepository:
                         _dump_json(incoming_source_refs),
                         added_timestamp,
                         updated_timestamp,
-                        normalized_legacy_path,
                     ),
                 )
                 created = _get_item_with_conn(conn, item_id)
@@ -181,9 +192,12 @@ class BucketRepository:
                 confidence=confidence,
                 metadata=metadata,
             )
-            merged_source_refs = _merge_source_refs(existing.source_refs, incoming_source_refs)
             merged_canonical_id = normalized_canonical_id or existing.canonical_id
-            merged_legacy_path = normalized_legacy_path or existing.legacy_path
+            merged_metadata = _normalize_annotation_metadata(
+                merged_metadata,
+                canonical_id=merged_canonical_id,
+            )
+            merged_source_refs = _merge_source_refs(existing.source_refs, incoming_source_refs)
 
             conn.execute(
                 """
@@ -197,8 +211,7 @@ class BucketRepository:
                     metadata_json = ?,
                     source_refs_json = ?,
                     updated_at = ?,
-                    completed_at = NULL,
-                    legacy_path = ?
+                    completed_at = NULL
                 WHERE id = ?
                 """,
                 (
@@ -210,7 +223,6 @@ class BucketRepository:
                     _dump_json(merged_metadata),
                     _dump_json(merged_source_refs),
                     updated_timestamp,
-                    merged_legacy_path,
                     existing.item_id,
                 ),
             )
@@ -264,6 +276,10 @@ class BucketRepository:
             external_url=external_url,
             confidence=confidence,
             metadata=(metadata or {}),
+        )
+        updated_metadata = _normalize_annotation_metadata(
+            updated_metadata,
+            canonical_id=updated_canonical_id,
         )
 
         with self._db.connection() as conn:
@@ -330,6 +346,23 @@ class BucketRepository:
                 (max(1, limit),),
             ).fetchall()
         return [_row_to_item(row) for row in rows]
+
+    def list_unannotated_active_items(self, limit: int = 50) -> list[BucketItem]:
+        requested = max(1, limit)
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM bucket_items
+                WHERE status = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (ACTIVE_STATUS, max(50, requested * 6)),
+            ).fetchall()
+        items = [_row_to_item(row) for row in rows]
+        pending = [item for item in items if not item.is_annotated]
+        return pending[:requested]
 
     def search_items(
         self,
@@ -513,54 +546,10 @@ class BucketRepository:
             "suggestions": suggestions,
         }
 
-    def upsert_legacy_document(self, document: VaultDocument) -> BucketItem:
-        parsed = _parse_legacy_document_body(document.body)
-        metadata = dict(parsed.metadata)
-        metadata["legacy_markdown"] = True
-
-        source_refs = list(document.source_refs)
-        source_refs.append({"type": "vault_document", "id": document.relative_path})
-
-        item, _ = self.create_or_merge_item(
-            title=document.title,
-            domain=parsed.domain,
-            notes=document.body,
-            year=parsed.year,
-            duration_minutes=parsed.duration_minutes,
-            rating=parsed.rating,
-            popularity=None,
-            genres=parsed.genres,
-            tags=parsed.tags,
-            providers=parsed.providers,
-            metadata=metadata,
-            source_refs=source_refs,
-            canonical_id=None,
-            external_url=None,
-            confidence=0.4,
-            legacy_path=document.relative_path,
-            added_at=document.created_at,
-            updated_at=document.updated_at,
-        )
-        return item
-
-
-@dataclass(frozen=True)
-class _ParsedLegacyBody:
-    domain: str
-    year: int | None
-    duration_minutes: int | None
-    rating: float | None
-    genres: list[str]
-    tags: list[str]
-    providers: list[str]
-    metadata: dict[str, Any]
-
-
 def _find_existing_item_row(
     conn: Connection,
     *,
     canonical_id: str | None,
-    legacy_path: str | None,
     domain: str,
     normalized_title: str,
     year: int | None,
@@ -572,14 +561,6 @@ def _find_existing_item_row(
         ).fetchone()
         if canonical_match is not None:
             return canonical_match
-
-    if legacy_path is not None:
-        legacy_match = conn.execute(
-            "SELECT * FROM bucket_items WHERE legacy_path = ? LIMIT 1",
-            (legacy_path,),
-        ).fetchone()
-        if legacy_match is not None:
-            return legacy_match
 
     rows = conn.execute(
         """
@@ -623,7 +604,6 @@ def _row_to_item(row: Row) -> BucketItem:
         updated_at=_parse_iso_datetime(str(row["updated_at"])),
         completed_at=_parse_iso_datetime_optional(row["completed_at"]),
         last_recommended_at=_parse_iso_datetime_optional(row["last_recommended_at"]),
-        legacy_path=_text_or_none(row["legacy_path"]),
     )
 
 
@@ -635,59 +615,6 @@ def _get_item_with_conn(conn: Connection, item_id: str) -> BucketItem | None:
     if row is None:
         return None
     return _row_to_item(row)
-
-
-def _parse_legacy_document_body(body: str) -> _ParsedLegacyBody:
-    extracted_pairs: dict[str, str] = {}
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        normalized_key = key.strip().lower()
-        normalized_value = value.strip()
-        if normalized_key and normalized_value:
-            extracted_pairs[normalized_key] = normalized_value
-
-    domain = _normalize_domain(
-        extracted_pairs.get("domain")
-        or extracted_pairs.get("kind")
-        or extracted_pairs.get("type")
-        or ("movie" if "watch" in body.lower() else "general")
-    )
-    year = _safe_int(extracted_pairs.get("year"))
-    duration_minutes = _parse_duration_minutes(
-        extracted_pairs.get("duration")
-        or extracted_pairs.get("runtime")
-        or extracted_pairs.get("length")
-        or extracted_pairs.get("minutes")
-    )
-    rating = _safe_float(extracted_pairs.get("rating") or extracted_pairs.get("score"))
-    genres = _split_csv(extracted_pairs.get("genre") or extracted_pairs.get("genres"))
-    tags = _split_csv(extracted_pairs.get("tag") or extracted_pairs.get("tags"))
-    providers = _split_csv(
-        extracted_pairs.get("provider")
-        or extracted_pairs.get("providers")
-        or extracted_pairs.get("platform")
-    )
-
-    metadata: dict[str, Any] = {}
-    for key in ("effort", "cost", "priority", "mood"):
-        value = extracted_pairs.get(key)
-        if value is not None:
-            metadata[key] = value
-
-    return _ParsedLegacyBody(
-        domain=domain,
-        year=year,
-        duration_minutes=duration_minutes,
-        rating=rating,
-        genres=genres,
-        tags=tags,
-        providers=providers,
-        metadata=metadata,
-    )
-
 
 def _merge_item_metadata(
     *,
@@ -744,6 +671,43 @@ def _merge_item_metadata(
             merged.pop("confidence", None)
 
     return merged
+
+
+def _normalize_annotation_metadata(
+    metadata: dict[str, Any],
+    *,
+    canonical_id: str | None,
+) -> dict[str, Any]:
+    normalized = dict(metadata)
+    normalized["annotation_status"] = _annotation_status(normalized, canonical_id=canonical_id)
+    return normalized
+
+
+def _annotation_status(
+    metadata: dict[str, Any],
+    *,
+    canonical_id: str | None,
+) -> str:
+    raw_status = metadata.get("annotation_status")
+    if isinstance(raw_status, str):
+        normalized_status = raw_status.strip().lower()
+        if normalized_status in {"pending", "annotated", "failed"}:
+            return normalized_status
+
+    if canonical_id is not None:
+        return "annotated"
+
+    has_structured_signal = any(
+        (
+            _int_from_metadata(metadata.get("year")) is not None,
+            _int_from_metadata(metadata.get("duration_minutes")) is not None,
+            _float_from_metadata(metadata.get("rating")) is not None,
+            _str_list_from_metadata(metadata.get("genres")),
+            _str_list_from_metadata(metadata.get("providers")),
+            _text_or_none(metadata.get("external_url")) is not None,
+        )
+    )
+    return "annotated" if has_structured_signal else "pending"
 
 
 def _genres_overlap(item_genres: list[str], target_genres: list[str]) -> bool:
@@ -992,51 +956,3 @@ def _text_or_none(value: object) -> str | None:
     if not stripped:
         return None
     return stripped
-
-
-def _safe_int(value: str | None) -> int | None:
-    if value is None:
-        return None
-    match = re.search(r"\d{4}|\d{1,3}", value)
-    if match is None:
-        return None
-    try:
-        return int(match.group(0))
-    except ValueError:
-        return None
-
-
-def _safe_float(value: str | None) -> float | None:
-    if value is None:
-        return None
-    match = re.search(r"\d+(?:\.\d+)?", value)
-    if match is None:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
-
-
-def _parse_duration_minutes(value: str | None) -> int | None:
-    if value is None:
-        return None
-    lowered = value.lower()
-    if "hour" in lowered or "hr" in lowered:
-        hours_match = re.search(r"(\d+)\s*(?:hour|hr)", lowered)
-        minutes_match = re.search(r"(\d+)\s*(?:minute|min)", lowered)
-        hours = int(hours_match.group(1)) if hours_match else 0
-        minutes = int(minutes_match.group(1)) if minutes_match else 0
-        total = hours * 60 + minutes
-        return total if total > 0 else None
-    minute_match = re.search(r"(\d+)", lowered)
-    if minute_match is None:
-        return None
-    parsed = int(minute_match.group(1))
-    return parsed if parsed > 0 else None
-
-
-def _split_csv(value: str | None) -> list[str]:
-    if value is None:
-        return []
-    return _dedupe_nonempty([part.strip() for part in value.split(",")])

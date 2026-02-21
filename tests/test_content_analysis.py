@@ -10,7 +10,6 @@ from backend.app.services.content_analysis import (
     extract_actions_from_text,
     extract_recipe_from_transcript,
     extract_summary_from_text,
-    prioritize_bucket_list_items,
 )
 
 
@@ -74,19 +73,9 @@ def test_weekly_digest_and_routine_review_builders() -> None:
 
     review = build_routine_review_markdown(
         upcoming_items=["leeks"],
-        bucket_items=[_doc("andor", "watch this", category="bucket-list")],
+        bucket_item_titles=["Watch Andor"],
         recent_notes=notes,
         now=datetime.now(UTC),
     )
     assert "Expiring Items" in review
     assert "Bucket List" in review
-
-
-def test_prioritize_bucket_list_items() -> None:
-    items = [
-        _doc("older", "effort: low\ncost: medium", days_ago=5, category="bucket-list"),
-        _doc("newer", "effort: high\ncost: low", days_ago=1, category="bucket-list"),
-    ]
-    prioritized = prioritize_bucket_list_items(items)
-    assert prioritized
-    assert prioritized[0]["title"] == "older"

@@ -15,8 +15,6 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "youtube.transcript.get",
     "vault.recipe.save",
     "vault.note.save",
-    "vault.bucket_list.add",
-    "vault.bucket_list.prioritize",
     "bucket.item.add",
     "bucket.item.update",
     "bucket.item.complete",
@@ -58,6 +56,7 @@ def test_health(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert response.headers.get("X-Request-ID")
 
 
 def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:
@@ -80,8 +79,6 @@ def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None
         "youtube.likes.list_recent",
         "youtube.likes.search_recent_content",
         "youtube.transcript.get",
-        "vault.bucket_list.add",
-        "vault.bucket_list.prioritize",
         "bucket.item.add",
         "bucket.item.update",
         "bucket.item.complete",
@@ -292,6 +289,60 @@ def test_youtube_likes_cache_miss_policy_explicit_probe(client: TestClient) -> N
     assert cache["recent_probe"]["pages_requested"] == 2
 
 
+def test_youtube_likes_exposes_pagination_and_limit_metadata(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.likes.list_recent",
+        json=_request_body(
+            "youtube.likes.list_recent",
+            payload={"limit": 1, "cursor": 1},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["requested_limit"] == 1
+    assert body["applied_limit"] == 1
+    assert body["requested_cursor"] == 1
+    assert body["cursor"] == 1
+    assert body["next_cursor"] == 2
+    assert body["has_more"] is True
+    assert body["truncated"] is True
+    assert body["total_matches"] == 3
+    assert body["videos"][0]["video_id"] == "test_micro_001"
+
+    clamped = client.post(
+        "/tools/youtube.likes.list_recent",
+        json=_request_body(
+            "youtube.likes.list_recent",
+            payload={"limit": 200},
+        ),
+    )
+    assert clamped.status_code == 200
+    clamped_body = clamped.json()["result"]
+    assert clamped_body["requested_limit"] == 200
+    assert clamped_body["applied_limit"] == 100
+    assert clamped_body["has_more"] is False
+    assert clamped_body["truncated"] is False
+    assert clamped_body["total_matches"] == 3
+    assert len(clamped_body["videos"]) == 3
+
+
+def test_youtube_likes_compact_payload_mode(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.likes.list_recent",
+        json=_request_body(
+            "youtube.likes.list_recent",
+            payload={"limit": 2, "compact": True},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["compact"] is True
+    first = body["videos"][0]
+    assert "description" not in first
+    assert "channel_title" in first
+    assert "video_id" in first
+
+
 def test_youtube_likes_search_recent_content_returns_matches(client: TestClient) -> None:
     response = client.post(
         "/tools/youtube.likes.search_recent_content",
@@ -305,33 +356,6 @@ def test_youtube_likes_search_recent_content_returns_matches(client: TestClient)
     assert body["matches"]
     assert body["coverage"]["recent_videos_count"] >= 1
     assert "matched_in" in body["matches"][0]
-
-
-def test_bucket_list_and_prioritization(client: TestClient) -> None:
-    add_first = client.post(
-        "/tools/vault.bucket_list.add",
-        json=_request_body(
-            "vault.bucket_list.add",
-            payload={"title": "Watch Andor", "body": "effort: low\ncost: medium"},
-        ),
-    )
-    add_second = client.post(
-        "/tools/vault.bucket_list.add",
-        json=_request_body(
-            "vault.bucket_list.add",
-            payload={"title": "Watch Severance", "body": "effort: low\ncost: high"},
-        ),
-    )
-    assert add_first.status_code == 200
-    assert add_second.status_code == 200
-
-    prioritized = client.post(
-        "/tools/vault.bucket_list.prioritize",
-        json=_request_body("vault.bucket_list.prioritize", payload={}),
-    )
-    assert prioritized.status_code == 200
-    items = prioritized.json()["result"]["items"]
-    assert len(items) >= 2
 
 
 def test_structured_bucket_recommend_completion_and_health(client: TestClient) -> None:
@@ -443,6 +467,91 @@ def test_structured_bucket_recommend_completion_and_health(client: TestClient) -
     assert report["totals"]["active"] >= 2
     assert report["totals"]["completed"] >= 1
     assert isinstance(report["quick_wins"], list)
+
+
+def test_structured_bucket_add_requires_domain(client: TestClient) -> None:
+    response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={"title": "Watch Andor", "auto_enrich": False},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "invalid_input"
+    assert "payload.domain" in body["error"]["message"]
+
+
+def test_structured_bucket_search_includes_unannotated_items(client: TestClient) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={"title": "Unknown Indie Thing", "domain": "movie", "auto_enrich": False},
+        ),
+    )
+    assert add_response.status_code == 200
+
+    search_response = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={"domain": "movie", "query": "Unknown Indie Thing"},
+        ),
+    )
+    assert search_response.status_code == 200
+    result = search_response.json()["result"]
+    assert result["count"] == 1
+    assert result["annotated_count"] == 0
+    assert result["unannotated_count"] == 1
+    assert result["items"][0]["annotated"] is False
+    assert result["items"][0]["annotation_status"] in {"pending", "failed"}
+
+
+def test_structured_bucket_recommend_excludes_unannotated_items(client: TestClient) -> None:
+    annotated = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "Action Ready",
+                "domain": "movie",
+                "duration_minutes": 95,
+                "genres": ["Action"],
+                "rating": 7.2,
+                "auto_enrich": False,
+            },
+        ),
+    )
+    unannotated = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={"title": "Action Unknown", "domain": "movie", "auto_enrich": False},
+        ),
+    )
+    assert annotated.status_code == 200
+    assert unannotated.status_code == 200
+
+    recommend = client.post(
+        "/tools/bucket.item.recommend",
+        json=_request_body(
+            "bucket.item.recommend",
+            payload={
+                "domain": "movie",
+                "target_duration_minutes": 90,
+                "limit": 5,
+            },
+        ),
+    )
+    assert recommend.status_code == 200
+    result = recommend.json()["result"]
+    titles = [entry["bucket_item"]["title"] for entry in result["recommendations"]]
+    assert "Action Ready" in titles
+    assert "Action Unknown" not in titles
+    assert result["skipped_unannotated_count"] >= 1
 
 
 def test_memory_create_and_undo(client: TestClient) -> None:

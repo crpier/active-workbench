@@ -88,8 +88,6 @@ Only ready tools:
 - `active_workbench_youtube_likes_list_recent`
 - `active_workbench_youtube_likes_search_recent_content`
 - `active_workbench_youtube_transcript_get`
-- `active_workbench_vault_bucket_list_add`
-- `active_workbench_vault_bucket_list_prioritize`
 - `active_workbench_bucket_item_add`
 - `active_workbench_bucket_item_update`
 - `active_workbench_bucket_item_complete`
@@ -152,6 +150,12 @@ source ~/.config/active-workbench/secrets.env
 - `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS` (default `20`)
 - `ACTIVE_WORKBENCH_API_BASE_URL` (default `http://127.0.0.1:8000`)
 - `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
+- `ACTIVE_WORKBENCH_TELEMETRY_ENABLED` (default `true`; set `false` to disable telemetry events)
+- `ACTIVE_WORKBENCH_TELEMETRY_SINK` (default `log`; set `none` to suppress sink output)
+
+Log files written under `ACTIVE_WORKBENCH_LOG_DIR`:
+- app/runtime logs: `active-workbench.log`
+- telemetry events: `active-workbench-telemetry.log`
 
 ## Quick Runtime Checks
 

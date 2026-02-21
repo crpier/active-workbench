@@ -4,7 +4,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 from backend.app.repositories.vault_repository import VaultDocument
 
@@ -173,7 +172,7 @@ def build_weekly_digest_markdown(notes: list[VaultDocument], now: datetime) -> s
 
 def build_routine_review_markdown(
     upcoming_items: list[str],
-    bucket_items: list[VaultDocument],
+    bucket_item_titles: list[str],
     recent_notes: list[VaultDocument],
     now: datetime,
 ) -> str:
@@ -191,9 +190,9 @@ def build_routine_review_markdown(
         lines.append("- No expiring items detected.")
 
     lines.extend(["", "## Bucket List", ""])
-    if bucket_items:
-        for item in bucket_items[:15]:
-            lines.append(f"- {item.title}")
+    if bucket_item_titles:
+        for title in bucket_item_titles[:15]:
+            lines.append(f"- {title}")
     else:
         lines.append("- Bucket list is empty.")
 
@@ -205,33 +204,6 @@ def build_routine_review_markdown(
         lines.append("- No notes to revisit.")
 
     return "\n".join(lines).strip()
-
-
-def prioritize_bucket_list_items(bucket_items: list[VaultDocument]) -> list[dict[str, Any]]:
-    prioritized: list[dict[str, Any]] = []
-    now = datetime.now(UTC)
-
-    for item in bucket_items:
-        waiting_days = max(0, int((now - item.created_at).days))
-        effort = _extract_keyword_level(item.body, keyword="effort")
-        cost = _extract_keyword_level(item.body, keyword="cost")
-
-        prioritized.append(
-            {
-                "title": item.title,
-                "path": item.relative_path,
-                "waiting_days": waiting_days,
-                "effort": effort,
-                "cost": cost,
-            }
-        )
-
-    def sort_key(entry: dict[str, Any]) -> tuple[int]:
-        waiting = entry.get("waiting_days")
-        return (int(waiting) if isinstance(waiting, int) else 0,)
-
-    return sorted(prioritized, key=sort_key, reverse=True)
-
 
 def _build_highlights(notes: list[VaultDocument]) -> list[str]:
     merged_text = "\n".join(note.body for note in notes)
@@ -373,10 +345,3 @@ def _dedupe_actions(items: list[ActionItem], max_items: int) -> list[ActionItem]
         if len(deduped) >= max_items:
             break
     return deduped
-
-
-def _extract_keyword_level(text: str, keyword: str) -> str | None:
-    match = re.search(rf"{keyword}\s*[:\-]\s*(low|medium|high)", text, re.IGNORECASE)
-    if match:
-        return match.group(1).lower()
-    return None

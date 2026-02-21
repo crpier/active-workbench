@@ -20,8 +20,7 @@ CREATE TABLE IF NOT EXISTS bucket_items (
     added_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT NULL,
-    last_recommended_at TEXT NULL,
-    legacy_path TEXT NULL UNIQUE
+    last_recommended_at TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_bucket_items_status_domain
@@ -187,77 +186,109 @@ def _maybe_migrate_bucket_items_schema(conn: sqlite3.Connection) -> None:
         return
 
     # Old schema carried many first-class media fields.
-    if "notes" not in columns:
+    if "notes" in columns:
+        rows = conn.execute("SELECT * FROM bucket_items").fetchall()
+        conn.execute("ALTER TABLE bucket_items RENAME TO bucket_items_old_schema")
+        conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+
+        for row in rows:
+            metadata = _load_object_dict(row["metadata_json"])
+            source_refs_json = _ensure_json_list_text(row["source_refs_json"])
+
+            notes = _as_text_or_none(row["notes"])
+            if notes is not None:
+                metadata["notes"] = notes
+            year = _as_int_or_none(row["year"])
+            if year is not None:
+                metadata["year"] = year
+            duration_minutes = _as_int_or_none(row["duration_minutes"])
+            if duration_minutes is not None:
+                metadata["duration_minutes"] = duration_minutes
+            rating = _as_float_or_none(row["rating"])
+            if rating is not None:
+                metadata["rating"] = rating
+            popularity = _as_float_or_none(row["popularity"])
+            if popularity is not None:
+                metadata["popularity"] = popularity
+
+            genres = _load_str_list(row["genres_json"])
+            if genres:
+                metadata["genres"] = genres
+            tags = _load_str_list(row["tags_json"])
+            if tags:
+                metadata["tags"] = tags
+            providers = _load_str_list(row["providers_json"])
+            if providers:
+                metadata["providers"] = providers
+
+            external_url = _as_text_or_none(row["external_url"])
+            if external_url is not None:
+                metadata["external_url"] = external_url
+            confidence = _as_float_or_none(row["confidence"])
+            if confidence is not None:
+                metadata["confidence"] = confidence
+
+            conn.execute(
+                """
+                INSERT INTO bucket_items (
+                    id, title, normalized_title, domain, status, canonical_id, metadata_json,
+                    source_refs_json, added_at, updated_at, completed_at, last_recommended_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(row["id"]),
+                    str(row["title"]),
+                    str(row["normalized_title"]),
+                    str(row["domain"]),
+                    str(row["status"]),
+                    _as_text_or_none(row["canonical_id"]),
+                    json.dumps(metadata, sort_keys=True, ensure_ascii=True),
+                    source_refs_json,
+                    str(row["added_at"]),
+                    str(row["updated_at"]),
+                    _as_text_or_none(row["completed_at"]),
+                    _as_text_or_none(row["last_recommended_at"]),
+                ),
+            )
+
+        conn.execute("DROP TABLE bucket_items_old_schema")
         return
 
-    rows = conn.execute("SELECT * FROM bucket_items").fetchall()
-    conn.execute("ALTER TABLE bucket_items RENAME TO bucket_items_legacy")
-    conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+    # Remove legacy compatibility column carried by hybrid schema.
+    if "legacy_path" in columns:
+        rows = conn.execute("SELECT * FROM bucket_items").fetchall()
+        conn.execute("ALTER TABLE bucket_items RENAME TO bucket_items_with_legacy_path")
+        conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
 
-    for row in rows:
-        metadata = _load_object_dict(row["metadata_json"])
-        source_refs_json = _ensure_json_list_text(row["source_refs_json"])
-
-        notes = _as_text_or_none(row["notes"])
-        if notes is not None:
-            metadata["notes"] = notes
-        year = _as_int_or_none(row["year"])
-        if year is not None:
-            metadata["year"] = year
-        duration_minutes = _as_int_or_none(row["duration_minutes"])
-        if duration_minutes is not None:
-            metadata["duration_minutes"] = duration_minutes
-        rating = _as_float_or_none(row["rating"])
-        if rating is not None:
-            metadata["rating"] = rating
-        popularity = _as_float_or_none(row["popularity"])
-        if popularity is not None:
-            metadata["popularity"] = popularity
-
-        genres = _load_str_list(row["genres_json"])
-        if genres:
-            metadata["genres"] = genres
-        tags = _load_str_list(row["tags_json"])
-        if tags:
-            metadata["tags"] = tags
-        providers = _load_str_list(row["providers_json"])
-        if providers:
-            metadata["providers"] = providers
-
-        external_url = _as_text_or_none(row["external_url"])
-        if external_url is not None:
-            metadata["external_url"] = external_url
-        confidence = _as_float_or_none(row["confidence"])
-        if confidence is not None:
-            metadata["confidence"] = confidence
-
-        conn.execute(
-            """
-            INSERT INTO bucket_items (
-                id, title, normalized_title, domain, status, canonical_id, metadata_json,
-                source_refs_json, added_at, updated_at, completed_at, last_recommended_at,
-                legacy_path
+        for row in rows:
+            metadata = _load_object_dict(row["metadata_json"])
+            metadata.pop("legacy_markdown", None)
+            conn.execute(
+                """
+                INSERT INTO bucket_items (
+                    id, title, normalized_title, domain, status, canonical_id, metadata_json,
+                    source_refs_json, added_at, updated_at, completed_at, last_recommended_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(row["id"]),
+                    str(row["title"]),
+                    str(row["normalized_title"]),
+                    str(row["domain"]),
+                    str(row["status"]),
+                    _as_text_or_none(row["canonical_id"]),
+                    json.dumps(metadata, sort_keys=True, ensure_ascii=True),
+                    _ensure_json_list_text(row["source_refs_json"]),
+                    str(row["added_at"]),
+                    str(row["updated_at"]),
+                    _as_text_or_none(row["completed_at"]),
+                    _as_text_or_none(row["last_recommended_at"]),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(row["id"]),
-                str(row["title"]),
-                str(row["normalized_title"]),
-                str(row["domain"]),
-                str(row["status"]),
-                _as_text_or_none(row["canonical_id"]),
-                json.dumps(metadata, sort_keys=True, ensure_ascii=True),
-                source_refs_json,
-                str(row["added_at"]),
-                str(row["updated_at"]),
-                _as_text_or_none(row["completed_at"]),
-                _as_text_or_none(row["last_recommended_at"]),
-                _as_text_or_none(row["legacy_path"]),
-            ),
-        )
 
-    conn.execute("DROP TABLE bucket_items_legacy")
+        conn.execute("DROP TABLE bucket_items_with_legacy_path")
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:

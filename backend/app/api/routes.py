@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from backend.app.dependencies import get_dispatcher
 from backend.app.models.tool_contracts import ToolCatalogEntry, ToolName, ToolRequest, ToolResponse
@@ -28,7 +29,14 @@ def _handle_tool(
     dispatcher: ToolDispatcher,
 ) -> ToolResponse:
     _validate_tool_name(expected_tool, request)
-    return dispatcher.execute(expected_tool, request)
+    context_tokens = bind_contextvars(
+        tool_name=expected_tool,
+        tool_request_id=str(request.request_id),
+    )
+    try:
+        return dispatcher.execute(expected_tool, request)
+    finally:
+        reset_contextvars(**context_tokens)
 
 
 @router.get(
@@ -103,32 +111,6 @@ def vault_note_save(
     dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
 ) -> ToolResponse:
     return _handle_tool("vault.note.save", request, dispatcher)
-
-
-@router.post(
-    "/tools/vault.bucket_list.add",
-    response_model=ToolResponse,
-    tags=["tools"],
-    operation_id="vault_bucket_list_add",
-)
-def vault_bucket_list_add(
-    request: ToolRequest,
-    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
-) -> ToolResponse:
-    return _handle_tool("vault.bucket_list.add", request, dispatcher)
-
-
-@router.post(
-    "/tools/vault.bucket_list.prioritize",
-    response_model=ToolResponse,
-    tags=["tools"],
-    operation_id="bucket_list_prioritize",
-)
-def bucket_list_prioritize(
-    request: ToolRequest,
-    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
-) -> ToolResponse:
-    return _handle_tool("vault.bucket_list.prioritize", request, dispatcher)
 
 
 @router.post(
