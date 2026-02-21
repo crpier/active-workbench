@@ -18,6 +18,9 @@ const TOOL_NAMES = {
   bucket_item_recommend: "bucket.item.recommend",
   bucket_health_report: "bucket.health.report",
   memory_create: "memory.create",
+  memory_list: "memory.list",
+  memory_search: "memory.search",
+  memory_delete: "memory.delete",
   memory_undo: "memory.undo",
   reminder_schedule: "reminder.schedule",
   context_suggest_for_query: "context.suggest_for_query",
@@ -337,7 +340,64 @@ export const bucket_health_report = backendTool(
 
 export const memory_create = backendTool(
   TOOL_NAMES.memory_create,
-  "Create a persistent memory entry with undo support. Use only when the user explicitly asks to remember something.",
+  "Create a persistent memory entry with undo support. Prefer concise factual memory text.",
+  {
+    extraArgs: {
+      text: tool.schema.string().optional().describe("Memory text to store."),
+      fact: tool.schema.string().optional().describe("Alias for text."),
+      tags: tool.schema
+        .array(tool.schema.string())
+        .optional()
+        .describe("Optional memory tags for retrieval."),
+      type: tool.schema
+        .string()
+        .optional()
+        .describe("Optional memory type (preference, reminder, context, note)."),
+    },
+    payloadFields: ["text", "fact", "tags", "type"],
+    requireAnyField: ["text", "fact"],
+  },
+);
+
+export const memory_list = backendTool(
+  TOOL_NAMES.memory_list,
+  "List recent active memories.",
+  {
+    extraArgs: {
+      limit: tool.schema.number().int().optional().describe("Maximum memories to return."),
+    },
+    payloadFields: ["limit"],
+  },
+);
+
+export const memory_search = backendTool(
+  TOOL_NAMES.memory_search,
+  "Search active memories by text and tags.",
+  {
+    extraArgs: {
+      query: tool.schema.string().optional().describe("Text query for memory retrieval."),
+      tags: tool.schema
+        .array(tool.schema.string())
+        .optional()
+        .describe("Optional tag filters."),
+      limit: tool.schema.number().int().optional().describe("Maximum search results."),
+    },
+    payloadFields: ["query", "tags", "limit"],
+    requireAnyField: ["query", "tags"],
+  },
+);
+
+export const memory_delete = backendTool(
+  TOOL_NAMES.memory_delete,
+  "Delete a memory by id.",
+  {
+    extraArgs: {
+      memory_id: tool.schema.string().optional().describe("Memory id to delete."),
+      id: tool.schema.string().optional().describe("Alias for memory_id."),
+    },
+    payloadFields: ["memory_id", "id"],
+    requireAnyField: ["memory_id", "id"],
+  },
 );
 
 export const memory_undo = backendTool(

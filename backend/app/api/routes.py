@@ -205,6 +205,45 @@ def memory_create(
 
 
 @router.post(
+    "/tools/memory.list",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="memory_list",
+)
+def memory_list(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("memory.list", request, dispatcher)
+
+
+@router.post(
+    "/tools/memory.search",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="memory_search",
+)
+def memory_search(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("memory.search", request, dispatcher)
+
+
+@router.post(
+    "/tools/memory.delete",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="memory_delete",
+)
+def memory_delete(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("memory.delete", request, dispatcher)
+
+
+@router.post(
     "/tools/memory.undo",
     response_model=ToolResponse,
     tags=["tools"],

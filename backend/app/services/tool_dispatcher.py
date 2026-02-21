@@ -75,6 +75,9 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "bucket.item.recommend": "Recommend best-fit bucket items for the user's constraints.",
     "bucket.health.report": "Generate a bucket health report with stale items and quick wins.",
     "memory.create": "Create a memory record for future retrieval.",
+    "memory.list": "List recently saved active memory records.",
+    "memory.search": "Search active memory records by text and tags.",
+    "memory.delete": "Delete a memory record by id.",
     "memory.undo": "Undo a memory write action.",
     "reminder.schedule": "Schedule a local reminder job.",
     "context.suggest_for_query": "Return context-aware suggestions for a user query.",
@@ -96,6 +99,11 @@ READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
         "bucket.item.search",
         "bucket.item.recommend",
         "bucket.health.report",
+        "memory.create",
+        "memory.list",
+        "memory.search",
+        "memory.delete",
+        "memory.undo",
     }
 )
 
@@ -339,6 +347,12 @@ class ToolDispatcher:
             return self._handle_bucket_health_report(request)
         if tool_name == "memory.create":
             return self._handle_memory_create(request)
+        if tool_name == "memory.list":
+            return self._handle_memory_list(request)
+        if tool_name == "memory.search":
+            return self._handle_memory_search(request)
+        if tool_name == "memory.delete":
+            return self._handle_memory_delete(request)
         if tool_name == "memory.undo":
             return self._handle_memory_undo(request)
         if tool_name == "reminder.schedule":
@@ -1369,7 +1383,17 @@ class ToolDispatcher:
 
     def _handle_memory_create(self, request: ToolRequest) -> ToolResponse:
         source_refs = _extract_source_refs(request.payload)
-        content = dict(request.payload)
+        content = _normalize_memory_content(request.payload, session_id=request.context.session_id)
+        if content is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=(
+                    "Memory payload must include meaningful content. "
+                    "Provide payload.text or payload.fact."
+                ),
+            )
 
         memory_id, undo_token = self._memory_repository.create_entry(content, source_refs)
 
@@ -1380,9 +1404,95 @@ class ToolDispatcher:
                 "tool": request.tool,
                 "status": "created",
                 "memory_id": memory_id,
+                "memory": content,
             },
             provenance=[ProvenanceRef(type="memory_entry", id=memory_id)],
             undo_token=undo_token,
+            error=None,
+        )
+
+    def _handle_memory_list(self, request: ToolRequest) -> ToolResponse:
+        limit = max(1, min(200, _int_or_default(request.payload.get("limit"), default=20)))
+        entries = self._memory_repository.list_active_entries(limit=limit)
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "count": len(entries),
+                "entries": entries,
+            },
+            provenance=[
+                ProvenanceRef(type="memory_entry", id=str(entry["id"])) for entry in entries
+            ],
+            error=None,
+        )
+
+    def _handle_memory_search(self, request: ToolRequest) -> ToolResponse:
+        query = _payload_str(request.payload, "query")
+        tags = _payload_str_list(request.payload.get("tags") or request.payload.get("tag"))
+        limit = max(1, min(100, _int_or_default(request.payload.get("limit"), default=10)))
+        scan_limit = max(limit, min(1000, _int_or_default(request.payload.get("scan_limit"), 300)))
+
+        if query is None and not tags:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.query or payload.tags is required",
+            )
+
+        entries = self._memory_repository.search_active_entries(
+            query=query,
+            tags=tags,
+            limit=limit,
+            scan_limit=scan_limit,
+        )
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "count": len(entries),
+                "query": query,
+                "tags": tags,
+                "entries": entries,
+            },
+            provenance=[
+                ProvenanceRef(type="memory_entry", id=str(entry["id"])) for entry in entries
+            ],
+            error=None,
+        )
+
+    def _handle_memory_delete(self, request: ToolRequest) -> ToolResponse:
+        memory_id = _payload_str(request.payload, "memory_id") or _payload_str(
+            request.payload,
+            "id",
+        )
+        if memory_id is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.memory_id is required",
+            )
+
+        deleted = self._memory_repository.delete_entry(memory_id)
+        if not deleted:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="not_found",
+                message="Memory entry was not found or already deleted",
+            )
+
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={"tool": request.tool, "status": "deleted", "memory_id": memory_id},
+            provenance=[ProvenanceRef(type="memory_entry", id=memory_id)],
             error=None,
         )
 
@@ -2319,6 +2429,65 @@ def _json_dumps(value: Any) -> str:
     import json
 
     return json.dumps(value, indent=2, sort_keys=True)
+
+
+def _normalize_memory_content(
+    payload: dict[str, Any],
+    *,
+    session_id: str | None,
+) -> dict[str, object] | None:
+    normalized: dict[str, object] = {}
+
+    memory_type = _payload_str(payload, "type") or _payload_str(payload, "kind") or "note"
+    normalized["type"] = memory_type
+
+    text = (
+        _payload_str(payload, "text")
+        or _payload_str(payload, "fact")
+        or _payload_str(payload, "note")
+        or _payload_str(payload, "summary")
+        or _payload_str(payload, "message")
+    )
+    if text is not None:
+        normalized["text"] = text
+
+    title = _payload_str(payload, "title")
+    if title is not None:
+        normalized["title"] = title
+
+    tags = _payload_str_list(payload.get("tags") or payload.get("tag"))
+    if tags:
+        normalized["tags"] = tags
+
+    priority = _payload_str(payload, "priority")
+    if priority is not None:
+        normalized["priority"] = priority
+
+    if session_id:
+        normalized["session_id"] = session_id
+
+    if "text" not in normalized:
+        extracted = _flatten_memory_payload_text(payload)
+        if extracted:
+            normalized["text"] = extracted
+
+    return normalized if "text" in normalized else None
+
+
+def _flatten_memory_payload_text(payload: dict[str, Any]) -> str | None:
+    chunks: list[str] = []
+    for key, value in payload.items():
+        if key in {"source_refs", "tags", "tag", "type", "kind"}:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                chunks.append(f"{key}: {stripped}")
+        elif isinstance(value, (int, float, bool)):
+            chunks.append(f"{key}: {value}")
+    if not chunks:
+        return None
+    return "; ".join(chunks)
 
 
 def _extract_source_refs(payload: dict[str, Any]) -> list[dict[str, str]]:

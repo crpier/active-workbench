@@ -1,8 +1,9 @@
 # Active Workbench
 
-Active Workbench is a local-first assistant backend for two practical jobs:
+Active Workbench is a local-first assistant backend for three practical jobs:
 1. working with your recently liked YouTube videos (lookup, search, transcript), and
-2. managing a structured bucket list.
+2. managing a structured bucket list, and
+3. storing and retrieving assistant memory (create/list/search/delete/undo).
 
 It runs entirely on your machine with:
 - FastAPI backend (`backend/`)
@@ -20,7 +21,7 @@ It runs entirely on your machine with:
 
 ## Currently Ready Tools
 
-Only these tools are documented for active use:
+These tools are documented for active use:
 
 YouTube:
 - `youtube.likes.list_recent`
@@ -34,6 +35,13 @@ Bucket list:
 - `bucket.item.search`
 - `bucket.item.recommend`
 - `bucket.health.report`
+
+Memory:
+- `memory.create`
+- `memory.list`
+- `memory.search`
+- `memory.delete`
+- `memory.undo`
 
 ## Documentation
 

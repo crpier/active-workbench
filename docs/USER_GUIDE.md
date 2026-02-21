@@ -2,9 +2,10 @@
 
 ## What You Can Do Today
 
-Active Workbench currently supports two user-facing capabilities:
+Active Workbench currently supports three user-facing capabilities:
 1. Work with your recently liked YouTube videos.
 2. Maintain a structured bucket list.
+3. Save and retrieve memory entries for continuity.
 
 ## How The System Behaves (User View)
 
@@ -96,6 +97,21 @@ What it does:
 - Search results include unannotated items and expose their annotation status.
 - Recommendations exclude unannotated items.
 
+## Memory Workflow
+
+Use:
+- `memory.create`
+- `memory.list`
+- `memory.search`
+- `memory.delete`
+- `memory.undo`
+
+What it does:
+- Stores short durable memory entries with optional tags and source refs.
+- Returns an `undo_token` on create so writes can be reverted quickly.
+- Supports listing recent active memory and searching by query/tags.
+- Supports deleting memory by `memory_id`.
+
 ## OpenCode Tool Names
 
 In OpenCode, these are exposed as:
@@ -109,6 +125,11 @@ In OpenCode, these are exposed as:
 - `active_workbench_bucket_item_search`
 - `active_workbench_bucket_item_recommend`
 - `active_workbench_bucket_health_report`
+- `active_workbench_memory_create`
+- `active_workbench_memory_list`
+- `active_workbench_memory_search`
+- `active_workbench_memory_delete`
+- `active_workbench_memory_undo`
 
 ## Practical Prompt Examples
 

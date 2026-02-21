@@ -250,6 +250,63 @@ export class ToolsService {
         });
     }
     /**
+     * Memory List
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static memoryList(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/memory.list',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Memory Search
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static memorySearch(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/memory.search',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Memory Delete
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static memoryDelete(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/memory.delete',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Memory Undo
      * @param requestBody
      * @returns ToolResponse Successful Response

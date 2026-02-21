@@ -22,6 +22,9 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "bucket.item.recommend",
     "bucket.health.report",
     "memory.create",
+    "memory.list",
+    "memory.search",
+    "memory.delete",
     "memory.undo",
     "reminder.schedule",
     "context.suggest_for_query",
@@ -85,6 +88,11 @@ def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None
         "bucket.item.search",
         "bucket.item.recommend",
         "bucket.health.report",
+        "memory.create",
+        "memory.list",
+        "memory.search",
+        "memory.delete",
+        "memory.undo",
     }
     assert not_ready_tools == set(ALL_TOOLS) - ready_tools
 
@@ -97,7 +105,15 @@ def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None
 
 def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
     for tool in ALL_TOOLS:
-        payload = {"query": "soup"} if tool == "youtube.likes.search_recent_content" else None
+        payload: dict[str, Any] | None = None
+        if tool == "youtube.likes.search_recent_content":
+            payload = {"query": "soup"}
+        elif tool == "memory.create":
+            payload = {"text": "Remember to buy leeks"}
+        elif tool == "memory.search":
+            payload = {"query": "leeks"}
+        elif tool == "memory.delete":
+            payload = {"memory_id": "mem_missing"}
         response = client.post(f"/tools/{tool}", json=_request_body(tool, payload=payload))
         assert response.status_code == 200, tool
         body = response.json()
@@ -561,6 +577,7 @@ def test_memory_create_and_undo(client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     create_body = create_response.json()
+    assert create_body["result"]["memory"]["text"] == "User bought leeks"
     undo_token = str(create_body["undo_token"])
 
     undo_response = client.post(
@@ -577,6 +594,66 @@ def test_memory_create_and_undo(client: TestClient) -> None:
     assert second_undo.status_code == 200
     assert second_undo.json()["ok"] is False
     assert second_undo.json()["error"]["code"] == "not_found"
+
+
+def test_memory_list_search_and_delete(client: TestClient) -> None:
+    create_response = client.post(
+        "/tools/memory.create",
+        json=_request_body(
+            "memory.create",
+            payload={"text": "Prefer morning deep work", "tags": ["preference", "work"]},
+        ),
+    )
+    assert create_response.status_code == 200
+    memory_id = str(create_response.json()["result"]["memory_id"])
+
+    list_response = client.post(
+        "/tools/memory.list",
+        json=_request_body("memory.list", payload={"limit": 5}),
+    )
+    assert list_response.status_code == 200
+    listed_ids = {entry["id"] for entry in list_response.json()["result"]["entries"]}
+    assert memory_id in listed_ids
+
+    search_response = client.post(
+        "/tools/memory.search",
+        json=_request_body("memory.search", payload={"query": "deep work"}),
+    )
+    assert search_response.status_code == 200
+    search_ids = {entry["id"] for entry in search_response.json()["result"]["entries"]}
+    assert memory_id in search_ids
+
+    delete_response = client.post(
+        "/tools/memory.delete",
+        json=_request_body("memory.delete", payload={"memory_id": memory_id}),
+    )
+    assert delete_response.status_code == 200
+    assert delete_response.json()["result"]["status"] == "deleted"
+
+    post_delete = client.post(
+        "/tools/memory.search",
+        json=_request_body("memory.search", payload={"query": "deep work"}),
+    )
+    assert post_delete.status_code == 200
+    post_delete_ids = {entry["id"] for entry in post_delete.json()["result"]["entries"]}
+    assert memory_id not in post_delete_ids
+
+
+def test_memory_create_rejects_empty_payload(client: TestClient) -> None:
+    response = client.post(
+        "/tools/memory.create",
+        json={
+            "tool": "memory.create",
+            "request_id": str(uuid4()),
+            "idempotency_key": str(uuid4()),
+            "payload": {},
+            "context": {"timezone": "Europe/Bucharest", "session_id": "test"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "invalid_input"
 
 
 def test_reminder_and_recipe_context_suggestion(client: TestClient) -> None:

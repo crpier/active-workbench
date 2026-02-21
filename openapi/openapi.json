@@ -522,6 +522,129 @@
         }
       }
     },
+    "/tools/memory.list": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Memory List",
+        "operationId": "memory_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/memory.search": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Memory Search",
+        "operationId": "memory_search",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/memory.delete": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Memory Delete",
+        "operationId": "memory_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tools/memory.undo": {
       "post": {
         "tags": [
@@ -927,6 +1050,9 @@
               "bucket.item.recommend",
               "bucket.health.report",
               "memory.create",
+              "memory.list",
+              "memory.search",
+              "memory.delete",
               "memory.undo",
               "reminder.schedule",
               "context.suggest_for_query",
@@ -1036,6 +1162,9 @@
               "bucket.item.recommend",
               "bucket.health.report",
               "memory.create",
+              "memory.list",
+              "memory.search",
+              "memory.delete",
               "memory.undo",
               "reminder.schedule",
               "context.suggest_for_query",

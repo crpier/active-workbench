@@ -79,6 +79,24 @@ def test_memory_repository_lists_active_entries(tmp_path: Path) -> None:
     assert memory_repo.list_active_entries() == []
 
 
+def test_memory_repository_search_and_delete(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+
+    memory_repo = MemoryRepository(db)
+    memory_id, _undo_token = memory_repo.create_entry(
+        content={"text": "Call Alex about coffee beans", "tags": ["errand", "coffee"]},
+        source_refs=[],
+    )
+
+    results = memory_repo.search_active_entries(query="coffee", tags=[], limit=5)
+    assert results and results[0]["id"] == memory_id
+
+    deleted = memory_repo.delete_entry(memory_id)
+    assert deleted is True
+    assert memory_repo.search_active_entries(query="coffee", tags=[], limit=5) == []
+
+
 def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeDispatcher:
         youtube_service = None
