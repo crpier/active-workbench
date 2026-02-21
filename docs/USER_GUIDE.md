@@ -88,6 +88,10 @@ What it does:
   - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
   - Confirm by choosing an option (for example by artist/year); assistant then retries with the mapped `musicbrainz_release_group_id`.
   - MusicBrainz requests include an explicit User-Agent and follow local soft-limit/burst guardrails.
+- For `article`, add requests are URL-first.
+  - Provide `url` (or `external_url`) and `domain=article`.
+  - Backend fetches page metadata (title/author/site/published date/description), normalizes canonical URL, and deduplicates by canonical article URL.
+  - If URL is missing, `bucket.item.add` returns `status=needs_clarification` requesting the article link.
 - Background annotation runs periodically (scheduler loop) to enrich low-detail items.
 - Search results include unannotated items and expose their annotation status.
 - Recommendations exclude unannotated items.

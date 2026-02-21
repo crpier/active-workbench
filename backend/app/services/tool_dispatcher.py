@@ -26,6 +26,7 @@ from backend.app.repositories.vault_repository import SavedDocument, VaultReposi
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 from backend.app.services.bucket_metadata_service import (
     BucketAddResolution,
+    BucketEnrichment,
     BucketMetadataService,
     BucketResolveCandidate,
 )
@@ -61,7 +62,8 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "bucket.item.add": (
         "Add or merge a structured bucket item. "
         "payload.domain (or payload.kind) is required. "
-        "Movie/TV/Book/Music add requests may return a clarification response before write; "
+        "Movie/TV/Book/Music/Article add requests may return "
+        "a clarification response before write; "
         "handle clarifications in normal chat and retry with provider confirmation fields."
     ),
     "bucket.item.update": "Update a structured bucket item.",
@@ -210,6 +212,7 @@ class ToolDispatcher:
                 title=item.title,
                 domain=item.domain,
                 year=item.year,
+                article_url=item.external_url,
             )
 
             metadata_updates: dict[str, Any] = {
@@ -848,19 +851,6 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_add(self, request: ToolRequest) -> ToolResponse:
-        title = (
-            _payload_str(request.payload, "title")
-            or _payload_str(request.payload, "name")
-            or _payload_str(request.payload, "item")
-        )
-        if title is None:
-            return _tool_error_response(
-                request_id=request.request_id,
-                tool=request.tool,
-                code="invalid_input",
-                message="payload.title (or payload.name/payload.item) is required",
-            )
-
         domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
         if domain is None:
             return _tool_error_response(
@@ -869,6 +859,26 @@ class ToolDispatcher:
                 code="invalid_input",
                 message="payload.domain (or payload.kind) is required",
             )
+        external_url = _payload_str(request.payload, "external_url") or _payload_str(
+            request.payload, "url"
+        )
+        media_domain = _normalize_bucket_media_domain(domain)
+        title = (
+            _payload_str(request.payload, "title")
+            or _payload_str(request.payload, "name")
+            or _payload_str(request.payload, "item")
+        )
+        title_provided = title is not None
+        if title is None and media_domain == "article":
+            title = _article_title_from_url(external_url)
+        if title is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.title (or payload.name/payload.item) is required",
+            )
+
         notes = (
             _payload_str(request.payload, "notes")
             or _payload_str(request.payload, "body")
@@ -889,9 +899,6 @@ class ToolDispatcher:
             or request.payload.get("platforms")
         )
         canonical_id = _payload_str(request.payload, "canonical_id")
-        external_url = _payload_str(request.payload, "external_url") or _payload_str(
-            request.payload, "url"
-        )
         confidence = _optional_float(request.payload.get("confidence"))
         metadata = _payload_dict(request.payload.get("metadata"))
         source_refs = _extract_source_refs(request.payload)
@@ -943,7 +950,6 @@ class ToolDispatcher:
             notes=notes,
             domain=domain,
         )
-        media_domain = _normalize_bucket_media_domain(domain)
 
         enrichment = None
         add_resolution: BucketAddResolution | None = None
@@ -952,6 +958,7 @@ class ToolDispatcher:
                 title=title,
                 domain=domain,
                 year=year,
+                article_url=external_url,
                 artist_hint=music_artist_hint,
                 tmdb_id=tmdb_id,
                 bookwyrm_key=bookwyrm_key,
@@ -969,6 +976,7 @@ class ToolDispatcher:
                 bookwyrm_key=bookwyrm_key,
                 musicbrainz_release_group_id=musicbrainz_release_group_id,
                 music_artist_hint=music_artist_hint,
+                article_url_provided=external_url is not None,
             )
             if (
                 add_resolution.status in {"ambiguous", "no_match", "rate_limited"}
@@ -990,11 +998,7 @@ class ToolDispatcher:
                     "resolution_reason": add_resolution.reason,
                     "message": _bucket_add_resolution_message(add_resolution),
                     "follow_up_mode": "chat",
-                    "assistant_follow_up": (
-                        "Ask the user to choose the intended candidate by option number "
-                        "or by creator clues in normal chat, then retry with the matching "
-                        "provider identifier."
-                    ),
+                    "assistant_follow_up": _bucket_add_follow_up_instruction(add_resolution),
                     "candidates": candidates,
                     "selected_candidate": selected_candidate,
                     "retry_after_seconds": add_resolution.retry_after_seconds,
@@ -1017,17 +1021,21 @@ class ToolDispatcher:
                     canonical_id = canonical_id or add_resolution.selected_candidate.canonical_id
                     if year is None:
                         year = add_resolution.selected_candidate.year
+                if not title_provided and enrichment is not None:
+                    title = _title_from_article_enrichment(enrichment, fallback=title)
             elif auto_enrich:
                 enrichment = self._bucket_metadata_service.enrich(
                     title=title,
                     domain=domain,
                     year=year,
+                    article_url=external_url,
                 )
         elif auto_enrich:
             enrichment = self._bucket_metadata_service.enrich(
                 title=title,
                 domain=domain,
                 year=year,
+                article_url=external_url,
             )
 
         if enrichment is not None:
@@ -1044,7 +1052,10 @@ class ToolDispatcher:
             if not providers:
                 providers = list(enrichment.providers)
             canonical_id = canonical_id or enrichment.canonical_id
-            external_url = external_url or enrichment.external_url
+            if media_domain == "article" and enrichment.external_url is not None:
+                external_url = enrichment.external_url
+            else:
+                external_url = external_url or enrichment.external_url
             confidence = confidence if confidence is not None else enrichment.confidence
             metadata = _merge_dicts(metadata, enrichment.metadata)
             source_refs = _merge_source_refs(source_refs, enrichment.source_refs)
@@ -1860,6 +1871,8 @@ def _normalize_bucket_media_domain(domain: str) -> str | None:
         return "book"
     if normalized in {"music", "album"}:
         return "music"
+    if normalized == "article":
+        return "article"
     return None
 
 
@@ -1867,6 +1880,32 @@ def _extract_music_artist_hint(*, title: str, notes: str, domain: str) -> str | 
     if _normalize_bucket_media_domain(domain) != "music":
         return None
     return _extract_artist_name(notes) or _extract_artist_name(title)
+
+
+def _article_title_from_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = urlparse(value.strip())
+    path = parsed.path.rstrip("/")
+    slug = path.rsplit("/", 1)[-1].strip()
+    if not slug:
+        host = (parsed.hostname or "").strip()
+        if not host:
+            return None
+        return f"Article from {host}"
+    slug = re.sub(r"\.[a-z0-9]{2,4}$", "", slug, flags=re.IGNORECASE)
+    words = [word for word in re.split(r"[-_]+", slug) if word]
+    if not words:
+        return None
+    return " ".join(words).title()
+
+
+def _title_from_article_enrichment(enrichment: BucketEnrichment, *, fallback: str) -> str:
+    metadata = enrichment.metadata
+    enriched_title = _payload_str(metadata, "title") or _payload_str(metadata, "article_title")
+    if enriched_title is not None:
+        return enriched_title
+    return fallback
 
 
 def _extract_artist_name(value: str) -> str | None:
@@ -1984,6 +2023,8 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
         provider = "bookwyrm"
     elif isinstance(resolution.reason, str) and resolution.reason.startswith("musicbrainz_"):
         provider = "musicbrainz"
+    elif isinstance(resolution.reason, str) and resolution.reason.startswith("article_"):
+        provider = "article"
     if resolution.status == "ambiguous":
         if provider == "bookwyrm":
             return (
@@ -2011,6 +2052,15 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
                 "No confident MusicBrainz album match was found. "
                 "Please provide a more specific title, artist name, or release year."
             )
+        if provider == "article":
+            if resolution.reason == "article_url_required":
+                return "Article URL is required for article adds. Please provide the article link."
+            if resolution.reason == "article_fetch_unavailable":
+                return (
+                    "Couldn't fetch article metadata from that URL right now. "
+                    "Please retry or provide a different link."
+                )
+            return "No article metadata could be resolved from that URL."
         return (
             "No confident TMDb match was found. "
             "Please provide a more specific title or release year."
@@ -2022,6 +2072,19 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
             return "MusicBrainz enrichment is currently rate limited. Please retry shortly."
         return "TMDb enrichment is currently rate limited. Please retry shortly."
     return "Resolution skipped."
+
+
+def _bucket_add_follow_up_instruction(resolution: BucketAddResolution) -> str:
+    if resolution.reason == "article_url_required":
+        return (
+            "Ask the user for the article URL in normal chat, then retry bucket.item.add "
+            "with payload.url."
+        )
+    return (
+        "Ask the user to choose the intended candidate by option number "
+        "or by creator clues in normal chat, then retry with the matching "
+        "provider identifier."
+    )
 
 
 def _merge_dicts(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
