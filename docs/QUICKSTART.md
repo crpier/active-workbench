@@ -76,7 +76,7 @@ Use the production runbook:
 
 Short version:
 1. `cp .env.example .env`
-2. Set `ACTIVE_WORKBENCH_SUPADATA_API_KEY` (and optionally `ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth`).
+2. Set `ACTIVE_WORKBENCH_SUPADATA_API_KEY` and `ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY` (and optionally `ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth`).
 3. Ensure OAuth files exist (`youtube-client-secret.json`, `youtube-token.json`).
 4. Run `uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`.
 
@@ -125,6 +125,13 @@ Mark item <id> as completed.
 - Transcript retrieval uses Supadata.
 - Likes and transcripts are cached in SQLite (`youtube_likes_cache`, `youtube_transcript_cache`).
 
+## TMDb Attribution
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+Movie and TV metadata enrichment for bucket-list items is sourced from TMDb.
+Terms: `https://www.themoviedb.org/api-terms-of-use?language=en-US`
+
 ## Supadata Key Management (Recommended)
 
 ```bash
@@ -139,6 +146,9 @@ source ~/.config/active-workbench/secrets.env
 
 - `ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth` (optional; any other value fails startup)
 - `ACTIVE_WORKBENCH_SUPADATA_API_KEY` (required at startup for OAuth mode)
+- `ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY` (required at startup for bucket enrichment)
+- `ACTIVE_WORKBENCH_BUCKET_TMDB_DAILY_SOFT_LIMIT` (default `500` TMDb calls/day, UTC)
+- `ACTIVE_WORKBENCH_BUCKET_TMDB_MIN_INTERVAL_SECONDS` (default `1.1`, burst guard between TMDb calls)
 - `ACTIVE_WORKBENCH_SUPADATA_BASE_URL` (default `https://api.supadata.ai/v1`)
 - `ACTIVE_WORKBENCH_SUPADATA_TRANSCRIPT_MODE` (default `native`)
 - `ACTIVE_WORKBENCH_DATA_DIR` (default `.active-workbench`)

@@ -29,6 +29,7 @@ def test_config_env_bool_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
     monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
     monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "1")
     enabled = load_settings()
     assert enabled.scheduler_enabled is True
@@ -110,6 +111,10 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         def stop(self) -> None:
             FakeScheduler.stopped = True
 
+    class FakeTelemetry:
+        def emit(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
     settings = AppSettings(
         data_dir=Path("/tmp/data"),
         vault_dir=Path("/tmp/data/vault"),
@@ -147,7 +152,7 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
         supadata_poll_max_attempts=30,
         bucket_enrichment_enabled=False,
         bucket_enrichment_http_timeout_seconds=2.0,
-        bucket_omdb_api_key=None,
+        bucket_tmdb_api_key=None,
         log_dir=Path("/tmp/data/logs"),
         log_level="INFO",
         log_max_bytes=10 * 1024 * 1024,
@@ -156,6 +161,7 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("backend.app.main.get_settings", lambda: settings)
     monkeypatch.setattr("backend.app.main.get_dispatcher", lambda: FakeDispatcher())
+    monkeypatch.setattr("backend.app.main.get_telemetry", lambda: FakeTelemetry())
     monkeypatch.setattr("backend.app.main.SchedulerService", FakeScheduler)
 
     app = create_app()
@@ -205,7 +211,7 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
         supadata_poll_max_attempts=30,
         bucket_enrichment_enabled=False,
         bucket_enrichment_http_timeout_seconds=2.0,
-        bucket_omdb_api_key=None,
+        bucket_tmdb_api_key=None,
         log_dir=tmp_path / "logs",
         log_level="INFO",
         log_max_bytes=1024 * 1024,

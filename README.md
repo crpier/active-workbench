@@ -43,6 +43,14 @@ Bucket list:
 - Troubleshooting: `docs/TROUBLESHOOTING.md`
 - Incubator roadmap for planned tools: `docs/FUTURE_FEATURES.md`
 
+## TMDb Attribution
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+Movie and TV metadata enrichment for bucket-list items is provided by TMDb.
+For terms and attribution details, see:
+- `https://www.themoviedb.org/api-terms-of-use?language=en-US`
+
 ## Developer Notes
 
 Core commands:

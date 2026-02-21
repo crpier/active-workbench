@@ -18,6 +18,7 @@ Set at least:
 
 ```env
 ACTIVE_WORKBENCH_SUPADATA_API_KEY=YOUR_SUPADATA_API_KEY
+ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY=YOUR_TMDB_API_KEY
 ACTIVE_WORKBENCH_DATA_DIR=.active-workbench
 ```
 
@@ -25,6 +26,9 @@ Notes:
 - `.env` is loaded automatically by backend settings.
 - Shell env vars still work and override `.env`.
 - `.env` is gitignored.
+- Optional TMDb throttling knobs:
+  - `ACTIVE_WORKBENCH_BUCKET_TMDB_DAILY_SOFT_LIMIT` (default `500`)
+  - `ACTIVE_WORKBENCH_BUCKET_TMDB_MIN_INTERVAL_SECONDS` (default `1.1`)
 - Optional transcript cadence tuning:
   - `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS` (default `20`)
   - `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS` (default `20`)
@@ -55,6 +59,7 @@ uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 
 Startup fails immediately if any required production configuration is missing:
 - `ACTIVE_WORKBENCH_SUPADATA_API_KEY`
+- `ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY`
 - OAuth client secret JSON file
 - OAuth token JSON file
 

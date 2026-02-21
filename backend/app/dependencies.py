@@ -5,6 +5,7 @@ from functools import lru_cache
 from backend.app.config import AppSettings, load_settings
 from backend.app.repositories.audit_repository import AuditRepository
 from backend.app.repositories.bucket_repository import BucketRepository
+from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 from backend.app.repositories.database import Database
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.jobs_repository import JobsRepository
@@ -39,7 +40,10 @@ def get_dispatcher() -> ToolDispatcher:
         bucket_metadata_service=BucketMetadataService(
             enrichment_enabled=settings.bucket_enrichment_enabled,
             http_timeout_seconds=settings.bucket_enrichment_http_timeout_seconds,
-            omdb_api_key=settings.bucket_omdb_api_key,
+            tmdb_api_key=settings.bucket_tmdb_api_key,
+            tmdb_quota_repository=BucketTmdbQuotaRepository(database),
+            tmdb_daily_soft_limit=settings.bucket_tmdb_daily_soft_limit,
+            tmdb_min_interval_seconds=settings.bucket_tmdb_min_interval_seconds,
         ),
         youtube_quota_repository=YouTubeQuotaRepository(database),
         youtube_service=YouTubeService(

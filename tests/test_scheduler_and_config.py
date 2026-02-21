@@ -102,6 +102,8 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_SCHEDULER_POLL_INTERVAL_SECONDS", "22")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
     monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_MIN_INTERVAL_SECONDS", "1.2")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "120")
@@ -140,6 +142,7 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.scheduler_enabled is False
     assert settings.youtube_transcript_scheduler_poll_interval_seconds == 22
     assert settings.youtube_mode == "oauth"
+    assert settings.bucket_tmdb_min_interval_seconds == 1.2
     assert settings.youtube_daily_quota_limit == 12_000
     assert settings.youtube_quota_warning_percent == 0.75
     assert settings.youtube_likes_cache_ttl_seconds == 120
@@ -184,6 +187,23 @@ def test_load_settings_oauth_mode_requires_secrets(
         load_settings()
 
 
+def test_load_settings_oauth_mode_requires_bucket_tmdb_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
+    monkeypatch.delenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY"):
+        load_settings()
+
+
 def test_load_settings_oauth_mode_succeeds_with_required_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -195,10 +215,12 @@ def test_load_settings_oauth_mode_succeeds_with_required_secrets(
     monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
     monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "  test-key  ")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "  test-tmdb-key  ")
 
     settings = load_settings()
     assert settings.youtube_mode == "oauth"
     assert settings.supadata_api_key == "test-key"
+    assert settings.bucket_tmdb_api_key == "test-tmdb-key"
 
 
 def test_load_settings_reads_dotenv_for_oauth_mode(
@@ -215,6 +237,7 @@ def test_load_settings_reads_dotenv_for_oauth_mode(
             [
                 "ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth",
                 "ACTIVE_WORKBENCH_SUPADATA_API_KEY=dotenv-key",
+                "ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY=dotenv-tmdb-key",
                 f"ACTIVE_WORKBENCH_DATA_DIR={data_dir}",
             ]
         ),
@@ -229,4 +252,5 @@ def test_load_settings_reads_dotenv_for_oauth_mode(
     settings = load_settings()
     assert settings.youtube_mode == "oauth"
     assert settings.supadata_api_key == "dotenv-key"
+    assert settings.bucket_tmdb_api_key == "dotenv-tmdb-key"
     assert settings.data_dir == data_dir.resolve()

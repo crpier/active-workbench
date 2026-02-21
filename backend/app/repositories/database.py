@@ -154,6 +154,12 @@ CREATE TABLE IF NOT EXISTS youtube_transcript_sync_state (
 
 CREATE INDEX IF NOT EXISTS idx_youtube_transcript_sync_state_next_attempt
 ON youtube_transcript_sync_state(next_attempt_at, status);
+
+CREATE TABLE IF NOT EXISTS bucket_tmdb_quota_daily (
+    date_utc TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

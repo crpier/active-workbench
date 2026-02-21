@@ -4,6 +4,12 @@
   "share": "disabled",
   "permission": {
     "*": "allow",
+    "question": "deny",
+    "ask": "deny",
+    "read": "deny",
+    "grep": "deny",
+    "glob": "deny",
+    "list": "deny",
     "bash": "deny",
     "edit": "deny",
     "write": "deny"

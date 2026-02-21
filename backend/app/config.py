@@ -256,9 +256,17 @@ class AppSettings(BaseSettings):
         default=2.0,
         description="HTTP timeout for bucket metadata enrichment calls.",
     )
-    bucket_omdb_api_key: str | None = Field(
+    bucket_tmdb_api_key: str | None = Field(
         default=None,
-        description="Optional OMDb API key used by enrichment providers.",
+        description="TMDb API key used by bucket enrichment providers.",
+    )
+    bucket_tmdb_daily_soft_limit: int = Field(
+        default=500,
+        description="Soft limit for TMDb enrichment calls per UTC day.",
+    )
+    bucket_tmdb_min_interval_seconds: float = Field(
+        default=1.1,
+        description="Minimum interval between TMDb enrichment calls to prevent bursts.",
     )
 
     # Logging.
@@ -330,7 +338,7 @@ class AppSettings(BaseSettings):
         assert isinstance(default_value, bool)
         return _parse_bool_with_default(value, default=default_value)
 
-    @field_validator("supadata_api_key", "bucket_omdb_api_key", mode="before")
+    @field_validator("supadata_api_key", "bucket_tmdb_api_key", mode="before")
     @classmethod
     def _normalize_optional_strings(cls, value: Any) -> str | None:
         return _normalize_optional_text(value)
@@ -341,12 +349,17 @@ def _validate_oauth_configuration(
     youtube_client_secret_path: Path,
     youtube_token_path: Path,
     supadata_api_key: str | None,
+    bucket_tmdb_api_key: str | None,
 ) -> None:
     errors: list[str] = []
 
     if supadata_api_key is None:
         errors.append(
             "ACTIVE_WORKBENCH_SUPADATA_API_KEY is required for OAuth runtime mode."
+        )
+    if bucket_tmdb_api_key is None:
+        errors.append(
+            "ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY is required for bucket enrichment."
         )
     if not youtube_client_secret_path.is_file():
         errors.append(f"Missing OAuth client secret JSON: {youtube_client_secret_path}")
@@ -393,6 +406,7 @@ def load_settings(*, validate_oauth_secrets: bool = True) -> AppSettings:
             youtube_client_secret_path=settings.youtube_client_secret_path,
             youtube_token_path=settings.youtube_token_path,
             supadata_api_key=settings.supadata_api_key,
+            bucket_tmdb_api_key=settings.bucket_tmdb_api_key,
         )
 
     return settings

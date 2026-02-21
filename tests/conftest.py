@@ -10,7 +10,10 @@ from fastapi.testclient import TestClient
 from backend.app.dependencies import reset_cached_dependencies
 from backend.app.main import create_app
 from backend.app.repositories.database import Database
-from backend.app.repositories.youtube_cache_repository import CachedLikeVideo, YouTubeCacheRepository
+from backend.app.repositories.youtube_cache_repository import (
+    CachedLikeVideo,
+    YouTubeCacheRepository,
+)
 
 
 def _seed_cached_youtube_data(data_dir: Path) -> None:
@@ -88,6 +91,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
     monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-supadata-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
     monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_ENRICHMENT_ENABLED", "0")
     reset_cached_dependencies()
 

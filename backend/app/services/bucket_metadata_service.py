@@ -4,10 +4,12 @@ import json
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 
 
 @dataclass(frozen=True)
@@ -27,17 +29,237 @@ class BucketEnrichment:
     provider: str | None
 
 
+@dataclass(frozen=True)
+class BucketResolveCandidate:
+    canonical_id: str
+    tmdb_id: int
+    media_type: Literal["movie", "tv"]
+    title: str
+    year: int | None
+    confidence: float
+    popularity: float | None
+    vote_count: int | None
+    external_url: str
+
+
+@dataclass(frozen=True)
+class BucketAddResolution:
+    status: Literal["resolved", "ambiguous", "no_match", "rate_limited", "skipped"]
+    reason: str | None
+    selected_candidate: BucketResolveCandidate | None
+    candidates: list[BucketResolveCandidate]
+    enrichment: BucketEnrichment | None
+    retry_after_seconds: float | None
+
+
+@dataclass(frozen=True)
+class _TmdbRequest:
+    payload: dict[str, Any] | None
+    rate_limited: bool
+    retry_after_seconds: float | None
+
+
 class BucketMetadataService:
     def __init__(
         self,
         *,
         enrichment_enabled: bool,
         http_timeout_seconds: float,
-        omdb_api_key: str | None,
+        tmdb_api_key: str | None,
+        tmdb_quota_repository: BucketTmdbQuotaRepository | None = None,
+        tmdb_daily_soft_limit: int = 500,
+        tmdb_min_interval_seconds: float = 1.1,
     ) -> None:
         self._enrichment_enabled = enrichment_enabled
         self._http_timeout_seconds = max(0.5, http_timeout_seconds)
-        self._omdb_api_key = _normalize_optional_text(omdb_api_key)
+        self._tmdb_api_key = _normalize_optional_text(tmdb_api_key)
+        self._tmdb_quota_repository = tmdb_quota_repository
+        self._tmdb_daily_soft_limit = max(0, tmdb_daily_soft_limit)
+        self._tmdb_min_interval_seconds = max(0.0, tmdb_min_interval_seconds)
+
+    def resolve_for_bucket_add(
+        self,
+        *,
+        title: str,
+        domain: str,
+        year: int | None,
+        tmdb_id: int | None = None,
+        max_candidates: int = 5,
+    ) -> BucketAddResolution:
+        year_hint = year if year is not None else _parse_year(title)
+        normalized_domain = domain.strip().lower()
+        media_type = _tmdb_media_type_for_domain(normalized_domain)
+        if media_type is None:
+            return BucketAddResolution(
+                status="skipped",
+                reason="unsupported_domain",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+        if not self._enrichment_enabled:
+            return BucketAddResolution(
+                status="skipped",
+                reason="enrichment_disabled",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+        if self._tmdb_api_key is None:
+            return BucketAddResolution(
+                status="skipped",
+                reason="tmdb_key_missing",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        if tmdb_id is not None:
+            detail_request = self._fetch_tmdb_details(media_type=media_type, tmdb_id=tmdb_id)
+            if detail_request.rate_limited:
+                return BucketAddResolution(
+                    status="rate_limited",
+                    reason="tmdb_rate_limited",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=detail_request.retry_after_seconds,
+                )
+            if detail_request.payload is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="tmdb_id_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+
+            selected_candidate = _candidate_from_tmdb_detail(
+                detail_request.payload,
+                media_type=media_type,
+                query_title=title,
+            )
+            if selected_candidate is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="tmdb_id_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+
+            enrichment = _enrichment_from_tmdb_payload(
+                payload=detail_request.payload,
+                media_type=media_type,
+                query_title=title,
+            )
+            if enrichment is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="tmdb_id_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+            return BucketAddResolution(
+                status="resolved",
+                reason="resolved_from_tmdb_id",
+                selected_candidate=selected_candidate,
+                candidates=[],
+                enrichment=enrichment,
+                retry_after_seconds=None,
+            )
+
+        search_request = self._search_tmdb(title=title, media_type=media_type, year=year_hint)
+        if search_request.rate_limited:
+            return BucketAddResolution(
+                status="rate_limited",
+                reason="tmdb_rate_limited",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=search_request.retry_after_seconds,
+            )
+        if search_request.payload is None:
+            return BucketAddResolution(
+                status="no_match",
+                reason="tmdb_search_unavailable",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        candidates = _tmdb_search_candidates(
+            payload=search_request.payload,
+            media_type=media_type,
+            query_title=title,
+            query_year=year_hint,
+            max_candidates=max(1, max_candidates),
+        )
+        if not candidates:
+            return BucketAddResolution(
+                status="no_match",
+                reason="no_candidate_match",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        if not _should_auto_resolve(candidates):
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="ambiguous_match",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        selected = candidates[0]
+        search_item = _tmdb_search_item_by_id(
+            payload=search_request.payload,
+            tmdb_id=selected.tmdb_id,
+        )
+        if search_item is None:
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="details_unavailable",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        enrichment = _enrichment_from_tmdb_search_item(
+            payload=search_item,
+            media_type=selected.media_type,
+            query_title=title,
+        )
+        if enrichment is None:
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="details_unavailable",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+        return BucketAddResolution(
+            status="resolved",
+            reason="high_confidence_match",
+            selected_candidate=selected,
+            candidates=candidates,
+            enrichment=enrichment,
+            retry_after_seconds=None,
+        )
 
     def enrich(
         self,
@@ -52,10 +274,14 @@ class BucketMetadataService:
         if normalized_domain not in {"movie", "tv", "show"}:
             return _empty_enrichment()
 
-        if self._omdb_api_key is not None:
-            enriched_omdb = self._enrich_with_omdb(title=title, domain=normalized_domain, year=year)
-            if enriched_omdb is not None:
-                return enriched_omdb
+        if self._tmdb_api_key is not None:
+            enriched_tmdb = self._enrich_with_tmdb(
+                title=title,
+                domain=normalized_domain,
+                year=year,
+            )
+            if enriched_tmdb is not None:
+                return enriched_tmdb
 
         enriched_itunes = self._enrich_with_itunes(title=title, domain=normalized_domain)
         if enriched_itunes is not None:
@@ -63,63 +289,79 @@ class BucketMetadataService:
 
         return _empty_enrichment()
 
-    def _enrich_with_omdb(
+    def _enrich_with_tmdb(
         self,
         *,
         title: str,
         domain: str,
         year: int | None,
     ) -> BucketEnrichment | None:
-        if self._omdb_api_key is None:
+        if self._tmdb_api_key is None:
             return None
-
-        params: dict[str, str] = {"apikey": self._omdb_api_key, "t": title}
-        if domain in {"movie", "tv"}:
-            params["type"] = domain
-        if year is not None:
-            params["y"] = str(year)
-
-        url = f"https://www.omdbapi.com/?{urlencode(params)}"
-        payload = _fetch_json(url, timeout_seconds=self._http_timeout_seconds)
-        if payload is None:
-            return None
-        if str(payload.get("Response", "")).lower() != "true":
-            return None
-
-        imdb_id = _normalize_optional_text(_as_str(payload.get("imdbID")))
-        runtime_minutes = _parse_runtime_minutes(_as_str(payload.get("Runtime")))
-        genres = _split_csv(_as_str(payload.get("Genre")))
-        omdb_year = _parse_year(_as_str(payload.get("Year")))
-        rating = _safe_float(_as_str(payload.get("imdbRating")))
-        popularity = _parse_vote_count(_as_str(payload.get("imdbVotes")))
-        metadata = {
-            "plot": _as_str(payload.get("Plot")),
-            "language": _as_str(payload.get("Language")),
-            "country": _as_str(payload.get("Country")),
-            "awards": _as_str(payload.get("Awards")),
-            "ratings": payload.get("Ratings"),
-        }
-        source_refs: list[dict[str, str]] = []
-        if imdb_id is not None:
-            source_refs.append({"type": "external_api", "id": f"omdb:{imdb_id}"})
-
-        return BucketEnrichment(
-            canonical_id=imdb_id,
-            year=omdb_year,
-            duration_minutes=runtime_minutes,
-            rating=rating,
-            popularity=float(popularity) if popularity is not None else None,
-            genres=genres,
-            tags=[],
-            providers=[],
-            external_url=(
-                f"https://www.imdb.com/title/{imdb_id}/" if imdb_id is not None else None
-            ),
-            confidence=0.95,
-            metadata=metadata,
-            source_refs=source_refs,
-            provider="omdb",
+        resolution = self.resolve_for_bucket_add(
+            title=title,
+            domain=domain,
+            year=year,
+            tmdb_id=None,
+            max_candidates=5,
         )
+        if resolution.status != "resolved" or resolution.enrichment is None:
+            return None
+        return resolution.enrichment
+
+    def _search_tmdb(
+        self,
+        *,
+        title: str,
+        media_type: Literal["movie", "tv"],
+        year: int | None,
+    ) -> _TmdbRequest:
+        if self._tmdb_api_key is None:
+            return _TmdbRequest(payload=None, rate_limited=False, retry_after_seconds=None)
+        params: dict[str, str] = {
+            "api_key": self._tmdb_api_key,
+            "query": title,
+            "include_adult": "false",
+            "language": "en-US",
+        }
+        if year is not None:
+            if media_type == "movie":
+                params["year"] = str(year)
+            else:
+                params["first_air_date_year"] = str(year)
+        url = f"https://api.themoviedb.org/3/search/{media_type}?{urlencode(params)}"
+        return self._tmdb_request_json(url)
+
+    def _fetch_tmdb_details(
+        self,
+        *,
+        media_type: Literal["movie", "tv"],
+        tmdb_id: int,
+    ) -> _TmdbRequest:
+        if self._tmdb_api_key is None:
+            return _TmdbRequest(payload=None, rate_limited=False, retry_after_seconds=None)
+        params = {
+            "api_key": self._tmdb_api_key,
+            "append_to_response": "external_ids",
+            "language": "en-US",
+        }
+        detail_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?{urlencode(params)}"
+        return self._tmdb_request_json(detail_url)
+
+    def _tmdb_request_json(self, url: str) -> _TmdbRequest:
+        if self._tmdb_quota_repository is not None:
+            snapshot = self._tmdb_quota_repository.try_consume_call(
+                daily_soft_limit=self._tmdb_daily_soft_limit,
+                min_interval_seconds=self._tmdb_min_interval_seconds,
+            )
+            if not snapshot.allowed:
+                return _TmdbRequest(
+                    payload=None,
+                    rate_limited=True,
+                    retry_after_seconds=snapshot.retry_after_seconds,
+                )
+        payload = _fetch_json(url, timeout_seconds=self._http_timeout_seconds)
+        return _TmdbRequest(payload=payload, rate_limited=False, retry_after_seconds=None)
 
     def _enrich_with_itunes(
         self,
@@ -249,6 +491,371 @@ def _pick_best_itunes_match(title: str, candidates: list[object]) -> dict[str, A
     return best_match
 
 
+def _tmdb_search_candidates(
+    *,
+    payload: dict[str, Any],
+    media_type: Literal["movie", "tv"],
+    query_title: str,
+    query_year: int | None,
+    max_candidates: int,
+) -> list[BucketResolveCandidate]:
+    results_raw = payload.get("results")
+    if not isinstance(results_raw, list):
+        return []
+    results = cast(list[object], results_raw)
+    title_key = "title" if media_type == "movie" else "name"
+    date_key = "release_date" if media_type == "movie" else "first_air_date"
+
+    matches: list[BucketResolveCandidate] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        item = cast(dict[object, object], result)
+        tmdb_id = _as_int(item.get("id"))
+        candidate_title = _as_str(item.get(title_key))
+        if tmdb_id is None or candidate_title is None:
+            continue
+
+        candidate_year = _parse_year(_as_str(item.get(date_key)))
+        confidence = _tmdb_match_confidence(
+            query_title=query_title,
+            candidate_title=candidate_title,
+            query_year=query_year,
+            candidate_year=candidate_year,
+        )
+        if confidence < 0.45:
+            continue
+
+        matches.append(
+            BucketResolveCandidate(
+                canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                title=candidate_title,
+                year=candidate_year,
+                confidence=round(confidence, 4),
+                popularity=_as_float(item.get("popularity")),
+                vote_count=_as_int(item.get("vote_count")),
+                external_url=f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+            )
+        )
+
+    if query_year is not None:
+        exact_year_matches = [candidate for candidate in matches if candidate.year == query_year]
+        if exact_year_matches:
+            matches = exact_year_matches
+
+    matches = _filter_obscure_tmdb_candidates(matches, query_year=query_year)
+    matches.sort(
+        key=lambda candidate: (
+            candidate.confidence,
+            _candidate_signal(candidate),
+        ),
+        reverse=True,
+    )
+    return matches[:max(1, max_candidates)]
+
+
+def _candidate_from_tmdb_detail(
+    payload: dict[str, Any],
+    *,
+    media_type: Literal["movie", "tv"],
+    query_title: str,
+) -> BucketResolveCandidate | None:
+    title_key = "title" if media_type == "movie" else "name"
+    date_key = "release_date" if media_type == "movie" else "first_air_date"
+    tmdb_id = _as_int(payload.get("id"))
+    title = _as_str(payload.get(title_key))
+    if tmdb_id is None or title is None:
+        return None
+    year = _parse_year(_as_str(payload.get(date_key)))
+    return BucketResolveCandidate(
+        canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+        tmdb_id=tmdb_id,
+        media_type=media_type,
+        title=title,
+        year=year,
+        confidence=round(_title_similarity(query_title, title), 4),
+        popularity=_as_float(payload.get("popularity")),
+        vote_count=_as_int(payload.get("vote_count")),
+        external_url=f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+    )
+
+
+def _tmdb_search_item_by_id(
+    *,
+    payload: dict[str, Any],
+    tmdb_id: int,
+) -> dict[str, Any] | None:
+    results_raw = payload.get("results")
+    if not isinstance(results_raw, list):
+        return None
+    results = cast(list[object], results_raw)
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        item = cast(dict[object, object], result)
+        item_id = _as_int(item.get("id"))
+        if item_id == tmdb_id:
+            return _normalize_object_dict(item)
+    return None
+
+
+def _enrichment_from_tmdb_payload(
+    *,
+    payload: dict[str, Any],
+    media_type: Literal["movie", "tv"],
+    query_title: str,
+) -> BucketEnrichment | None:
+    title_field = "title" if media_type == "movie" else "name"
+    title_value = _as_str(payload.get(title_field))
+    tmdb_id = _as_int(payload.get("id"))
+    if tmdb_id is None:
+        return None
+    tmdb_year = _parse_year(
+        _as_str(
+            payload.get("release_date")
+            if media_type == "movie"
+            else payload.get("first_air_date")
+        )
+    )
+    rating = _as_float(payload.get("vote_average"))
+    popularity = _as_float(payload.get("popularity"))
+    genres = _tmdb_genres(payload)
+    runtime_minutes = _tmdb_runtime_minutes(payload, media_type=media_type)
+    imdb_id = _tmdb_imdb_id(payload, media_type=media_type)
+    confidence = _title_similarity(query_title, title_value)
+
+    metadata = {
+        "overview": _as_str(payload.get("overview")),
+        "original_title": _as_str(
+            payload.get("original_title") if media_type == "movie" else payload.get("original_name")
+        ),
+        "title": title_value,
+        "language": _as_str(payload.get("original_language")),
+        "country_codes": _tmdb_country_codes(payload, media_type=media_type),
+        "tmdb_id": tmdb_id,
+        "tmdb_media_type": media_type,
+    }
+    if imdb_id is not None:
+        metadata["imdb_id"] = imdb_id
+
+    return BucketEnrichment(
+        canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+        year=tmdb_year,
+        duration_minutes=runtime_minutes,
+        rating=rating,
+        popularity=popularity,
+        genres=genres,
+        tags=[],
+        providers=[],
+        external_url=f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[{"type": "external_api", "id": f"tmdb:{media_type}:{tmdb_id}"}],
+        provider="tmdb",
+    )
+
+
+def _enrichment_from_tmdb_search_item(
+    *,
+    payload: dict[str, Any],
+    media_type: Literal["movie", "tv"],
+    query_title: str,
+) -> BucketEnrichment | None:
+    title_field = "title" if media_type == "movie" else "name"
+    date_field = "release_date" if media_type == "movie" else "first_air_date"
+    tmdb_id = _as_int(payload.get("id"))
+    if tmdb_id is None:
+        return None
+    title_value = _as_str(payload.get(title_field))
+    year = _parse_year(_as_str(payload.get(date_field)))
+    confidence = _title_similarity(query_title, title_value)
+
+    metadata = {
+        "overview": _as_str(payload.get("overview")),
+        "title": title_value,
+        "language": _as_str(payload.get("original_language")),
+        "tmdb_id": tmdb_id,
+        "tmdb_media_type": media_type,
+    }
+
+    return BucketEnrichment(
+        canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+        year=year,
+        duration_minutes=None,
+        rating=_as_float(payload.get("vote_average")),
+        popularity=_as_float(payload.get("popularity")),
+        genres=[],
+        tags=[],
+        providers=[],
+        external_url=f"https://www.themoviedb.org/{media_type}/{tmdb_id}",
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[{"type": "external_api", "id": f"tmdb:{media_type}:{tmdb_id}"}],
+        provider="tmdb",
+    )
+
+
+def _should_auto_resolve(candidates: list[BucketResolveCandidate]) -> bool:
+    if not candidates:
+        return False
+    best = candidates[0]
+    if best.confidence < 0.86:
+        return False
+    if len(candidates) == 1:
+        return True
+    second = candidates[1]
+    if (best.confidence - second.confidence) >= 0.12:
+        return True
+
+    best_signal = _candidate_signal(best)
+    second_signal = _candidate_signal(second)
+    return best.confidence >= 0.9 and best_signal >= (second_signal * 2.8)
+
+
+def _filter_obscure_tmdb_candidates(
+    candidates: list[BucketResolveCandidate],
+    *,
+    query_year: int | None,
+) -> list[BucketResolveCandidate]:
+    if query_year is not None:
+        return candidates
+
+    filtered = [candidate for candidate in candidates if _candidate_has_discovery_signal(candidate)]
+    if filtered:
+        return filtered
+    return candidates
+
+
+def _candidate_has_discovery_signal(candidate: BucketResolveCandidate) -> bool:
+    popularity = candidate.popularity if candidate.popularity is not None else 0.0
+    vote_count = candidate.vote_count if candidate.vote_count is not None else 0
+    return popularity >= 8.0 or vote_count >= 80
+
+
+def _candidate_signal(candidate: BucketResolveCandidate) -> float:
+    popularity = candidate.popularity if candidate.popularity is not None else 0.0
+    vote_count = candidate.vote_count if candidate.vote_count is not None else 0
+    return popularity + min(5000, vote_count) / 25.0
+
+
+def _tmdb_match_confidence(
+    *,
+    query_title: str,
+    candidate_title: str,
+    query_year: int | None,
+    candidate_year: int | None,
+) -> float:
+    score = _title_similarity(query_title, candidate_title)
+    if query_year is None or candidate_year is None:
+        return min(1.0, max(0.0, score))
+    if query_year == candidate_year:
+        score += 0.08
+    elif abs(query_year - candidate_year) == 1:
+        score += 0.03
+    else:
+        score -= 0.08
+    return min(1.0, max(0.0, score))
+
+
+def _tmdb_media_type_for_domain(domain: str) -> Literal["movie", "tv"] | None:
+    normalized = domain.strip().lower()
+    if normalized == "movie":
+        return "movie"
+    if normalized in {"tv", "show"}:
+        return "tv"
+    return None
+
+
+def _tmdb_genres(payload: dict[str, Any]) -> list[str]:
+    genres_raw = payload.get("genres")
+    if not isinstance(genres_raw, list):
+        return []
+    genres_entries = cast(list[object], genres_raw)
+    genres: list[str] = []
+    seen: set[str] = set()
+    for entry in genres_entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_dict = cast(dict[object, object], entry)
+        genre_name = _as_str(entry_dict.get("name"))
+        if genre_name is None:
+            continue
+        normalized = genre_name.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        genres.append(genre_name)
+    return genres
+
+
+def _tmdb_runtime_minutes(payload: dict[str, Any], *, media_type: str) -> int | None:
+    if media_type == "movie":
+        return _as_int(payload.get("runtime"))
+
+    episode_run_time_raw = payload.get("episode_run_time")
+    if not isinstance(episode_run_time_raw, list):
+        return None
+    episode_minutes = cast(list[object], episode_run_time_raw)
+    for value in episode_minutes:
+        minutes = _as_int(value)
+        if minutes is not None and minutes > 0:
+            return minutes
+    return None
+
+
+def _tmdb_imdb_id(payload: dict[str, Any], *, media_type: str) -> str | None:
+    if media_type == "movie":
+        return _normalize_optional_text(_as_str(payload.get("imdb_id")))
+
+    external_ids_raw = payload.get("external_ids")
+    if not isinstance(external_ids_raw, dict):
+        return None
+    external_ids = cast(dict[object, object], external_ids_raw)
+    return _normalize_optional_text(_as_str(external_ids.get("imdb_id")))
+
+
+def _tmdb_country_codes(payload: dict[str, Any], *, media_type: str) -> list[str]:
+    if media_type == "movie":
+        countries_raw = payload.get("production_countries")
+        if not isinstance(countries_raw, list):
+            return []
+        countries = cast(list[object], countries_raw)
+        output: list[str] = []
+        seen: set[str] = set()
+        for entry in countries:
+            if not isinstance(entry, dict):
+                continue
+            entry_dict = cast(dict[object, object], entry)
+            code = _normalize_optional_text(_as_str(entry_dict.get("iso_3166_1")))
+            if code is None:
+                continue
+            normalized = code.upper()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            output.append(normalized)
+        return output
+
+    origin_country_raw = payload.get("origin_country")
+    if not isinstance(origin_country_raw, list):
+        return []
+    origin_countries = cast(list[object], origin_country_raw)
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in origin_countries:
+        code = _normalize_optional_text(_as_str(value))
+        if code is None:
+            continue
+        normalized = code.upper()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(normalized)
+    return output
+
+
 def _normalize_object_dict(raw: dict[object, object]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in raw.items():
@@ -275,16 +882,35 @@ def _duration_from_millis(value: object) -> int | None:
     return None
 
 
-def _parse_runtime_minutes(runtime: str | None) -> int | None:
-    if runtime is None:
-        return None
-    lowered = runtime.lower()
-    minute_match = re.search(r"(\d+)\s*min", lowered)
-    if minute_match is not None:
-        return int(minute_match.group(1))
-    hour_match = re.search(r"(\d+)\s*h", lowered)
-    if hour_match is not None:
-        return int(hour_match.group(1)) * 60
+def _as_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, float):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
     return None
 
 
@@ -295,43 +921,6 @@ def _parse_year(value: str | None) -> int | None:
     if match is None:
         return None
     return int(match.group(0))
-
-
-def _parse_vote_count(value: str | None) -> int | None:
-    if value is None:
-        return None
-    cleaned = value.replace(",", "").strip()
-    if not cleaned.isdigit():
-        return None
-    return int(cleaned)
-
-
-def _safe_float(value: str | None) -> float | None:
-    if value is None:
-        return None
-    if value.strip().lower() == "n/a":
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-def _split_csv(value: str | None) -> list[str]:
-    if value is None:
-        return []
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for part in value.split(","):
-        normalized = part.strip()
-        if not normalized:
-            continue
-        key = normalized.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(normalized)
-    return deduped
 
 
 def _as_str(value: object) -> str | None:

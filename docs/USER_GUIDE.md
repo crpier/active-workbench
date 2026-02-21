@@ -72,6 +72,11 @@ What it does:
 - Keeps items as structured records in SQLite.
 - Supports filtering, recommendations, and health diagnostics.
 - Requires explicit domain on add (for example movie, tv, book, game, place, travel).
+- For `movie`/`tv`, add requests run TMDb resolution before write.
+  - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
+  - Confirm by retrying `bucket.item.add` with `tmdb_id` (chat follow-up, no question tool needed).
+  - Optional escape hatch: `allow_unresolved=true` writes without confirmation.
+  - Low-signal obscure matches are skipped by default unless you give explicit disambiguation (for example `year` or `tmdb_id`).
 - Background annotation runs periodically (scheduler loop) to enrich low-detail items.
 - Search results include unannotated items and expose their annotation status.
 - Recommendations exclude unannotated items.
@@ -104,6 +109,13 @@ In OpenCode, these are exposed as:
 For OAuth mode with transcripts:
 1. Complete YouTube OAuth setup (`just youtube-auth` or `just youtube-auth-secret ...`).
 2. Set Supadata API key (`ACTIVE_WORKBENCH_SUPADATA_API_KEY`).
+
+## TMDb Attribution
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+Bucket list movie/TV enrichment uses TMDb data.
+Terms: `https://www.themoviedb.org/api-terms-of-use?language=en-US`
 
 See:
 - `docs/QUICKSTART.md`
