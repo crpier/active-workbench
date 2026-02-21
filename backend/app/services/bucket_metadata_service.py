@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
     BucketBookwyrmQuotaRepository,
+)
+from backend.app.repositories.bucket_musicbrainz_quota_repository import (
+    BucketMusicbrainzQuotaRepository,
 )
 from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 
@@ -35,17 +38,19 @@ class BucketEnrichment:
 @dataclass(frozen=True)
 class BucketResolveCandidate:
     canonical_id: str
-    provider: Literal["tmdb", "bookwyrm"]
+    provider: Literal["tmdb", "bookwyrm", "musicbrainz"]
     title: str
     year: int | None
     confidence: float
     external_url: str
     tmdb_id: int | None = None
-    media_type: Literal["movie", "tv", "book"] | None = None
+    media_type: Literal["movie", "tv", "book", "music"] | None = None
     popularity: float | None = None
     vote_count: int | None = None
     bookwyrm_key: str | None = None
     author: str | None = None
+    musicbrainz_release_group_id: str | None = None
+    artist: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,13 @@ class _BookwyrmDetailRequest:
     retry_after_seconds: float | None
 
 
+@dataclass(frozen=True)
+class _MusicbrainzRequest:
+    payload: dict[str, Any] | None
+    rate_limited: bool
+    retry_after_seconds: float | None
+
+
 class BucketMetadataService:
     def __init__(
         self,
@@ -94,6 +106,11 @@ class BucketMetadataService:
         bookwyrm_quota_repository: BucketBookwyrmQuotaRepository | None = None,
         bookwyrm_daily_soft_limit: int = 500,
         bookwyrm_min_interval_seconds: float = 1.1,
+        musicbrainz_base_url: str = "https://musicbrainz.org",
+        musicbrainz_user_agent: str = "active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+        musicbrainz_quota_repository: BucketMusicbrainzQuotaRepository | None = None,
+        musicbrainz_daily_soft_limit: int = 500,
+        musicbrainz_min_interval_seconds: float = 1.1,
     ) -> None:
         self._enrichment_enabled = enrichment_enabled
         self._http_timeout_seconds = max(0.5, http_timeout_seconds)
@@ -111,6 +128,16 @@ class BucketMetadataService:
         self._bookwyrm_quota_repository = bookwyrm_quota_repository
         self._bookwyrm_daily_soft_limit = max(0, bookwyrm_daily_soft_limit)
         self._bookwyrm_min_interval_seconds = max(0.0, bookwyrm_min_interval_seconds)
+        self._musicbrainz_base_url = _normalize_base_url(
+            musicbrainz_base_url,
+            fallback="https://musicbrainz.org",
+        )
+        self._musicbrainz_user_agent = _normalize_optional_text(musicbrainz_user_agent) or (
+            "active-workbench/0.1 (+https://github.com/crpier/active-workbench)"
+        )
+        self._musicbrainz_quota_repository = musicbrainz_quota_repository
+        self._musicbrainz_daily_soft_limit = max(0, musicbrainz_daily_soft_limit)
+        self._musicbrainz_min_interval_seconds = max(0.0, musicbrainz_min_interval_seconds)
 
     def resolve_for_bucket_add(
         self,
@@ -118,8 +145,10 @@ class BucketMetadataService:
         title: str,
         domain: str,
         year: int | None,
+        artist_hint: str | None = None,
         tmdb_id: int | None = None,
         bookwyrm_key: str | None = None,
+        musicbrainz_release_group_id: str | None = None,
         max_candidates: int = 5,
     ) -> BucketAddResolution:
         normalized_domain = domain.strip().lower()
@@ -137,6 +166,14 @@ class BucketMetadataService:
                 title=title,
                 year=year,
                 bookwyrm_key=bookwyrm_key,
+                max_candidates=max_candidates,
+            )
+        if normalized_domain == "music":
+            return self._resolve_musicbrainz_for_bucket_add(
+                title=title,
+                year=year,
+                artist_hint=artist_hint,
+                musicbrainz_release_group_id=musicbrainz_release_group_id,
                 max_candidates=max_candidates,
             )
 
@@ -172,6 +209,11 @@ class BucketMetadataService:
             enriched_book = self._enrich_with_bookwyrm(title=title, year=year)
             if enriched_book is not None:
                 return enriched_book
+            return _empty_enrichment()
+        if normalized_domain == "music":
+            enriched_music = self._enrich_with_musicbrainz(title=title, year=year)
+            if enriched_music is not None:
+                return enriched_music
             return _empty_enrichment()
         if normalized_domain not in {"movie", "tv", "show"}:
             return _empty_enrichment()
@@ -320,7 +362,7 @@ class BucketMetadataService:
         if not candidates:
             return BucketAddResolution(
                 status="no_match",
-                reason="bookwyrm_no_candidate_match",
+                reason="no_candidate_match",
                 selected_candidate=None,
                 candidates=[],
                 enrichment=None,
@@ -535,6 +577,223 @@ class BucketMetadataService:
         if resolution.status != "resolved" or resolution.enrichment is None:
             return None
         return resolution.enrichment
+
+    def _resolve_musicbrainz_for_bucket_add(
+        self,
+        *,
+        title: str,
+        year: int | None,
+        artist_hint: str | None,
+        musicbrainz_release_group_id: str | None,
+        max_candidates: int,
+    ) -> BucketAddResolution:
+        year_hint = year if year is not None else _parse_year(title)
+        artist_hint = _normalize_optional_text(artist_hint)
+        normalized_id = _normalize_musicbrainz_release_group_id(musicbrainz_release_group_id)
+        if normalized_id is not None:
+            detail_request = self._fetch_musicbrainz_release_group_details(
+                release_group_id=normalized_id
+            )
+            if detail_request.rate_limited:
+                return BucketAddResolution(
+                    status="rate_limited",
+                    reason="musicbrainz_rate_limited",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=detail_request.retry_after_seconds,
+                )
+            if detail_request.payload is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="musicbrainz_id_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+
+            selected_candidate = _candidate_from_musicbrainz_detail(
+                payload=detail_request.payload,
+                query_title=title,
+                query_year=year_hint,
+                query_artist=artist_hint,
+                fallback_release_group_id=normalized_id,
+            )
+            if selected_candidate is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="musicbrainz_not_album",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+            enrichment = _enrichment_from_musicbrainz_payload(
+                payload=detail_request.payload,
+                query_title=title,
+                query_year=year_hint,
+                query_artist=artist_hint,
+                fallback_release_group_id=normalized_id,
+                fallback_artist=None,
+            )
+            if enrichment is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="musicbrainz_not_album",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+            return BucketAddResolution(
+                status="resolved",
+                reason="resolved_from_musicbrainz_id",
+                selected_candidate=selected_candidate,
+                candidates=[],
+                enrichment=enrichment,
+                retry_after_seconds=None,
+            )
+
+        search_request = self._search_musicbrainz_release_groups(
+            title=title,
+            artist_hint=artist_hint,
+        )
+        if search_request.rate_limited:
+            return BucketAddResolution(
+                status="rate_limited",
+                reason="musicbrainz_rate_limited",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=search_request.retry_after_seconds,
+            )
+        if search_request.payload is None:
+            return BucketAddResolution(
+                status="no_match",
+                reason="musicbrainz_search_unavailable",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        candidates = _musicbrainz_search_candidates(
+            payload=search_request.payload,
+            query_title=title,
+            query_year=year_hint,
+            query_artist=artist_hint,
+            max_candidates=max(1, max_candidates),
+        )
+        if not candidates:
+            return BucketAddResolution(
+                status="no_match",
+                reason="musicbrainz_no_candidate_match",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        if not _should_auto_resolve(candidates):
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="ambiguous_match",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        selected = candidates[0]
+        enrichment = _enrichment_from_musicbrainz_search_candidate(
+            candidate=selected,
+            query_title=title,
+            query_year=year_hint,
+            query_artist=artist_hint,
+        )
+        return BucketAddResolution(
+            status="resolved",
+            reason="high_confidence_match",
+            selected_candidate=selected,
+            candidates=candidates,
+            enrichment=enrichment,
+            retry_after_seconds=None,
+        )
+
+    def _enrich_with_musicbrainz(
+        self,
+        *,
+        title: str,
+        year: int | None,
+    ) -> BucketEnrichment | None:
+        resolution = self.resolve_for_bucket_add(
+            title=title,
+            domain="music",
+            year=year,
+            musicbrainz_release_group_id=None,
+            max_candidates=5,
+        )
+        if resolution.status != "resolved" or resolution.enrichment is None:
+            return None
+        return resolution.enrichment
+
+    def _search_musicbrainz_release_groups(
+        self,
+        *,
+        title: str,
+        artist_hint: str | None,
+    ) -> _MusicbrainzRequest:
+        query_parts = [f"releasegroup:{_musicbrainz_query_quoted(title)}", "primarytype:album"]
+        normalized_artist_hint = _normalize_optional_text(artist_hint)
+        if normalized_artist_hint is not None:
+            query_parts.insert(1, f"artist:{_musicbrainz_query_quoted(normalized_artist_hint)}")
+        query = " AND ".join(query_parts)
+        params = {
+            "query": query,
+            "fmt": "json",
+            "limit": "10",
+        }
+        url = f"{self._musicbrainz_base_url}/ws/2/release-group/?{urlencode(params)}"
+        return self._musicbrainz_request_json(url)
+
+    def _fetch_musicbrainz_release_group_details(
+        self,
+        *,
+        release_group_id: str,
+    ) -> _MusicbrainzRequest:
+        params = {
+            "fmt": "json",
+            "inc": "artists+genres+tags+ratings",
+        }
+        url = (
+            f"{self._musicbrainz_base_url}/ws/2/release-group/"
+            f"{release_group_id}?{urlencode(params)}"
+        )
+        return self._musicbrainz_request_json(url)
+
+    def _musicbrainz_request_json(self, url: str) -> _MusicbrainzRequest:
+        if self._musicbrainz_quota_repository is not None:
+            snapshot = self._musicbrainz_quota_repository.try_consume_call(
+                daily_soft_limit=self._musicbrainz_daily_soft_limit,
+                min_interval_seconds=self._musicbrainz_min_interval_seconds,
+            )
+            if not snapshot.allowed:
+                return _MusicbrainzRequest(
+                    payload=None,
+                    rate_limited=True,
+                    retry_after_seconds=snapshot.retry_after_seconds,
+                )
+
+        payload = _fetch_json(
+            url,
+            timeout_seconds=self._http_timeout_seconds,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": self._musicbrainz_user_agent,
+            },
+        )
+        return _MusicbrainzRequest(payload=payload, rate_limited=False, retry_after_seconds=None)
 
     def _search_bookwyrm(self, *, title: str) -> _BookwyrmSearchRequest:
         params = {
@@ -1247,6 +1506,270 @@ def _enrichment_from_bookwyrm_search_candidate(
     )
 
 
+def _musicbrainz_search_candidates(
+    *,
+    payload: dict[str, Any],
+    query_title: str,
+    query_year: int | None,
+    query_artist: str | None,
+    max_candidates: int,
+) -> list[BucketResolveCandidate]:
+    results_raw = payload.get("release-groups")
+    if not isinstance(results_raw, list):
+        return []
+    results = cast(list[object], results_raw)
+
+    matches: list[BucketResolveCandidate] = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        item = cast(dict[object, object], result)
+        release_group_id = _normalize_musicbrainz_release_group_id(_as_str(item.get("id")))
+        title = _as_str(item.get("title"))
+        if release_group_id is None or title is None:
+            continue
+        primary_type = _normalize_optional_text(_as_str(item.get("primary-type")))
+        if primary_type is None or primary_type.lower() != "album":
+            continue
+
+        year = _parse_year(_as_str(item.get("first-release-date")))
+        artist = _musicbrainz_artist_credit(item.get("artist-credit"))
+        provider_score = _as_int(item.get("score"))
+        release_count = _as_int(item.get("release-count")) or _as_int(item.get("count"))
+        confidence = _musicbrainz_match_confidence(
+            query_title=query_title,
+            candidate_title=title,
+            query_year=query_year,
+            candidate_year=year,
+            provider_score=provider_score,
+            query_artist=query_artist,
+            candidate_artist=artist,
+        )
+        if confidence < 0.5:
+            continue
+
+        matches.append(
+            BucketResolveCandidate(
+                canonical_id=f"musicbrainz:release-group:{release_group_id}",
+                provider="musicbrainz",
+                title=title,
+                year=year,
+                confidence=round(confidence, 4),
+                external_url=_musicbrainz_release_group_url(release_group_id),
+                media_type="music",
+                popularity=(float(provider_score) if provider_score is not None else None),
+                vote_count=release_count,
+                musicbrainz_release_group_id=release_group_id,
+                artist=artist,
+            )
+        )
+
+    matches = _collapse_duplicate_musicbrainz_candidates(matches)
+    matches = _filter_obscure_musicbrainz_candidates(
+        matches,
+        query_year=query_year,
+        query_artist=query_artist,
+    )
+    matches.sort(
+        key=lambda candidate: (
+            candidate.confidence,
+            _candidate_signal(candidate),
+            candidate.year or 0,
+        ),
+        reverse=True,
+    )
+    return matches[: max(1, max_candidates)]
+
+
+def _collapse_duplicate_musicbrainz_candidates(
+    candidates: list[BucketResolveCandidate],
+) -> list[BucketResolveCandidate]:
+    if len(candidates) <= 1:
+        return candidates
+
+    grouped: dict[tuple[str, str, str], list[BucketResolveCandidate]] = {}
+    by_title_artist_known_year: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        normalized_title = _normalize_match_text(candidate.title)
+        normalized_artist = _normalize_match_text(candidate.artist)
+        year_key = str(candidate.year) if candidate.year is not None else "-"
+        if candidate.year is not None:
+            by_title_artist_known_year.add((normalized_title, normalized_artist))
+        grouped.setdefault((normalized_title, normalized_artist, year_key), []).append(candidate)
+
+    collapsed: list[BucketResolveCandidate] = []
+    for (normalized_title, normalized_artist, year_key), group in grouped.items():
+        if (
+            year_key == "-"
+            and (normalized_title, normalized_artist) in by_title_artist_known_year
+        ):
+            continue
+        collapsed.append(_best_musicbrainz_candidate(group))
+    return collapsed
+
+
+def _best_musicbrainz_candidate(candidates: list[BucketResolveCandidate]) -> BucketResolveCandidate:
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def _rank(candidate: BucketResolveCandidate) -> tuple[float, int, int]:
+        has_year = 1 if candidate.year is not None else 0
+        stable = _musicbrainz_stable_rank(candidate.musicbrainz_release_group_id)
+        return (candidate.confidence, has_year, stable)
+
+    return max(candidates, key=_rank)
+
+
+def _candidate_from_musicbrainz_detail(
+    *,
+    payload: dict[str, Any],
+    query_title: str,
+    query_year: int | None,
+    query_artist: str | None,
+    fallback_release_group_id: str,
+) -> BucketResolveCandidate | None:
+    release_group_id = _normalize_musicbrainz_release_group_id(_as_str(payload.get("id")))
+    if release_group_id is None:
+        release_group_id = fallback_release_group_id
+    title = _as_str(payload.get("title"))
+    if title is None:
+        return None
+    primary_type = _normalize_optional_text(_as_str(payload.get("primary-type")))
+    if primary_type is None or primary_type.lower() != "album":
+        return None
+    year = _parse_year(_as_str(payload.get("first-release-date")))
+    artist = _musicbrainz_artist_credit(payload.get("artist-credit"))
+    confidence = _musicbrainz_match_confidence(
+        query_title=query_title,
+        candidate_title=title,
+        query_year=query_year,
+        candidate_year=year,
+        provider_score=None,
+        query_artist=query_artist,
+        candidate_artist=artist,
+    )
+    return BucketResolveCandidate(
+        canonical_id=f"musicbrainz:release-group:{release_group_id}",
+        provider="musicbrainz",
+        title=title,
+        year=year,
+        confidence=round(confidence, 4),
+        external_url=_musicbrainz_release_group_url(release_group_id),
+        media_type="music",
+        musicbrainz_release_group_id=release_group_id,
+        artist=artist,
+        vote_count=_musicbrainz_votes_count(payload.get("rating")),
+    )
+
+
+def _enrichment_from_musicbrainz_payload(
+    *,
+    payload: dict[str, Any],
+    query_title: str,
+    query_year: int | None,
+    query_artist: str | None,
+    fallback_release_group_id: str,
+    fallback_artist: str | None,
+) -> BucketEnrichment | None:
+    release_group_id = _normalize_musicbrainz_release_group_id(_as_str(payload.get("id")))
+    if release_group_id is None:
+        release_group_id = fallback_release_group_id
+    title = _as_str(payload.get("title"))
+    if title is None:
+        return None
+    primary_type = _normalize_optional_text(_as_str(payload.get("primary-type")))
+    if primary_type is None or primary_type.lower() != "album":
+        return None
+    year = _parse_year(_as_str(payload.get("first-release-date")))
+    artist = _musicbrainz_artist_credit(payload.get("artist-credit")) or fallback_artist
+    confidence = _musicbrainz_match_confidence(
+        query_title=query_title,
+        candidate_title=title,
+        query_year=query_year,
+        candidate_year=year,
+        provider_score=None,
+        query_artist=query_artist,
+        candidate_artist=artist,
+    )
+    rating = _musicbrainz_rating_value(payload.get("rating"))
+    votes_count = _musicbrainz_votes_count(payload.get("rating"))
+    release_count = _as_int(payload.get("release-count"))
+
+    genres = _musicbrainz_genres(payload.get("genres"))
+    tags = _musicbrainz_tags(payload.get("tags"))
+    secondary_types = _as_str_list(payload.get("secondary-types"))
+    metadata = {
+        "title": title,
+        "artist": artist,
+        "musicbrainz_release_group_id": release_group_id,
+        "musicbrainz_primary_type": primary_type,
+        "musicbrainz_secondary_types": secondary_types,
+        "musicbrainz_release_count": release_count,
+        "musicbrainz_rating_votes_count": votes_count,
+    }
+
+    return BucketEnrichment(
+        canonical_id=f"musicbrainz:release-group:{release_group_id}",
+        year=year,
+        duration_minutes=None,
+        rating=rating,
+        popularity=(
+            float(release_count)
+            if release_count is not None
+            else (float(votes_count) if votes_count is not None else None)
+        ),
+        genres=genres,
+        tags=tags,
+        providers=[],
+        external_url=_musicbrainz_release_group_url(release_group_id),
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[
+            {"type": "external_api", "id": f"musicbrainz:release-group:{release_group_id}"}
+        ],
+        provider="musicbrainz",
+    )
+
+
+def _enrichment_from_musicbrainz_search_candidate(
+    *,
+    candidate: BucketResolveCandidate,
+    query_title: str,
+    query_year: int | None,
+    query_artist: str | None,
+) -> BucketEnrichment:
+    confidence = _musicbrainz_match_confidence(
+        query_title=query_title,
+        candidate_title=candidate.title,
+        query_year=query_year,
+        candidate_year=candidate.year,
+        provider_score=round(candidate.confidence * 100),
+        query_artist=query_artist,
+        candidate_artist=candidate.artist,
+    )
+    metadata = {
+        "title": candidate.title,
+        "artist": candidate.artist,
+        "musicbrainz_release_group_id": candidate.musicbrainz_release_group_id,
+        "musicbrainz_primary_type": "Album",
+    }
+    return BucketEnrichment(
+        canonical_id=candidate.canonical_id,
+        year=candidate.year,
+        duration_minutes=None,
+        rating=None,
+        popularity=None,
+        genres=[],
+        tags=[],
+        providers=[],
+        external_url=candidate.external_url,
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[{"type": "external_api", "id": candidate.canonical_id}],
+        provider="musicbrainz",
+    )
+
+
 def _should_auto_resolve(candidates: list[BucketResolveCandidate]) -> bool:
     if not candidates:
         return False
@@ -1275,6 +1798,28 @@ def _filter_obscure_tmdb_candidates(
         return candidates
 
     filtered = [candidate for candidate in candidates if _candidate_has_discovery_signal(candidate)]
+    if filtered:
+        return filtered
+    return candidates
+
+
+def _filter_obscure_musicbrainz_candidates(
+    candidates: list[BucketResolveCandidate],
+    *,
+    query_year: int | None,
+    query_artist: str | None,
+) -> list[BucketResolveCandidate]:
+    if query_year is not None or _normalize_optional_text(query_artist) is not None:
+        return candidates
+
+    filtered = [
+        candidate
+        for candidate in candidates
+        if (
+            (candidate.popularity is not None and candidate.popularity >= 70.0)
+            or (candidate.vote_count is not None and candidate.vote_count >= 2)
+        )
+    ]
     if filtered:
         return filtered
     return candidates
@@ -1565,6 +2110,194 @@ def _bookwyrm_numeric_id(value: str | None) -> int | None:
     if match is None:
         return None
     return int(match.group(1))
+
+
+def _normalize_musicbrainz_release_group_id(value: str | None) -> str | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+
+    candidate = normalized.rstrip("/")
+    if candidate.lower().startswith("musicbrainz:release-group:"):
+        candidate = candidate[len("musicbrainz:release-group:") :]
+    elif candidate.startswith(("http://", "https://")):
+        parsed = urlparse(candidate)
+        path = parsed.path.rstrip("/")
+        match = re.search(r"/release-group/([0-9a-fA-F-]+)$", path)
+        if match is None:
+            return None
+        candidate = match.group(1)
+
+    lowered = candidate.strip().lower()
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        lowered,
+    ) is None:
+        return None
+    return lowered
+
+
+def _musicbrainz_release_group_url(release_group_id: str) -> str:
+    return f"https://musicbrainz.org/release-group/{release_group_id}"
+
+
+def _musicbrainz_artist_credit(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    entries = cast(list[object], value)
+    if not entries:
+        return None
+
+    parts: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            raw = entry.strip()
+            if raw:
+                parts.append(raw)
+            continue
+        if not isinstance(entry, dict):
+            continue
+        item = cast(dict[object, object], entry)
+        name = _as_str(item.get("name"))
+        artist_raw = item.get("artist")
+        if name is None and isinstance(artist_raw, dict):
+            artist_item = cast(dict[object, object], artist_raw)
+            name = _as_str(artist_item.get("name"))
+        join_phrase = _as_str(item.get("joinphrase"))
+        if name is not None:
+            parts.append(name)
+        if join_phrase is not None:
+            parts.append(join_phrase)
+
+    joined = "".join(parts).strip()
+    return _normalize_optional_text(joined)
+
+
+def _musicbrainz_match_confidence(
+    *,
+    query_title: str,
+    candidate_title: str,
+    query_year: int | None,
+    candidate_year: int | None,
+    provider_score: int | None,
+    query_artist: str | None,
+    candidate_artist: str | None,
+) -> float:
+    score = _title_similarity(query_title, candidate_title)
+    if provider_score is not None:
+        bounded_provider = min(100.0, max(0.0, float(provider_score))) / 100.0
+        score = (score * 0.75) + (bounded_provider * 0.25)
+
+    artist_similarity = _musicbrainz_artist_similarity(query_artist, candidate_artist)
+    if artist_similarity is not None:
+        if artist_similarity >= 0.92:
+            score += 0.24
+        elif artist_similarity >= 0.75:
+            score += 0.14
+        elif artist_similarity >= 0.6:
+            score += 0.05
+        else:
+            score -= 0.18
+
+    if query_year is None or candidate_year is None:
+        return min(1.0, max(0.0, score))
+    if query_year == candidate_year:
+        score += 0.06
+    elif abs(query_year - candidate_year) == 1:
+        score += 0.02
+    else:
+        score -= 0.05
+    return min(1.0, max(0.0, score))
+
+
+def _musicbrainz_artist_similarity(
+    query_artist: str | None,
+    candidate_artist: str | None,
+) -> float | None:
+    normalized_query = _normalize_match_text(query_artist)
+    normalized_candidate = _normalize_match_text(candidate_artist)
+    if not normalized_query or not normalized_candidate:
+        return None
+    if normalized_query == normalized_candidate:
+        return 1.0
+    if normalized_query in normalized_candidate or normalized_candidate in normalized_query:
+        return 0.95
+    return SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
+
+
+def _musicbrainz_query_quoted(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').strip()
+    return f'"{escaped}"'
+
+
+def _musicbrainz_rating_value(value: object) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    rating = cast(dict[object, object], value)
+    return _as_float(rating.get("value"))
+
+
+def _musicbrainz_votes_count(value: object) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    rating = cast(dict[object, object], value)
+    return _as_int(rating.get("votes-count"))
+
+
+def _musicbrainz_genres(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    entries = cast(list[object], value)
+    weighted: list[tuple[str, int]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        genre = cast(dict[object, object], entry)
+        name = _normalize_optional_text(_as_str(genre.get("name")))
+        if name is None:
+            continue
+        weighted.append((name, _as_int(genre.get("count")) or 0))
+    weighted.sort(key=lambda item: (item[1], item[0]), reverse=True)
+    return _dedupe_texts([name for name, _ in weighted])
+
+
+def _musicbrainz_tags(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    entries = cast(list[object], value)
+    weighted: list[tuple[str, int]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        tag = cast(dict[object, object], entry)
+        name = _normalize_optional_text(_as_str(tag.get("name")))
+        if name is None:
+            continue
+        weighted.append((name, _as_int(tag.get("count")) or 0))
+    weighted.sort(key=lambda item: (item[1], item[0]), reverse=True)
+    return _dedupe_texts([name for name, _ in weighted])
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.lower().strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(value)
+    return output
+
+
+def _musicbrainz_stable_rank(release_group_id: str | None) -> int:
+    normalized = _normalize_musicbrainz_release_group_id(release_group_id)
+    if normalized is None:
+        return 0
+    try:
+        return int(normalized.replace("-", "")[-12:], 16)
+    except ValueError:
+        return 0
 
 
 def _normalize_optional_text(value: str | None) -> str | None:

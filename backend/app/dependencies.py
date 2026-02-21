@@ -7,6 +7,9 @@ from backend.app.repositories.audit_repository import AuditRepository
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
     BucketBookwyrmQuotaRepository,
 )
+from backend.app.repositories.bucket_musicbrainz_quota_repository import (
+    BucketMusicbrainzQuotaRepository,
+)
 from backend.app.repositories.bucket_repository import BucketRepository
 from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 from backend.app.repositories.database import Database
@@ -52,6 +55,11 @@ def get_dispatcher() -> ToolDispatcher:
             bookwyrm_quota_repository=BucketBookwyrmQuotaRepository(database),
             bookwyrm_daily_soft_limit=settings.bucket_bookwyrm_daily_soft_limit,
             bookwyrm_min_interval_seconds=settings.bucket_bookwyrm_min_interval_seconds,
+            musicbrainz_base_url=settings.bucket_musicbrainz_base_url,
+            musicbrainz_user_agent=settings.bucket_musicbrainz_user_agent,
+            musicbrainz_quota_repository=BucketMusicbrainzQuotaRepository(database),
+            musicbrainz_daily_soft_limit=settings.bucket_musicbrainz_daily_soft_limit,
+            musicbrainz_min_interval_seconds=settings.bucket_musicbrainz_min_interval_seconds,
         ),
         youtube_quota_repository=YouTubeQuotaRepository(database),
         youtube_service=YouTubeService(

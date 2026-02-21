@@ -650,6 +650,291 @@ def test_bucket_item_add_uses_bookwyrm_key_confirmation_to_write_item(
     )
 
 
+def test_bucket_item_add_returns_clarification_for_ambiguous_musicbrainz_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        _ = timeout_seconds
+        assert headers is not None
+        if "/ws/2/release-group/?" in url:
+            return {
+                "release-groups": [
+                    {
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "title": "Greatest Hits",
+                        "primary-type": "Album",
+                        "first-release-date": "1995-01-01",
+                        "score": "95",
+                        "release-count": 4,
+                        "artist-credit": [{"name": "Artist One"}],
+                    },
+                    {
+                        "id": "22222222-2222-4222-8222-222222222222",
+                        "title": "Greatest Hits",
+                        "primary-type": "Album",
+                        "first-release-date": "1996-01-01",
+                        "score": "94",
+                        "release-count": 4,
+                        "artist-credit": [{"name": "Artist Two"}],
+                    },
+                ]
+            }
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json",
+        _fake_fetch_json,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            musicbrainz_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Greatest Hits", "domain": "music"},
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "needs_clarification"
+    assert add_response.result["resolution_status"] == "ambiguous"
+    assert add_response.result["write_performed"] is False
+    assert add_response.result["candidates"][0]["provider"] == "musicbrainz"
+    assert (
+        add_response.result["candidates"][0]["musicbrainz_release_group_id"]
+        == "11111111-1111-4111-8111-111111111111"
+    )
+
+
+def test_bucket_item_add_uses_musicbrainz_id_confirmation_to_write_item(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_group_id = "5f408e6b-583f-3214-b71c-9f88ec829cdd"
+
+    def _fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        _ = timeout_seconds
+        assert headers is not None
+        if f"/ws/2/release-group/{release_group_id}?" in url:
+            return {
+                "id": release_group_id,
+                "title": "Discovery",
+                "primary-type": "Album",
+                "first-release-date": "2001-03-07",
+                "release-count": 10,
+                "artist-credit": [{"name": "Daft Punk"}],
+                "genres": [{"name": "House", "count": 4}],
+                "tags": [{"name": "electronic", "count": 8}],
+                "rating": {"value": "4.6", "votes-count": 18},
+            }
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json",
+        _fake_fetch_json,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            musicbrainz_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Discovery",
+                "domain": "music",
+                "musicbrainz_release_group_id": release_group_id,
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["resolution_status"] == "resolved"
+    assert add_response.result["enriched"] is True
+    assert add_response.result["enrichment_provider"] == "musicbrainz"
+    assert (
+        add_response.result["bucket_item"]["canonical_id"]
+        == f"musicbrainz:release-group:{release_group_id}"
+    )
+    assert (
+        add_response.result["selected_candidate"]["musicbrainz_release_group_id"]
+        == release_group_id
+    )
+
+
+def test_bucket_item_add_music_filters_out_non_album_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        _ = timeout_seconds
+        assert headers is not None
+        if "/ws/2/release-group/?" in url:
+            return {
+                "release-groups": [
+                    {
+                        "id": "33333333-3333-4333-8333-333333333333",
+                        "title": "Discovery",
+                        "primary-type": "Single",
+                        "first-release-date": "2001-01-01",
+                        "score": "100",
+                        "artist-credit": [{"name": "Daft Punk"}],
+                    },
+                    {
+                        "id": "44444444-4444-4444-8444-444444444444",
+                        "title": "Discovery",
+                        "primary-type": "Album",
+                        "first-release-date": "2001-03-07",
+                        "score": "95",
+                        "release-count": 10,
+                        "artist-credit": [{"name": "Daft Punk"}],
+                    },
+                ]
+            }
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json",
+        _fake_fetch_json,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            musicbrainz_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Discovery", "domain": "music"},
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["resolution_status"] == "resolved"
+    assert (
+        add_response.result["selected_candidate"]["musicbrainz_release_group_id"]
+        == "44444444-4444-4444-8444-444444444444"
+    )
+
+
+def test_bucket_item_add_music_uses_artist_hint_from_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_group_id = "40df5e29-aa32-4895-9da7-24399448f7ac"
+
+    def _fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        _ = timeout_seconds
+        assert headers is not None
+        if "/ws/2/release-group/?" in url:
+            assert "artist%3A%22Scardust%22" in url
+            return {
+                "release-groups": [
+                    {
+                        "id": release_group_id,
+                        "title": "Strangers",
+                        "primary-type": "Album",
+                        "first-release-date": "2020-10-30",
+                        "score": "100",
+                        "count": 1,
+                        "artist-credit": [{"name": "Scardust"}],
+                    }
+                ]
+            }
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json",
+        _fake_fetch_json,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            musicbrainz_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Strangers",
+                "domain": "music",
+                "notes": "Album by Scardust",
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["resolution_status"] == "resolved"
+    assert add_response.result["enrichment_provider"] == "musicbrainz"
+    assert (
+        add_response.result["selected_candidate"]["musicbrainz_release_group_id"]
+        == release_group_id
+    )
+
+
 def test_bucket_item_complete_accepts_bucket_item_id_alias(tmp_path: Path) -> None:
     dispatcher = _build_dispatcher(
         tmp_path,

@@ -61,8 +61,8 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "bucket.item.add": (
         "Add or merge a structured bucket item. "
         "payload.domain (or payload.kind) is required. "
-        "Movie/TV/Book add requests may return a clarification response before write; "
-        "handle clarifications in normal chat and retry with tmdb_id or bookwyrm_key."
+        "Movie/TV/Book/Music add requests may return a clarification response before write; "
+        "handle clarifications in normal chat and retry with provider confirmation fields."
     ),
     "bucket.item.update": "Update a structured bucket item.",
     "bucket.item.complete": (
@@ -934,6 +934,15 @@ class ToolDispatcher:
             request.payload.get("bookwyrm_key"),
             canonical_id=canonical_id,
         )
+        musicbrainz_release_group_id = _payload_musicbrainz_release_group_id(
+            request.payload.get("musicbrainz_release_group_id"),
+            canonical_id=canonical_id,
+        )
+        music_artist_hint = _payload_str(request.payload, "artist") or _extract_music_artist_hint(
+            title=title,
+            notes=notes,
+            domain=domain,
+        )
         media_domain = _normalize_bucket_media_domain(domain)
 
         enrichment = None
@@ -943,8 +952,10 @@ class ToolDispatcher:
                 title=title,
                 domain=domain,
                 year=year,
+                artist_hint=music_artist_hint,
                 tmdb_id=tmdb_id,
                 bookwyrm_key=bookwyrm_key,
+                musicbrainz_release_group_id=musicbrainz_release_group_id,
                 max_candidates=5,
             )
             self._telemetry.emit(
@@ -956,6 +967,8 @@ class ToolDispatcher:
                 candidates=len(add_resolution.candidates),
                 tmdb_id=tmdb_id,
                 bookwyrm_key=bookwyrm_key,
+                musicbrainz_release_group_id=musicbrainz_release_group_id,
+                music_artist_hint=music_artist_hint,
             )
             if (
                 add_resolution.status in {"ambiguous", "no_match", "rate_limited"}
@@ -979,7 +992,7 @@ class ToolDispatcher:
                     "follow_up_mode": "chat",
                     "assistant_follow_up": (
                         "Ask the user to choose the intended candidate by option number "
-                        "or by author/year in normal chat, then retry with the matching "
+                        "or by creator clues in normal chat, then retry with the matching "
                         "provider identifier."
                     ),
                     "candidates": candidates,
@@ -1845,6 +1858,34 @@ def _normalize_bucket_media_domain(domain: str) -> str | None:
         return "tv"
     if normalized == "book":
         return "book"
+    if normalized in {"music", "album"}:
+        return "music"
+    return None
+
+
+def _extract_music_artist_hint(*, title: str, notes: str, domain: str) -> str | None:
+    if _normalize_bucket_media_domain(domain) != "music":
+        return None
+    return _extract_artist_name(notes) or _extract_artist_name(title)
+
+
+def _extract_artist_name(value: str) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    patterns = (
+        r"\bby\s+([A-Za-z0-9][A-Za-z0-9 '&\.-]{1,80})",
+        r"\bartist\s*[:\-]\s*([A-Za-z0-9][A-Za-z0-9 '&\.-]{1,80})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        candidate = re.split(r"[,\.;\)\]]", match.group(1), maxsplit=1)[0].strip()
+        cleaned = re.sub(r"\s+", " ", candidate).strip()
+        if len(cleaned) >= 2:
+            return cleaned
     return None
 
 
@@ -1875,6 +1916,45 @@ def _payload_bookwyrm_key(raw_value: object, *, canonical_id: str | None) -> str
     return None
 
 
+def _payload_musicbrainz_release_group_id(
+    raw_value: object,
+    *,
+    canonical_id: str | None,
+) -> str | None:
+    parsed_from_payload = _payload_str({"value": raw_value}, "value")
+    normalized = _normalize_musicbrainz_release_group_id(parsed_from_payload)
+    if normalized is not None:
+        return normalized
+    return _normalize_musicbrainz_release_group_id(canonical_id)
+
+
+def _normalize_musicbrainz_release_group_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return None
+
+    candidate = normalized
+    if normalized.lower().startswith("musicbrainz:release-group:"):
+        candidate = normalized[len("musicbrainz:release-group:") :]
+    elif normalized.startswith(("http://", "https://")):
+        parsed = urlparse(normalized)
+        path = parsed.path.rstrip("/")
+        match = re.search(r"/release-group/([0-9a-fA-F-]+)$", path)
+        if match is None:
+            return None
+        candidate = match.group(1)
+
+    lowered = candidate.strip().lower()
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        lowered,
+    ) is None:
+        return None
+    return lowered
+
+
 def _bucket_resolve_candidate_payload(candidate: BucketResolveCandidate) -> dict[str, Any]:
     return {
         "provider": candidate.provider,
@@ -1882,7 +1962,9 @@ def _bucket_resolve_candidate_payload(candidate: BucketResolveCandidate) -> dict
         "tmdb_id": candidate.tmdb_id,
         "media_type": candidate.media_type,
         "bookwyrm_key": candidate.bookwyrm_key,
+        "musicbrainz_release_group_id": candidate.musicbrainz_release_group_id,
         "author": candidate.author,
+        "artist": candidate.artist,
         "title": candidate.title,
         "year": candidate.year,
         "confidence": candidate.confidence,
@@ -1900,29 +1982,44 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
         provider = resolution.candidates[0].provider
     elif isinstance(resolution.reason, str) and resolution.reason.startswith("bookwyrm_"):
         provider = "bookwyrm"
+    elif isinstance(resolution.reason, str) and resolution.reason.startswith("musicbrainz_"):
+        provider = "musicbrainz"
     if resolution.status == "ambiguous":
         if provider == "bookwyrm":
             return (
                 "Multiple BookWyrm matches were found for this title. "
                 "Please choose by option number or by author/year, then retry bucket.item.add."
             )
+        if provider == "musicbrainz":
+            return (
+                "Multiple MusicBrainz album matches were found for this title. "
+                "Please choose by option number or by artist name (year optional), then retry "
+                "bucket.item.add."
+            )
         return (
             "Multiple TMDb matches were found for this title. "
-            "Please choose one candidate by tmdb_id and retry bucket.item.add."
+            "Please choose by option number or by release year, then retry bucket.item.add."
         )
     if resolution.status == "no_match":
         if provider == "bookwyrm":
             return (
                 "No confident BookWyrm match was found. "
-                "Please provide a more specific title, release year, or bookwyrm_key."
+                "Please provide a more specific title, author name, or release year."
+            )
+        if provider == "musicbrainz":
+            return (
+                "No confident MusicBrainz album match was found. "
+                "Please provide a more specific title, artist name, or release year."
             )
         return (
             "No confident TMDb match was found. "
-            "Please provide a more specific title, release year, or tmdb_id."
+            "Please provide a more specific title or release year."
         )
     if resolution.status == "rate_limited":
         if provider == "bookwyrm":
             return "BookWyrm enrichment is currently rate limited. Please retry shortly."
+        if provider == "musicbrainz":
+            return "MusicBrainz enrichment is currently rate limited. Please retry shortly."
         return "TMDb enrichment is currently rate limited. Please retry shortly."
     return "Resolution skipped."
 

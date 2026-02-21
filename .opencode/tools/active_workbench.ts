@@ -199,11 +199,15 @@ export const vault_note_save = backendTool(
 
 export const bucket_item_add = backendTool(
   TOOL_NAMES.bucket_item_add,
-  "Add or merge a structured bucket item. Domain is required. For movie/tv/book, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or author/year in normal chat (not by raw provider id), then call again with the matching tmdb_id or bookwyrm_key. Do not call a question tool.",
+  "Add or merge a structured bucket item. Domain is required. For movie/tv/book/music, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or creator/year in normal chat (not by raw provider id), then call again with the matching provider id field. Do not call a question tool.",
   {
     extraArgs: {
       title: tool.schema.string().describe("Item title."),
       domain: tool.schema.string().describe("Required domain (for example movie, tv, book, game, place, travel)."),
+      artist: tool.schema
+        .string()
+        .optional()
+        .describe("Optional artist hint for music album matching."),
       notes: tool.schema.string().optional().describe("Optional notes/description."),
       year: tool.schema.number().int().optional().describe("Optional release year hint (movie/tv)."),
       tmdb_id: tool.schema
@@ -215,6 +219,10 @@ export const bucket_item_add = backendTool(
         .string()
         .optional()
         .describe("BookWyrm key URL to confirm the exact book match."),
+      musicbrainz_release_group_id: tool.schema
+        .string()
+        .optional()
+        .describe("MusicBrainz release-group id to confirm the exact album match."),
       allow_unresolved: tool.schema
         .boolean()
         .optional()
@@ -227,10 +235,12 @@ export const bucket_item_add = backendTool(
     payloadFields: [
       "title",
       "domain",
+      "artist",
       "notes",
       "year",
       "tmdb_id",
       "bookwyrm_key",
+      "musicbrainz_release_group_id",
       "allow_unresolved",
       "auto_enrich",
     ],

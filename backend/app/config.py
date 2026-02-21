@@ -287,6 +287,25 @@ class AppSettings(BaseSettings):
         default=1.1,
         description="Minimum interval between BookWyrm enrichment calls to prevent bursts.",
     )
+    bucket_musicbrainz_base_url: str = Field(
+        default="https://musicbrainz.org",
+        description="MusicBrainz base URL used for music album metadata enrichment.",
+    )
+    bucket_musicbrainz_user_agent: str = Field(
+        default="active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+        description=(
+            "User-Agent sent to MusicBrainz APIs for identification "
+            "(include app name and a contact URL/email)."
+        ),
+    )
+    bucket_musicbrainz_daily_soft_limit: int = Field(
+        default=500,
+        description="Soft limit for MusicBrainz enrichment calls per UTC day.",
+    )
+    bucket_musicbrainz_min_interval_seconds: float = Field(
+        default=1.1,
+        description="Minimum interval between MusicBrainz enrichment calls to prevent bursts.",
+    )
 
     # Logging.
     log_dir: Path = Field(
@@ -359,6 +378,26 @@ class AppSettings(BaseSettings):
         normalized = value.strip()
         if not normalized:
             raise ValueError("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_USER_AGENT must not be empty.")
+        return normalized
+
+    @field_validator("bucket_musicbrainz_base_url", mode="before")
+    @classmethod
+    def _normalize_musicbrainz_base_url(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_BASE_URL must be a string.")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_BASE_URL must not be empty.")
+        return normalized
+
+    @field_validator("bucket_musicbrainz_user_agent", mode="before")
+    @classmethod
+    def _normalize_musicbrainz_user_agent(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_USER_AGENT must be a string.")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_USER_AGENT must not be empty.")
         return normalized
 
     @field_validator(*_PATH_FIELDS, mode="before")

@@ -109,6 +109,15 @@ def test_load_settings_parses_bool_and_paths(
         "ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_USER_AGENT",
         " active-workbench-tests/1.0 (+test@example.com) ",
     )
+    monkeypatch.setenv(
+        "ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_BASE_URL",
+        " https://musicbrainz.org/ ",
+    )
+    monkeypatch.setenv(
+        "ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_USER_AGENT",
+        " active-workbench-tests/1.0 (+test@example.com) ",
+    )
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_MIN_INTERVAL_SECONDS", "1.2")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "120")
@@ -150,6 +159,11 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.bucket_tmdb_min_interval_seconds == 1.2
     assert settings.bucket_bookwyrm_base_url == "https://bookwyrm.social"
     assert settings.bucket_bookwyrm_user_agent == "active-workbench-tests/1.0 (+test@example.com)"
+    assert settings.bucket_musicbrainz_base_url == "https://musicbrainz.org"
+    assert settings.bucket_musicbrainz_user_agent == (
+        "active-workbench-tests/1.0 (+test@example.com)"
+    )
+    assert settings.bucket_musicbrainz_min_interval_seconds == 1.2
     assert settings.youtube_daily_quota_limit == 12_000
     assert settings.youtube_quota_warning_percent == 0.75
     assert settings.youtube_likes_cache_ttl_seconds == 120
