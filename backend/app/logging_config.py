@@ -10,12 +10,14 @@ from structlog.typing import EventDict, Processor
 from backend.app.config import AppSettings
 
 LOG_FILE_NAME = "active-workbench.log"
+TELEMETRY_LOG_FILE_NAME = "active-workbench-telemetry.log"
 
 
 def configure_application_logging(settings: AppSettings) -> Path:
     log_dir = settings.log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / LOG_FILE_NAME
+    telemetry_log_file = log_dir / TELEMETRY_LOG_FILE_NAME
 
     _configure_structlog()
 
@@ -38,13 +40,18 @@ def configure_application_logging(settings: AppSettings) -> Path:
 
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
+    _configure_telemetry_logger(telemetry_log_file)
 
     logger.info(
-        "logging configured console_level=%s file_level=%s file_rotation=%s path=%s",
+        (
+            "logging configured console_level=%s file_level=%s file_rotation=%s "
+            "path=%s telemetry_path=%s"
+        ),
         settings.log_level.upper(),
         "DEBUG",
         "external",
         log_file,
+        telemetry_log_file,
     )
     return log_file
 
@@ -78,6 +85,18 @@ def _reset_handlers(logger: logging.Logger) -> None:
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
         handler.close()
+
+
+def _configure_telemetry_logger(log_file: Path) -> None:
+    telemetry_logger = logging.getLogger("active_workbench.telemetry")
+    telemetry_logger.setLevel(logging.INFO)
+    telemetry_logger.propagate = False
+    _reset_handlers(telemetry_logger)
+
+    telemetry_file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    telemetry_file_handler.setLevel(logging.INFO)
+    telemetry_file_handler.setFormatter(_build_file_formatter())
+    telemetry_logger.addHandler(telemetry_file_handler)
 
 
 def _build_console_formatter(*, enable_colors: bool) -> structlog.stdlib.ProcessorFormatter:

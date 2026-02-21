@@ -119,6 +119,9 @@ If likes feel stale right after you like a video:
 - lower `ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS`
 - increase `ACTIVE_WORKBENCH_YOUTUBE_LIKES_RECENT_GUARD_SECONDS`
 
+Known limitation:
+- If you unlike a video, cached likes may still include it for a while, so likes/list or likes/search results can be temporarily incorrect.
+
 If transcript refreshes too often:
 - increase `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS`
 

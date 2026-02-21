@@ -24,6 +24,7 @@ _BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
     "youtube_background_sync_enabled",
     "youtube_transcript_background_sync_enabled",
     "bucket_enrichment_enabled",
+    "telemetry_enabled",
 )
 
 
@@ -278,6 +279,19 @@ class AppSettings(BaseSettings):
         description="Legacy compatibility setting for rotated file count (currently unused).",
     )
 
+    # Telemetry.
+    telemetry_enabled: bool = Field(
+        default=True,
+        description="Enable lightweight internal telemetry events.",
+    )
+    telemetry_sink: Literal["none", "log"] = Field(
+        default="log",
+        description=(
+            "Telemetry sink backend. `log` emits structured telemetry locally; "
+            "`none` disables sink output."
+        ),
+    )
+
     @field_validator("youtube_mode", mode="before")
     @classmethod
     def _normalize_mode(cls, value: Any) -> str:
@@ -289,6 +303,16 @@ class AppSettings(BaseSettings):
             return normalized
 
         raise ValueError("ACTIVE_WORKBENCH_YOUTUBE_MODE must be set to: oauth.")
+
+    @field_validator("telemetry_sink", mode="before")
+    @classmethod
+    def _normalize_telemetry_sink(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_TELEMETRY_SINK must be a string.")
+        normalized = value.strip().lower()
+        if normalized in {"none", "log"}:
+            return normalized
+        raise ValueError("ACTIVE_WORKBENCH_TELEMETRY_SINK must be set to: none, log.")
 
     @field_validator(*_PATH_FIELDS, mode="before")
     @classmethod

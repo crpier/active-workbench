@@ -15,6 +15,7 @@ from backend.app.repositories.youtube_quota_repository import YouTubeQuotaReposi
 from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeService
+from backend.app.telemetry import TelemetryClient, build_telemetry_client
 
 
 @lru_cache(maxsize=1)
@@ -85,9 +86,20 @@ def get_dispatcher() -> ToolDispatcher:
         default_timezone=settings.default_timezone,
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,
         youtube_quota_warning_percent=settings.youtube_quota_warning_percent,
+        telemetry=get_telemetry(),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_telemetry() -> TelemetryClient:
+    settings = get_settings()
+    return build_telemetry_client(
+        enabled=settings.telemetry_enabled,
+        sink=settings.telemetry_sink,
     )
 
 
 def reset_cached_dependencies() -> None:
     get_dispatcher.cache_clear()
+    get_telemetry.cache_clear()
     get_settings.cache_clear()

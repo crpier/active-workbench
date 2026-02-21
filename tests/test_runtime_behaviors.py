@@ -6,10 +6,15 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
+import structlog
 from fastapi.testclient import TestClient
 
 from backend.app.config import AppSettings, load_settings
-from backend.app.logging_config import _stream_supports_color, configure_application_logging
+from backend.app.logging_config import (
+    TELEMETRY_LOG_FILE_NAME,
+    _stream_supports_color,  # pyright: ignore[reportPrivateUsage]
+    configure_application_logging,
+)
 from backend.app.main import create_app
 from backend.app.repositories.database import Database
 from backend.app.repositories.memory_repository import MemoryRepository
@@ -91,11 +96,13 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
             *,
             transcript_poll_interval_seconds: int | None = None,
             youtube_service: object | None = None,
+            telemetry: object | None = None,
         ) -> None:
             _ = dispatcher
             _ = poll_interval_seconds
             _ = transcript_poll_interval_seconds
             _ = youtube_service
+            _ = telemetry
 
         def start(self) -> None:
             FakeScheduler.started = True
@@ -207,6 +214,10 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
     log_file = configure_application_logging(settings)
     logger = logging.getLogger("active_workbench.test")
     logger.info("runtime-log-test")
+    structlog.get_logger("active_workbench.telemetry").info(
+        "telemetry",
+        telemetry_event="test.event",
+    )
 
     app_logger = logging.getLogger("active_workbench")
     assert len(app_logger.handlers) == 2
@@ -220,6 +231,15 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
     assert not isinstance(file_handlers[0], RotatingFileHandler)
 
     for handler in app_logger.handlers:
+        handler.flush()
+    telemetry_logger = logging.getLogger("active_workbench.telemetry")
+    assert telemetry_logger.propagate is False
+    assert len(telemetry_logger.handlers) == 1
+    telemetry_handlers = [
+        handler for handler in telemetry_logger.handlers if isinstance(handler, logging.FileHandler)
+    ]
+    assert len(telemetry_handlers) == 1
+    for handler in telemetry_logger.handlers:
         handler.flush()
 
     assert log_file.exists()
@@ -236,6 +256,18 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
     assert runtime_event["level"] == "info"
     assert runtime_event["pathname"]
     assert runtime_event["lineno"]
+    assert all(event.get("telemetry_event") != "test.event" for event in parsed_events)
+
+    telemetry_log_file = settings.log_dir / TELEMETRY_LOG_FILE_NAME
+    assert telemetry_log_file.exists()
+    telemetry_lines = [
+        line for line in telemetry_log_file.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    telemetry_events = [json.loads(line) for line in telemetry_lines]
+    telemetry_event = next(
+        event for event in telemetry_events if event.get("telemetry_event") == "test.event"
+    )
+    assert telemetry_event["logger"] == "active_workbench.telemetry"
 
 
 def test_stream_supports_color_detects_tty() -> None:

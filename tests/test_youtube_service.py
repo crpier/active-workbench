@@ -134,6 +134,26 @@ def test_cached_query_matches_description_not_title(tmp_path: Path) -> None:
     assert phrase_videos[0].video_id == "test_general_001"
 
 
+def test_cached_likes_support_cursor_pagination(tmp_path: Path) -> None:
+    service = _build_service_with_seeded_cache(tmp_path)
+
+    first_page = service.list_recent_cached_only_with_metadata(limit=2, cursor=0)
+    assert len(first_page.videos) == 2
+    assert first_page.cursor == 0
+    assert first_page.next_cursor == 2
+    assert first_page.has_more is True
+    assert first_page.total_matches == 3
+    assert first_page.applied_limit == 2
+
+    second_page = service.list_recent_cached_only_with_metadata(limit=2, cursor=first_page.next_cursor or 0)
+    assert len(second_page.videos) == 1
+    assert second_page.cursor == 2
+    assert second_page.next_cursor is None
+    assert second_page.has_more is False
+    assert second_page.total_matches == 3
+    assert second_page.applied_limit == 2
+
+
 def test_oauth_mode_without_secrets_raises(tmp_path: Path) -> None:
     service = YouTubeService(mode="oauth", data_dir=tmp_path)
 

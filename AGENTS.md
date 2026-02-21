@@ -16,9 +16,16 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 - State what changed and why, briefly.
 - Flag tradeoffs or uncertainty explicitly.
 - Ask the user before making design decisions or changing architectural direction.
+- Default to behavior/outcome summaries; do not include file-by-file or code-location details unless the user asks.
+- Be explicit about architecture boundaries: OpenCode is the agent runtime that calls tools; the Active Workbench backend implements tools and backend logging/telemetry.
 
 ## Updates
 - When a new issue repeats, add one concise rule here.
+- For workbench-assistant YouTube "analyze all likes" tasks, avoid plan/subagent exploration loops and return one final answer after direct pagination.
+
+## Debugging Files
+- Runtime logs: `.active-workbench/logs/active-workbench.log` (or `$ACTIVE_WORKBENCH_LOG_DIR/active-workbench.log`)
+- Telemetry events: `.active-workbench/logs/active-workbench-telemetry.log` (or `$ACTIVE_WORKBENCH_LOG_DIR/active-workbench-telemetry.log`)
 
 ## Docs Index
 - `docs/QUICKSTART.md` - local setup and run commands.

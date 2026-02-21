@@ -67,6 +67,11 @@ class YouTubeListRecentResult:
     cache_miss: bool = False
     recent_probe_applied: bool = False
     recent_probe_pages_used: int = 0
+    cursor: int = 0
+    next_cursor: int | None = None
+    has_more: bool = False
+    total_matches: int = 0
+    applied_limit: int = 0
 
 
 @dataclass(frozen=True)
@@ -1079,10 +1084,12 @@ class YouTubeService:
         limit: int,
         query: str | None = None,
         *,
+        cursor: int = 0,
         probe_recent_on_miss: bool = False,
         recent_probe_pages: int = 1,
     ) -> YouTubeListRecentResult:
         normalized_limit = max(1, min(100, limit))
+        normalized_cursor = max(0, cursor)
         if self._cache_repository is None:
             raise YouTubeServiceError("YouTube cache repository is required for cached likes flow")
 
@@ -1110,16 +1117,26 @@ class YouTubeService:
             )
             cache_miss = query is not None and not filtered
 
-        videos = filtered[:normalized_limit]
+        total_matches = len(filtered)
+        page_start = min(normalized_cursor, total_matches)
+        page_end = min(total_matches, page_start + normalized_limit)
+        videos = filtered[page_start:page_end]
+        has_more = page_end < total_matches
+        next_cursor = page_end if has_more else None
 
         LOGGER.info(
             (
-                "youtube likes cache_only query=%s limit=%s rows=%s cache_populated=%s "
-                "cache_miss=%s recent_probe_applied=%s recent_probe_pages_used=%s"
+                "youtube likes cache_only query=%s limit=%s cursor=%s rows=%s total_matches=%s "
+                "has_more=%s next_cursor=%s cache_populated=%s cache_miss=%s "
+                "recent_probe_applied=%s recent_probe_pages_used=%s"
             ),
             query,
             normalized_limit,
+            page_start,
             len(videos),
+            total_matches,
+            has_more,
+            next_cursor,
             bool(active_videos),
             cache_miss,
             recent_probe_applied,
@@ -1133,6 +1150,11 @@ class YouTubeService:
             cache_miss=cache_miss,
             recent_probe_applied=recent_probe_applied,
             recent_probe_pages_used=probe_pages_used,
+            cursor=page_start,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            total_matches=total_matches,
+            applied_limit=normalized_limit,
         )
 
     def list_recent_with_metadata(
