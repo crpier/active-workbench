@@ -23,6 +23,11 @@ This is the staging space for features we plan to ship later.
   - Goal: offer a lightweight post-completion review flow (prompting, structure, draft iteration, optional publish-target formatting).
   - Integration direction: keep bucket completion intact and add a dedicated review workflow linked to completed book items.
   - Status: captured for future design; implementation deferred.
+- `Project rename to match expanded scope` (deferred)
+  - Goal: rename the project once scope and positioning are stable so
+    the name reflects current capabilities.
+  - Status: explicitly deferred; revisit during a future naming/branding
+    pass.
 
 ## Intent
 
