@@ -24,7 +24,11 @@ from backend.app.repositories.jobs_repository import JobsRepository, ScheduledJo
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.vault_repository import SavedDocument, VaultRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
-from backend.app.services.bucket_metadata_service import BucketMetadataService
+from backend.app.services.bucket_metadata_service import (
+    BucketAddResolution,
+    BucketMetadataService,
+    BucketResolveCandidate,
+)
 from backend.app.services.content_analysis import (
     RecipeExtraction,
     build_routine_review_markdown,
@@ -56,10 +60,15 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "vault.note.save": "Persist a generic knowledge note in markdown.",
     "bucket.item.add": (
         "Add or merge a structured bucket item. "
-        "payload.domain (or payload.kind) is required."
+        "payload.domain (or payload.kind) is required. "
+        "Movie/TV add requests may return a clarification response before write; "
+        "handle clarifications in normal chat and retry with tmdb_id."
     ),
     "bucket.item.update": "Update a structured bucket item.",
-    "bucket.item.complete": "Mark a bucket item as completed (hidden from active queries).",
+    "bucket.item.complete": (
+        "Mark a bucket item as completed (hidden from active queries). "
+        "Requires payload.item_id (or id/bucket_item_id alias)."
+    ),
     "bucket.item.search": "Search bucket items with filters.",
     "bucket.item.recommend": "Recommend best-fit bucket items for the user's constraints.",
     "bucket.health.report": "Generate a bucket health report with stale items and quick wins.",
@@ -886,10 +895,85 @@ class ToolDispatcher:
         confidence = _optional_float(request.payload.get("confidence"))
         metadata = _payload_dict(request.payload.get("metadata"))
         source_refs = _extract_source_refs(request.payload)
-
         auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=False)
+        allow_unresolved = _bool_or_default(request.payload.get("allow_unresolved"), default=False)
+        tmdb_id = _payload_tmdb_id(
+            request.payload.get("tmdb_id"),
+            canonical_id=canonical_id,
+        )
+        media_domain = _normalize_bucket_media_domain(domain)
+
         enrichment = None
-        if auto_enrich:
+        add_resolution: BucketAddResolution | None = None
+        if media_domain is not None:
+            add_resolution = self._bucket_metadata_service.resolve_for_bucket_add(
+                title=title,
+                domain=domain,
+                year=year,
+                tmdb_id=tmdb_id,
+                max_candidates=5,
+            )
+            self._telemetry.emit(
+                "bucket.item.add.resolve",
+                request_id=str(request.request_id),
+                domain=domain,
+                status=add_resolution.status,
+                reason=add_resolution.reason,
+                candidates=len(add_resolution.candidates),
+                tmdb_id=tmdb_id,
+            )
+            if (
+                add_resolution.status in {"ambiguous", "no_match", "rate_limited"}
+                and not allow_unresolved
+            ):
+                candidates = [
+                    _bucket_resolve_candidate_payload(c) for c in add_resolution.candidates
+                ]
+                selected_candidate = (
+                    _bucket_resolve_candidate_payload(add_resolution.selected_candidate)
+                    if add_resolution.selected_candidate is not None
+                    else None
+                )
+                result: dict[str, Any] = {
+                    "tool": request.tool,
+                    "status": "needs_clarification",
+                    "write_performed": False,
+                    "resolution_status": add_resolution.status,
+                    "resolution_reason": add_resolution.reason,
+                    "message": _bucket_add_resolution_message(add_resolution),
+                    "follow_up_mode": "chat",
+                    "assistant_follow_up": (
+                        "Ask the user to pick one candidate in normal chat and retry with tmdb_id."
+                    ),
+                    "candidates": candidates,
+                    "selected_candidate": selected_candidate,
+                    "retry_after_seconds": add_resolution.retry_after_seconds,
+                }
+                provenance: list[ProvenanceRef] = []
+                for candidate in add_resolution.candidates[:5]:
+                    provenance.append(
+                        ProvenanceRef(type="external_api", id=candidate.canonical_id)
+                    )
+                return ToolResponse(
+                    ok=True,
+                    request_id=request.request_id,
+                    result=result,
+                    provenance=provenance,
+                    error=None,
+                )
+            if add_resolution.status == "resolved":
+                enrichment = add_resolution.enrichment
+                if add_resolution.selected_candidate is not None:
+                    canonical_id = canonical_id or add_resolution.selected_candidate.canonical_id
+                    if year is None:
+                        year = add_resolution.selected_candidate.year
+            elif auto_enrich:
+                enrichment = self._bucket_metadata_service.enrich(
+                    title=title,
+                    domain=domain,
+                    year=year,
+                )
+        elif auto_enrich:
             enrichment = self._bucket_metadata_service.enrich(
                 title=title,
                 domain=domain,
@@ -941,8 +1025,16 @@ class ToolDispatcher:
             "tool": request.tool,
             "status": action,
             "bucket_item": _bucket_item_payload(refreshed_item),
+            "write_performed": True,
             "enriched": enrichment is not None and enrichment.provider is not None,
             "enrichment_provider": enrichment.provider if enrichment is not None else None,
+            "resolution_status": add_resolution.status if add_resolution is not None else None,
+            "resolution_reason": add_resolution.reason if add_resolution is not None else None,
+            "selected_candidate": (
+                _bucket_resolve_candidate_payload(add_resolution.selected_candidate)
+                if add_resolution is not None and add_resolution.selected_candidate is not None
+                else None
+            ),
         }
 
         provenance = [ProvenanceRef(type="bucket_item", id=refreshed_item.item_id)]
@@ -1026,7 +1118,11 @@ class ToolDispatcher:
         )
 
     def _handle_bucket_item_complete(self, request: ToolRequest) -> ToolResponse:
-        item_id = _payload_str(request.payload, "item_id") or _payload_str(request.payload, "id")
+        item_id = (
+            _payload_str(request.payload, "item_id")
+            or _payload_str(request.payload, "id")
+            or _payload_str(request.payload, "bucket_item_id")
+        )
         if item_id is None:
             return _tool_error_response(
                 request_id=request.request_id,
@@ -1702,6 +1798,57 @@ def _optional_float(value: object) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _normalize_bucket_media_domain(domain: str) -> str | None:
+    normalized = domain.strip().lower()
+    if normalized == "movie":
+        return "movie"
+    if normalized in {"tv", "show"}:
+        return "tv"
+    return None
+
+
+def _payload_tmdb_id(raw_value: object, *, canonical_id: str | None) -> int | None:
+    parsed_from_payload = _optional_int(raw_value)
+    if parsed_from_payload is not None and parsed_from_payload > 0:
+        return parsed_from_payload
+    if canonical_id is None:
+        return None
+    match = re.fullmatch(r"tmdb:(movie|tv):(\d+)", canonical_id.strip().lower())
+    if match is None:
+        return None
+    return int(match.group(2))
+
+
+def _bucket_resolve_candidate_payload(candidate: BucketResolveCandidate) -> dict[str, Any]:
+    return {
+        "canonical_id": candidate.canonical_id,
+        "tmdb_id": candidate.tmdb_id,
+        "media_type": candidate.media_type,
+        "title": candidate.title,
+        "year": candidate.year,
+        "confidence": candidate.confidence,
+        "popularity": candidate.popularity,
+        "vote_count": candidate.vote_count,
+        "external_url": candidate.external_url,
+    }
+
+
+def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
+    if resolution.status == "ambiguous":
+        return (
+            "Multiple TMDb matches were found for this title. "
+            "Please choose one candidate by tmdb_id and retry bucket.item.add."
+        )
+    if resolution.status == "no_match":
+        return (
+            "No confident TMDb match was found. "
+            "Please provide a more specific title, release year, or tmdb_id."
+        )
+    if resolution.status == "rate_limited":
+        return "TMDb enrichment is currently rate limited. Please retry shortly."
+    return "Resolution skipped."
 
 
 def _merge_dicts(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:

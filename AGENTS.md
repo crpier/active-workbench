@@ -3,8 +3,8 @@
 This file is intentionally slim. Add rules here as recurring issues appear.
 
 ## Defaults
-- Keep changes focused and minimal.
-- Prefer small, testable diffs over broad refactors.
+- Treat the codebase as work-in-progress; broad changes are acceptable when they improve outcomes.
+- Do not bias toward "safe/minimal" edits by default.
 - Run targeted checks for touched code before finishing.
 - Do not change unrelated files.
 
@@ -22,6 +22,7 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 ## Updates
 - When a new issue repeats, add one concise rule here.
 - For workbench-assistant YouTube "analyze all likes" tasks, avoid plan/subagent exploration loops and return one final answer after direct pagination.
+- For workbench-assistant bucket completion intents, execute `search -> complete` once and stop; do not chain extra tool calls or auto-memory writes.
 
 ## Debugging Files
 - Runtime logs: `.active-workbench/logs/active-workbench.log` (or `$ACTIVE_WORKBENCH_LOG_DIR/active-workbench.log`)

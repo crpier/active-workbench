@@ -51,10 +51,12 @@ function backendTool(
   options?: {
     extraArgs?: Record<string, unknown>;
     payloadFields?: string[];
+    requireAnyField?: string[];
   },
 ) {
   const extraArgs = options?.extraArgs ?? {};
   const payloadFields = options?.payloadFields ?? [];
+  const requireAnyField = options?.requireAnyField ?? [];
 
   return tool({
     description,
@@ -89,6 +91,20 @@ function backendTool(
         if (value !== undefined && value !== null && value !== "") {
           payload[field] = value;
         }
+      }
+
+      if (
+        requireAnyField.length > 0 &&
+        !requireAnyField.some((field) => {
+          const direct = argsValue[field];
+          if (direct !== undefined && direct !== null && direct !== "") {
+            return true;
+          }
+          const inPayload = payload[field];
+          return inPayload !== undefined && inPayload !== null && inPayload !== "";
+        })
+      ) {
+        throw new Error(`One of the following fields is required: ${requireAnyField.join(", ")}`);
       }
 
       const request = createToolRequest({
@@ -183,30 +199,105 @@ export const vault_note_save = backendTool(
 
 export const bucket_item_add = backendTool(
   TOOL_NAMES.bucket_item_add,
-  "Add or merge a structured bucket item. Domain is required; infer it only when highly confident, otherwise ask the user first.",
+  "Add or merge a structured bucket item. Domain is required. For movie/tv, backend may return status=needs_clarification with TMDb candidates; in that case ask the user in normal chat and call again with tmdb_id. Do not call a question tool.",
   {
     extraArgs: {
       title: tool.schema.string().describe("Item title."),
       domain: tool.schema.string().describe("Required domain (for example movie, tv, book, game, place, travel)."),
       notes: tool.schema.string().optional().describe("Optional notes/description."),
+      year: tool.schema.number().int().optional().describe("Optional release year hint (movie/tv)."),
+      tmdb_id: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("TMDb id to confirm the exact movie/tv match."),
+      allow_unresolved: tool.schema
+        .boolean()
+        .optional()
+        .describe("Allow write even when TMDb match is ambiguous/no-match/rate-limited."),
+      auto_enrich: tool.schema
+        .boolean()
+        .optional()
+        .describe("When true, perform provider enrichment for non-media domains."),
     },
-    payloadFields: ["title", "domain", "notes"],
+    payloadFields: ["title", "domain", "notes", "year", "tmdb_id", "allow_unresolved", "auto_enrich"],
   },
 );
 
 export const bucket_item_update = backendTool(
   TOOL_NAMES.bucket_item_update,
-  "Update a structured bucket item. Include item_id plus changed fields.",
+  "Update a structured bucket item. Include item_id plus changed fields. Do not use this to mark completion; use bucket_item_complete.",
+  {
+    extraArgs: {
+      item_id: tool.schema.string().optional().describe("Bucket item id to update."),
+      id: tool.schema.string().optional().describe("Alias for item_id."),
+      title: tool.schema.string().optional().describe("Updated title."),
+      domain: tool.schema.string().optional().describe("Updated domain."),
+      notes: tool.schema.string().optional().describe("Updated notes."),
+      year: tool.schema.number().int().optional().describe("Updated year."),
+      duration_minutes: tool.schema.number().int().optional().describe("Updated duration in minutes."),
+      rating: tool.schema.number().optional().describe("Updated rating."),
+      popularity: tool.schema.number().optional().describe("Updated popularity."),
+      genres: tool.schema
+        .array(tool.schema.string())
+        .optional()
+        .describe("Updated genres list."),
+      tags: tool.schema.array(tool.schema.string()).optional().describe("Updated tags list."),
+      providers: tool.schema
+        .array(tool.schema.string())
+        .optional()
+        .describe("Updated provider/platform list."),
+      external_url: tool.schema.string().optional().describe("Updated external URL."),
+      confidence: tool.schema.number().optional().describe("Updated confidence score."),
+    },
+    payloadFields: [
+      "item_id",
+      "id",
+      "title",
+      "domain",
+      "notes",
+      "year",
+      "duration_minutes",
+      "rating",
+      "popularity",
+      "genres",
+      "tags",
+      "providers",
+      "external_url",
+      "confidence",
+    ],
+  },
 );
 
 export const bucket_item_complete = backendTool(
   TOOL_NAMES.bucket_item_complete,
-  "Mark a structured bucket item as completed (kept in storage but hidden from active views).",
+  "Mark a structured bucket item as completed (kept in storage but hidden from active views). Requires item_id/id/bucket_item_id and should be called once per completion action.",
+  {
+    extraArgs: {
+      item_id: tool.schema.string().optional().describe("Bucket item id to complete."),
+      id: tool.schema.string().optional().describe("Alias for item_id."),
+      bucket_item_id: tool.schema.string().optional().describe("Alias for item_id."),
+    },
+    payloadFields: ["item_id", "id", "bucket_item_id"],
+    requireAnyField: ["item_id", "id", "bucket_item_id"],
+  },
 );
 
 export const bucket_item_search = backendTool(
   TOOL_NAMES.bucket_item_search,
   "Search structured bucket items by query/domain/genre/duration/rating. Includes annotation status so unannotated items can be identified.",
+  {
+    extraArgs: {
+      query: tool.schema.string().optional().describe("Free-text query against title/notes."),
+      domain: tool.schema.string().optional().describe("Domain filter (movie, tv, book, etc.)."),
+      include_completed: tool.schema
+        .boolean()
+        .optional()
+        .describe("Include completed items in results."),
+      limit: tool.schema.number().int().optional().describe("Maximum number of returned items."),
+    },
+    payloadFields: ["query", "domain", "include_completed", "limit"],
+  },
 );
 
 export const bucket_item_recommend = backendTool(
@@ -221,7 +312,7 @@ export const bucket_health_report = backendTool(
 
 export const memory_create = backendTool(
   TOOL_NAMES.memory_create,
-  "Create a persistent memory entry with undo support.",
+  "Create a persistent memory entry with undo support. Use only when the user explicitly asks to remember something.",
 );
 
 export const memory_undo = backendTool(
