@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any, cast
 from uuid import uuid4
 
 from structlog.contextvars import bind_contextvars, reset_contextvars
@@ -144,7 +145,9 @@ class SchedulerService:
         )
         try:
             raw_result = run_poll()
-            result = raw_result if isinstance(raw_result, dict) else {}
+            result: dict[str, Any] = (
+                cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
+            )
             self._telemetry.emit(
                 "bucket.annotation.poll.finish",
                 tick_id=tick_id,

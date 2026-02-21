@@ -2,8 +2,6 @@ export type ToolName =
   | "youtube.likes.list_recent"
   | "youtube.likes.search_recent_content"
   | "youtube.transcript.get"
-  | "vault.recipe.save"
-  | "vault.note.save"
   | "bucket.item.add"
   | "bucket.item.update"
   | "bucket.item.complete"
@@ -14,14 +12,7 @@ export type ToolName =
   | "memory.list"
   | "memory.search"
   | "memory.delete"
-  | "memory.undo"
-  | "reminder.schedule"
-  | "context.suggest_for_query"
-  | "digest.weekly_learning.generate"
-  | "review.routine.generate"
-  | "recipe.extract_from_transcript"
-  | "summary.extract_key_ideas"
-  | "actions.extract_from_notes";
+  | "memory.undo";
 
 export interface ToolContext {
   timezone?: string;

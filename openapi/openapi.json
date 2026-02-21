@@ -153,88 +153,6 @@
         }
       }
     },
-    "/tools/vault.recipe.save": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Vault Recipe Save",
-        "operationId": "vault_recipe_save",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/vault.note.save": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Vault Note Save",
-        "operationId": "vault_note_save",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/tools/bucket.item.add": {
       "post": {
         "tags": [
@@ -686,293 +604,6 @@
         }
       }
     },
-    "/tools/reminder.schedule": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Reminder Schedule",
-        "operationId": "reminder_schedule",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/context.suggest_for_query": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Context Suggest For Query",
-        "operationId": "context_suggest_for_query",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/digest.weekly_learning.generate": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Digest Weekly Learning Generate",
-        "operationId": "digest_weekly_learning_generate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/review.routine.generate": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Review Routine Generate",
-        "operationId": "review_routine_generate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/recipe.extract_from_transcript": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Recipe Extract From Transcript",
-        "operationId": "recipe_extract_from_transcript",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/summary.extract_key_ideas": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Summary Extract Key Ideas",
-        "operationId": "summary_extract_key_ideas",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/tools/actions.extract_from_notes": {
-      "post": {
-        "tags": [
-          "tools"
-        ],
-        "summary": "Actions Extract From Notes",
-        "operationId": "actions_extract_from_notes",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/health": {
       "get": {
         "tags": [
@@ -1041,8 +672,6 @@
               "youtube.likes.list_recent",
               "youtube.likes.search_recent_content",
               "youtube.transcript.get",
-              "vault.recipe.save",
-              "vault.note.save",
               "bucket.item.add",
               "bucket.item.update",
               "bucket.item.complete",
@@ -1053,14 +682,7 @@
               "memory.list",
               "memory.search",
               "memory.delete",
-              "memory.undo",
-              "reminder.schedule",
-              "context.suggest_for_query",
-              "digest.weekly_learning.generate",
-              "review.routine.generate",
-              "recipe.extract_from_transcript",
-              "summary.extract_key_ideas",
-              "actions.extract_from_notes"
+              "memory.undo"
             ],
             "title": "Name"
           },
@@ -1153,8 +775,6 @@
               "youtube.likes.list_recent",
               "youtube.likes.search_recent_content",
               "youtube.transcript.get",
-              "vault.recipe.save",
-              "vault.note.save",
               "bucket.item.add",
               "bucket.item.update",
               "bucket.item.complete",
@@ -1165,14 +785,7 @@
               "memory.list",
               "memory.search",
               "memory.delete",
-              "memory.undo",
-              "reminder.schedule",
-              "context.suggest_for_query",
-              "digest.weekly_learning.generate",
-              "review.routine.generate",
-              "recipe.extract_from_transcript",
-              "summary.extract_key_ideas",
-              "actions.extract_from_notes"
+              "memory.undo"
             ],
             "title": "Tool"
           },

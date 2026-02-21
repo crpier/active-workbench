@@ -9,8 +9,6 @@ const TOOL_NAMES = {
   youtube_likes_list_recent: "youtube.likes.list_recent",
   youtube_likes_search_recent_content: "youtube.likes.search_recent_content",
   youtube_transcript_get: "youtube.transcript.get",
-  vault_recipe_save: "vault.recipe.save",
-  vault_note_save: "vault.note.save",
   bucket_item_add: "bucket.item.add",
   bucket_item_update: "bucket.item.update",
   bucket_item_complete: "bucket.item.complete",
@@ -22,13 +20,6 @@ const TOOL_NAMES = {
   memory_search: "memory.search",
   memory_delete: "memory.delete",
   memory_undo: "memory.undo",
-  reminder_schedule: "reminder.schedule",
-  context_suggest_for_query: "context.suggest_for_query",
-  digest_weekly_learning_generate: "digest.weekly_learning.generate",
-  review_routine_generate: "review.routine.generate",
-  recipe_extract_from_transcript: "recipe.extract_from_transcript",
-  summary_extract_key_ideas: "summary.extract_key_ideas",
-  actions_extract_from_notes: "actions.extract_from_notes",
 } as const;
 
 type BackendToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -188,16 +179,6 @@ export const youtube_likes_search_recent_content = backendTool(
     },
     payloadFields: ["query", "window_days", "limit"],
   },
-);
-
-export const vault_recipe_save = backendTool(
-  TOOL_NAMES.vault_recipe_save,
-  "Save a recipe document into the vault.",
-);
-
-export const vault_note_save = backendTool(
-  TOOL_NAMES.vault_note_save,
-  "Save a general note document into the vault.",
 );
 
 export const bucket_item_add = backendTool(
@@ -403,39 +384,4 @@ export const memory_delete = backendTool(
 export const memory_undo = backendTool(
   TOOL_NAMES.memory_undo,
   "Undo a memory entry using undo_token.",
-);
-
-export const reminder_schedule = backendTool(
-  TOOL_NAMES.reminder_schedule,
-  "Schedule a reminder job in backend storage.",
-);
-
-export const context_suggest_for_query = backendTool(
-  TOOL_NAMES.context_suggest_for_query,
-  "Get context-aware suggestions for a user query.",
-);
-
-export const digest_weekly_learning_generate = backendTool(
-  TOOL_NAMES.digest_weekly_learning_generate,
-  "Generate and save the weekly learning digest.",
-);
-
-export const review_routine_generate = backendTool(
-  TOOL_NAMES.review_routine_generate,
-  "Generate and save the routine review artifact.",
-);
-
-export const recipe_extract_from_transcript = backendTool(
-  TOOL_NAMES.recipe_extract_from_transcript,
-  "Extract structured recipe data from transcript text.",
-);
-
-export const summary_extract_key_ideas = backendTool(
-  TOOL_NAMES.summary_extract_key_ideas,
-  "Extract key ideas summary from transcript text.",
-);
-
-export const actions_extract_from_notes = backendTool(
-  TOOL_NAMES.actions_extract_from_notes,
-  "Extract actionable tasks from notes.",
 );

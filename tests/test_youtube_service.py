@@ -860,7 +860,10 @@ def test_oauth_transcript_unavailable_includes_supadata_request_id(
         }
 
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
-    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", lambda _seconds: None)
+    def _noop_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", _noop_sleep)
 
     with pytest.raises(
         SupadataTranscriptError,
@@ -923,7 +926,10 @@ def test_oauth_transcript_unavailable_immediate_retries_can_recover(
         }
 
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
-    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", lambda _seconds: None)
+    def _noop_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", _noop_sleep)
 
     result = service.get_transcript_with_metadata("oauth_video_1")
     assert result.transcript.transcript == "recovered transcript"

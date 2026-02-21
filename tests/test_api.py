@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -13,8 +11,6 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "youtube.likes.list_recent",
     "youtube.likes.search_recent_content",
     "youtube.transcript.get",
-    "vault.recipe.save",
-    "vault.note.save",
     "bucket.item.add",
     "bucket.item.update",
     "bucket.item.complete",
@@ -26,13 +22,6 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "memory.search",
     "memory.delete",
     "memory.undo",
-    "reminder.schedule",
-    "context.suggest_for_query",
-    "digest.weekly_learning.generate",
-    "review.routine.generate",
-    "recipe.extract_from_transcript",
-    "summary.extract_key_ideas",
-    "actions.extract_from_notes",
 )
 
 
@@ -51,10 +40,6 @@ def _request_body(
     }
 
 
-def _runtime_data_dir() -> Path:
-    return Path(os.environ["ACTIVE_WORKBENCH_DATA_DIR"])
-
-
 def test_health(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
@@ -70,14 +55,12 @@ def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:
     assert set(names) == set(ALL_TOOLS)
 
 
-def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None:
+def test_tool_catalog_marks_all_tools_ready(client: TestClient) -> None:
     response = client.get("/tools")
     assert response.status_code == 200
     data = response.json()
 
     ready_tools = {item["name"] for item in data if item["ready_for_use"] is True}
-    not_ready_tools = {item["name"] for item in data if item["ready_for_use"] is False}
-
     assert ready_tools == {
         "youtube.likes.list_recent",
         "youtube.likes.search_recent_content",
@@ -94,13 +77,10 @@ def test_tool_catalog_marks_only_youtube_tools_ready(client: TestClient) -> None
         "memory.delete",
         "memory.undo",
     }
-    assert not_ready_tools == set(ALL_TOOLS) - ready_tools
+    assert ready_tools == set(ALL_TOOLS)
 
     for item in data:
-        if item["name"] in ready_tools:
-            assert item["readiness_note"] is None
-        else:
-            assert isinstance(item["readiness_note"], str) and item["readiness_note"]
+        assert item["readiness_note"] is None
 
 
 def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
@@ -124,123 +104,11 @@ def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
 
 def test_tool_endpoint_rejects_tool_mismatch(client: TestClient) -> None:
     response = client.post(
-        "/tools/vault.recipe.save",
+        "/tools/bucket.item.add",
         json=_request_body("youtube.likes.list_recent"),
     )
     assert response.status_code == 400
     assert "does not match endpoint" in response.json()["detail"]
-
-
-def test_recipe_workflow_end_to_end(client: TestClient) -> None:
-    history = client.post(
-        "/tools/youtube.likes.list_recent",
-        json=_request_body("youtube.likes.list_recent", payload={"query": "cook", "limit": 3}),
-    )
-    assert history.status_code == 200
-    history_result = history.json()["result"]
-    assert "quota" in history_result
-    videos = history_result["videos"]
-    assert videos
-    assert videos[0]["liked_at"]
-    assert "description" in videos[0]
-    assert "channel_title" in videos[0]
-    assert "tags" in videos[0]
-    video_id = str(videos[0]["video_id"])
-
-    transcript = client.post(
-        "/tools/youtube.transcript.get",
-        json=_request_body("youtube.transcript.get", payload={"video_id": video_id}),
-    )
-    assert transcript.status_code == 200
-    transcript_result = transcript.json()["result"]
-    assert "quota" in transcript_result
-    transcript_text = str(transcript_result["transcript"])
-
-    recipe = client.post(
-        "/tools/recipe.extract_from_transcript",
-        json=_request_body(
-            "recipe.extract_from_transcript",
-            payload={"video_id": video_id, "transcript": transcript_text, "title": "Leek Soup"},
-        ),
-    )
-    assert recipe.status_code == 200
-    recipe_markdown = str(recipe.json()["result"]["markdown"])
-
-    save = client.post(
-        "/tools/vault.recipe.save",
-        json=_request_body(
-            "vault.recipe.save",
-            payload={
-                "title": "Leek Soup",
-                "markdown": recipe_markdown,
-                "source_refs": [{"type": "youtube_video", "id": video_id}],
-            },
-        ),
-    )
-    assert save.status_code == 200
-    saved_path = _runtime_data_dir() / str(save.json()["result"]["path"])
-    assert saved_path.exists()
-
-    memory = client.post(
-        "/tools/memory.create",
-        json=_request_body(
-            "memory.create",
-            payload={
-                "type": "recipe_capture",
-                "recipe_title": "Leek Soup",
-                "source_refs": [{"type": "youtube_video", "id": video_id}],
-            },
-        ),
-    )
-    assert memory.status_code == 200
-    assert memory.json()["undo_token"]
-
-
-def test_summary_workflow_end_to_end(client: TestClient) -> None:
-    history = client.post(
-        "/tools/youtube.likes.list_recent",
-        json=_request_body(
-            "youtube.likes.list_recent",
-            payload={"query": "microservices", "limit": 3},
-        ),
-    )
-    assert history.status_code == 200
-    videos = history.json()["result"]["videos"]
-    assert videos
-    video_id = str(videos[0]["video_id"])
-
-    transcript = client.post(
-        "/tools/youtube.transcript.get",
-        json=_request_body("youtube.transcript.get", payload={"video_id": video_id}),
-    )
-    transcript_text = str(transcript.json()["result"]["transcript"])
-
-    summary = client.post(
-        "/tools/summary.extract_key_ideas",
-        json=_request_body(
-            "summary.extract_key_ideas",
-            payload={"video_id": video_id, "transcript": transcript_text, "max_points": 4},
-        ),
-    )
-    assert summary.status_code == 200
-    key_ideas = summary.json()["result"]["key_ideas"]
-    assert key_ideas
-
-    body = "\n".join(f"- {item}" for item in key_ideas)
-    save = client.post(
-        "/tools/vault.note.save",
-        json=_request_body(
-            "vault.note.save",
-            payload={
-                "title": "Microservices Interesting Ideas",
-                "body": body,
-                "source_refs": [{"type": "youtube_video", "id": video_id}],
-            },
-        ),
-    )
-    assert save.status_code == 200
-    path = _runtime_data_dir() / str(save.json()["result"]["path"])
-    assert path.exists()
 
 
 def test_transcript_accepts_youtube_url_payload(client: TestClient) -> None:
@@ -654,97 +522,6 @@ def test_memory_create_rejects_empty_payload(client: TestClient) -> None:
     body = response.json()
     assert body["ok"] is False
     assert body["error"]["code"] == "invalid_input"
-
-
-def test_reminder_and_recipe_context_suggestion(client: TestClient) -> None:
-    schedule_response = client.post(
-        "/tools/reminder.schedule",
-        json=_request_body(
-            "reminder.schedule",
-            payload={
-                "item": "leeks",
-                "days_from_now": 2,
-                "hour": 9,
-                "minute": 0,
-            },
-        ),
-    )
-    assert schedule_response.status_code == 200
-    assert schedule_response.json()["result"]["status"] == "scheduled"
-
-    suggestion_response = client.post(
-        "/tools/context.suggest_for_query",
-        json=_request_body(
-            "context.suggest_for_query",
-            payload={"query": "Give me a recipe idea"},
-        ),
-    )
-    assert suggestion_response.status_code == 200
-    suggestions = suggestion_response.json()["result"]["suggestions"]
-    assert any("leeks" in suggestion for suggestion in suggestions)
-
-
-def test_actions_digest_and_routine_review(client: TestClient) -> None:
-    note_save = client.post(
-        "/tools/vault.note.save",
-        json=_request_body(
-            "vault.note.save",
-            payload={
-                "title": "Microservices actions",
-                "body": "TODO: Define service boundaries\nWe should add distributed tracing",
-            },
-        ),
-    )
-    assert note_save.status_code == 200
-
-    actions = client.post(
-        "/tools/actions.extract_from_notes",
-        json=_request_body("actions.extract_from_notes", payload={}),
-    )
-    assert actions.status_code == 200
-    extracted_actions = actions.json()["result"]["actions"]
-    assert extracted_actions
-
-    digest = client.post(
-        "/tools/digest.weekly_learning.generate",
-        json=_request_body("digest.weekly_learning.generate", payload={}),
-    )
-    assert digest.status_code == 200
-    digest_path = _runtime_data_dir() / str(digest.json()["result"]["path"])
-    assert digest_path.exists()
-
-    review = client.post(
-        "/tools/review.routine.generate",
-        json=_request_body("review.routine.generate", payload={}),
-    )
-    assert review.status_code == 200
-    review_path = _runtime_data_dir() / str(review.json()["result"]["path"])
-    assert review_path.exists()
-
-
-def test_due_reminder_jobs_execute_on_next_tool_call(client: TestClient) -> None:
-    past_run = "2025-01-01T08:00:00+00:00"
-    schedule_response = client.post(
-        "/tools/reminder.schedule",
-        json=_request_body(
-            "reminder.schedule",
-            payload={"item": "old leeks", "run_at": past_run},
-        ),
-    )
-    assert schedule_response.status_code == 200
-
-    trigger_response = client.post(
-        "/tools/context.suggest_for_query",
-        json=_request_body(
-            "context.suggest_for_query",
-            payload={"query": "anything"},
-        ),
-    )
-    assert trigger_response.status_code == 200
-
-    reviews_dir = _runtime_data_dir() / "vault" / "reviews"
-    review_files = list(reviews_dir.glob("*.md"))
-    assert review_files
 
 
 def test_write_idempotency_returns_same_response(client: TestClient) -> None:
