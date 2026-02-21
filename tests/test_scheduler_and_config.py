@@ -104,6 +104,11 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
     monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
     monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_MIN_INTERVAL_SECONDS", "1.2")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_BASE_URL", " https://bookwyrm.social/ ")
+    monkeypatch.setenv(
+        "ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_USER_AGENT",
+        " active-workbench-tests/1.0 (+test@example.com) ",
+    )
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_DAILY_QUOTA_LIMIT", "12000")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_QUOTA_WARNING_PERCENT", "0.75")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CACHE_TTL_SECONDS", "120")
@@ -143,6 +148,8 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.youtube_transcript_scheduler_poll_interval_seconds == 22
     assert settings.youtube_mode == "oauth"
     assert settings.bucket_tmdb_min_interval_seconds == 1.2
+    assert settings.bucket_bookwyrm_base_url == "https://bookwyrm.social"
+    assert settings.bucket_bookwyrm_user_agent == "active-workbench-tests/1.0 (+test@example.com)"
     assert settings.youtube_daily_quota_limit == 12_000
     assert settings.youtube_quota_warning_percent == 0.75
     assert settings.youtube_likes_cache_ttl_seconds == 120
@@ -179,6 +186,7 @@ def test_load_settings_rejects_invalid_youtube_mode(monkeypatch: pytest.MonkeyPa
 def test_load_settings_oauth_mode_requires_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
     monkeypatch.delenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", raising=False)
@@ -190,6 +198,7 @@ def test_load_settings_oauth_mode_requires_secrets(
 def test_load_settings_oauth_mode_requires_bucket_tmdb_api_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True)
     (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")

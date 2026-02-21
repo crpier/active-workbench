@@ -199,7 +199,7 @@ export const vault_note_save = backendTool(
 
 export const bucket_item_add = backendTool(
   TOOL_NAMES.bucket_item_add,
-  "Add or merge a structured bucket item. Domain is required. For movie/tv, backend may return status=needs_clarification with TMDb candidates; in that case ask the user in normal chat and call again with tmdb_id. Do not call a question tool.",
+  "Add or merge a structured bucket item. Domain is required. For movie/tv/book, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or author/year in normal chat (not by raw provider id), then call again with the matching tmdb_id or bookwyrm_key. Do not call a question tool.",
   {
     extraArgs: {
       title: tool.schema.string().describe("Item title."),
@@ -211,16 +211,29 @@ export const bucket_item_add = backendTool(
         .int()
         .optional()
         .describe("TMDb id to confirm the exact movie/tv match."),
+      bookwyrm_key: tool.schema
+        .string()
+        .optional()
+        .describe("BookWyrm key URL to confirm the exact book match."),
       allow_unresolved: tool.schema
         .boolean()
         .optional()
-        .describe("Allow write even when TMDb match is ambiguous/no-match/rate-limited."),
+        .describe("Allow write even when provider match is ambiguous/no-match/rate-limited."),
       auto_enrich: tool.schema
         .boolean()
         .optional()
         .describe("When true, perform provider enrichment for non-media domains."),
     },
-    payloadFields: ["title", "domain", "notes", "year", "tmdb_id", "allow_unresolved", "auto_enrich"],
+    payloadFields: [
+      "title",
+      "domain",
+      "notes",
+      "year",
+      "tmdb_id",
+      "bookwyrm_key",
+      "allow_unresolved",
+      "auto_enrich",
+    ],
   },
 );
 

@@ -7,8 +7,11 @@ from difflib import SequenceMatcher
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
+from backend.app.repositories.bucket_bookwyrm_quota_repository import (
+    BucketBookwyrmQuotaRepository,
+)
 from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 
 
@@ -32,14 +35,17 @@ class BucketEnrichment:
 @dataclass(frozen=True)
 class BucketResolveCandidate:
     canonical_id: str
-    tmdb_id: int
-    media_type: Literal["movie", "tv"]
+    provider: Literal["tmdb", "bookwyrm"]
     title: str
     year: int | None
     confidence: float
-    popularity: float | None
-    vote_count: int | None
     external_url: str
+    tmdb_id: int | None = None
+    media_type: Literal["movie", "tv", "book"] | None = None
+    popularity: float | None = None
+    vote_count: int | None = None
+    bookwyrm_key: str | None = None
+    author: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,20 @@ class _TmdbRequest:
     retry_after_seconds: float | None
 
 
+@dataclass(frozen=True)
+class _BookwyrmSearchRequest:
+    payload: list[dict[str, Any]] | None
+    rate_limited: bool
+    retry_after_seconds: float | None
+
+
+@dataclass(frozen=True)
+class _BookwyrmDetailRequest:
+    payload: dict[str, Any] | None
+    rate_limited: bool
+    retry_after_seconds: float | None
+
+
 class BucketMetadataService:
     def __init__(
         self,
@@ -69,6 +89,11 @@ class BucketMetadataService:
         tmdb_quota_repository: BucketTmdbQuotaRepository | None = None,
         tmdb_daily_soft_limit: int = 500,
         tmdb_min_interval_seconds: float = 1.1,
+        bookwyrm_base_url: str = "https://bookwyrm.social",
+        bookwyrm_user_agent: str = "active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+        bookwyrm_quota_repository: BucketBookwyrmQuotaRepository | None = None,
+        bookwyrm_daily_soft_limit: int = 500,
+        bookwyrm_min_interval_seconds: float = 1.1,
     ) -> None:
         self._enrichment_enabled = enrichment_enabled
         self._http_timeout_seconds = max(0.5, http_timeout_seconds)
@@ -76,6 +101,16 @@ class BucketMetadataService:
         self._tmdb_quota_repository = tmdb_quota_repository
         self._tmdb_daily_soft_limit = max(0, tmdb_daily_soft_limit)
         self._tmdb_min_interval_seconds = max(0.0, tmdb_min_interval_seconds)
+        self._bookwyrm_base_url = _normalize_base_url(
+            bookwyrm_base_url,
+            fallback="https://bookwyrm.social",
+        )
+        self._bookwyrm_user_agent = _normalize_optional_text(bookwyrm_user_agent) or (
+            "active-workbench/0.1 (+https://github.com/crpier/active-workbench)"
+        )
+        self._bookwyrm_quota_repository = bookwyrm_quota_repository
+        self._bookwyrm_daily_soft_limit = max(0, bookwyrm_daily_soft_limit)
+        self._bookwyrm_min_interval_seconds = max(0.0, bookwyrm_min_interval_seconds)
 
     def resolve_for_bucket_add(
         self,
@@ -84,10 +119,27 @@ class BucketMetadataService:
         domain: str,
         year: int | None,
         tmdb_id: int | None = None,
+        bookwyrm_key: str | None = None,
         max_candidates: int = 5,
     ) -> BucketAddResolution:
-        year_hint = year if year is not None else _parse_year(title)
         normalized_domain = domain.strip().lower()
+        if not self._enrichment_enabled:
+            return BucketAddResolution(
+                status="skipped",
+                reason="enrichment_disabled",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+        if normalized_domain == "book":
+            return self._resolve_bookwyrm_for_bucket_add(
+                title=title,
+                year=year,
+                bookwyrm_key=bookwyrm_key,
+                max_candidates=max_candidates,
+            )
+
         media_type = _tmdb_media_type_for_domain(normalized_domain)
         if media_type is None:
             return BucketAddResolution(
@@ -98,15 +150,77 @@ class BucketMetadataService:
                 enrichment=None,
                 retry_after_seconds=None,
             )
+        return self._resolve_tmdb_for_bucket_add(
+            title=title,
+            media_type=media_type,
+            year=year,
+            tmdb_id=tmdb_id,
+            max_candidates=max_candidates,
+        )
+
+    def enrich(
+        self,
+        *,
+        title: str,
+        domain: str,
+        year: int | None,
+    ) -> BucketEnrichment:
+        normalized_domain = domain.strip().lower()
         if not self._enrichment_enabled:
-            return BucketAddResolution(
-                status="skipped",
-                reason="enrichment_disabled",
-                selected_candidate=None,
-                candidates=[],
-                enrichment=None,
-                retry_after_seconds=None,
+            return _empty_enrichment()
+        if normalized_domain == "book":
+            enriched_book = self._enrich_with_bookwyrm(title=title, year=year)
+            if enriched_book is not None:
+                return enriched_book
+            return _empty_enrichment()
+        if normalized_domain not in {"movie", "tv", "show"}:
+            return _empty_enrichment()
+
+        if self._tmdb_api_key is not None:
+            enriched_tmdb = self._enrich_with_tmdb(
+                title=title,
+                domain=normalized_domain,
+                year=year,
             )
+            if enriched_tmdb is not None:
+                return enriched_tmdb
+
+        enriched_itunes = self._enrich_with_itunes(title=title, domain=normalized_domain)
+        if enriched_itunes is not None:
+            return enriched_itunes
+
+        return _empty_enrichment()
+
+    def _enrich_with_tmdb(
+        self,
+        *,
+        title: str,
+        domain: str,
+        year: int | None,
+    ) -> BucketEnrichment | None:
+        if self._tmdb_api_key is None:
+            return None
+        resolution = self.resolve_for_bucket_add(
+            title=title,
+            domain=domain,
+            year=year,
+            tmdb_id=None,
+            max_candidates=5,
+        )
+        if resolution.status != "resolved" or resolution.enrichment is None:
+            return None
+        return resolution.enrichment
+
+    def _resolve_tmdb_for_bucket_add(
+        self,
+        *,
+        title: str,
+        media_type: Literal["movie", "tv"],
+        year: int | None,
+        tmdb_id: int | None,
+        max_candidates: int,
+    ) -> BucketAddResolution:
+        year_hint = year if year is not None else _parse_year(title)
         if self._tmdb_api_key is None:
             return BucketAddResolution(
                 status="skipped",
@@ -206,7 +320,7 @@ class BucketMetadataService:
         if not candidates:
             return BucketAddResolution(
                 status="no_match",
-                reason="no_candidate_match",
+                reason="bookwyrm_no_candidate_match",
                 selected_candidate=None,
                 candidates=[],
                 enrichment=None,
@@ -224,9 +338,21 @@ class BucketMetadataService:
             )
 
         selected = candidates[0]
+        selected_tmdb_id = selected.tmdb_id
+        selected_media_type = selected.media_type
+        if selected_tmdb_id is None or selected_media_type not in {"movie", "tv"}:
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="details_unavailable",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+        tmdb_media_type = cast(Literal["movie", "tv"], selected_media_type)
         search_item = _tmdb_search_item_by_id(
             payload=search_request.payload,
-            tmdb_id=selected.tmdb_id,
+            tmdb_id=selected_tmdb_id,
         )
         if search_item is None:
             return BucketAddResolution(
@@ -240,7 +366,7 @@ class BucketMetadataService:
 
         enrichment = _enrichment_from_tmdb_search_item(
             payload=search_item,
-            media_type=selected.media_type,
+            media_type=tmdb_media_type,
             query_title=title,
         )
         if enrichment is None:
@@ -261,53 +387,215 @@ class BucketMetadataService:
             retry_after_seconds=None,
         )
 
-    def enrich(
+    def _resolve_bookwyrm_for_bucket_add(
         self,
         *,
         title: str,
-        domain: str,
         year: int | None,
-    ) -> BucketEnrichment:
-        normalized_domain = domain.strip().lower()
-        if not self._enrichment_enabled:
-            return _empty_enrichment()
-        if normalized_domain not in {"movie", "tv", "show"}:
-            return _empty_enrichment()
+        bookwyrm_key: str | None,
+        max_candidates: int,
+    ) -> BucketAddResolution:
+        year_hint = year if year is not None else _parse_year(title)
+        normalized_key = _normalize_bookwyrm_key(bookwyrm_key)
+        if normalized_key is not None:
+            detail_request = self._fetch_bookwyrm_details(key=normalized_key)
+            if detail_request.rate_limited:
+                return BucketAddResolution(
+                    status="rate_limited",
+                    reason="bookwyrm_rate_limited",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=detail_request.retry_after_seconds,
+                )
+            if detail_request.payload is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="bookwyrm_key_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
 
-        if self._tmdb_api_key is not None:
-            enriched_tmdb = self._enrich_with_tmdb(
-                title=title,
-                domain=normalized_domain,
-                year=year,
+            selected_candidate = _candidate_from_bookwyrm_detail(
+                payload=detail_request.payload,
+                query_title=title,
+                query_year=year_hint,
+                fallback_key=normalized_key,
             )
-            if enriched_tmdb is not None:
-                return enriched_tmdb
+            if selected_candidate is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="bookwyrm_key_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+            enrichment = _enrichment_from_bookwyrm_payload(
+                payload=detail_request.payload,
+                query_title=title,
+                query_year=year_hint,
+                fallback_key=normalized_key,
+                fallback_author=None,
+            )
+            if enrichment is None:
+                return BucketAddResolution(
+                    status="no_match",
+                    reason="bookwyrm_key_not_found",
+                    selected_candidate=None,
+                    candidates=[],
+                    enrichment=None,
+                    retry_after_seconds=None,
+                )
+            return BucketAddResolution(
+                status="resolved",
+                reason="resolved_from_bookwyrm_key",
+                selected_candidate=selected_candidate,
+                candidates=[],
+                enrichment=enrichment,
+                retry_after_seconds=None,
+            )
 
-        enriched_itunes = self._enrich_with_itunes(title=title, domain=normalized_domain)
-        if enriched_itunes is not None:
-            return enriched_itunes
+        search_request = self._search_bookwyrm(title=title)
+        if search_request.rate_limited:
+            return BucketAddResolution(
+                status="rate_limited",
+                reason="bookwyrm_rate_limited",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=search_request.retry_after_seconds,
+            )
+        if search_request.payload is None:
+            return BucketAddResolution(
+                status="no_match",
+                reason="bookwyrm_search_unavailable",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
 
-        return _empty_enrichment()
+        candidates = _bookwyrm_search_candidates(
+            payload=search_request.payload,
+            query_title=title,
+            query_year=year_hint,
+            max_candidates=max(1, max_candidates),
+        )
+        if not candidates:
+            return BucketAddResolution(
+                status="no_match",
+                reason="no_candidate_match",
+                selected_candidate=None,
+                candidates=[],
+                enrichment=None,
+                retry_after_seconds=None,
+            )
 
-    def _enrich_with_tmdb(
+        if not _should_auto_resolve(candidates):
+            return BucketAddResolution(
+                status="ambiguous",
+                reason="ambiguous_match",
+                selected_candidate=None,
+                candidates=candidates,
+                enrichment=None,
+                retry_after_seconds=None,
+            )
+
+        selected = candidates[0]
+        enrichment = _enrichment_from_bookwyrm_search_candidate(
+            candidate=selected,
+            query_title=title,
+            query_year=year_hint,
+        )
+        return BucketAddResolution(
+            status="resolved",
+            reason="high_confidence_match",
+            selected_candidate=selected,
+            candidates=candidates,
+            enrichment=enrichment,
+            retry_after_seconds=None,
+        )
+
+    def _enrich_with_bookwyrm(
         self,
         *,
         title: str,
-        domain: str,
         year: int | None,
     ) -> BucketEnrichment | None:
-        if self._tmdb_api_key is None:
-            return None
         resolution = self.resolve_for_bucket_add(
             title=title,
-            domain=domain,
+            domain="book",
             year=year,
-            tmdb_id=None,
+            bookwyrm_key=None,
             max_candidates=5,
         )
         if resolution.status != "resolved" or resolution.enrichment is None:
             return None
         return resolution.enrichment
+
+    def _search_bookwyrm(self, *, title: str) -> _BookwyrmSearchRequest:
+        params = {
+            "q": title,
+            "min_confidence": "0.1",
+        }
+        url = f"{self._bookwyrm_base_url}/search.json?{urlencode(params)}"
+        return self._bookwyrm_request_list(
+            url,
+            accept_header="application/json",
+        )
+
+    def _fetch_bookwyrm_details(self, *, key: str) -> _BookwyrmDetailRequest:
+        return self._bookwyrm_request_dict(
+            key,
+            accept_header="application/activity+json, application/json",
+        )
+
+    def _bookwyrm_request_list(self, url: str, *, accept_header: str) -> _BookwyrmSearchRequest:
+        if self._bookwyrm_quota_repository is not None:
+            snapshot = self._bookwyrm_quota_repository.try_consume_call(
+                daily_soft_limit=self._bookwyrm_daily_soft_limit,
+                min_interval_seconds=self._bookwyrm_min_interval_seconds,
+            )
+            if not snapshot.allowed:
+                return _BookwyrmSearchRequest(
+                    payload=None,
+                    rate_limited=True,
+                    retry_after_seconds=snapshot.retry_after_seconds,
+                )
+        payload = _fetch_json_list(
+            url,
+            timeout_seconds=self._http_timeout_seconds,
+            headers={
+                "Accept": accept_header,
+                "User-Agent": self._bookwyrm_user_agent,
+            },
+        )
+        return _BookwyrmSearchRequest(payload=payload, rate_limited=False, retry_after_seconds=None)
+
+    def _bookwyrm_request_dict(self, url: str, *, accept_header: str) -> _BookwyrmDetailRequest:
+        if self._bookwyrm_quota_repository is not None:
+            snapshot = self._bookwyrm_quota_repository.try_consume_call(
+                daily_soft_limit=self._bookwyrm_daily_soft_limit,
+                min_interval_seconds=self._bookwyrm_min_interval_seconds,
+            )
+            if not snapshot.allowed:
+                return _BookwyrmDetailRequest(
+                    payload=None,
+                    rate_limited=True,
+                    retry_after_seconds=snapshot.retry_after_seconds,
+                )
+        payload = _fetch_json(
+            url,
+            timeout_seconds=self._http_timeout_seconds,
+            headers={
+                "Accept": accept_header,
+                "User-Agent": self._bookwyrm_user_agent,
+            },
+        )
+        return _BookwyrmDetailRequest(payload=payload, rate_limited=False, retry_after_seconds=None)
 
     def _search_tmdb(
         self,
@@ -452,9 +740,50 @@ def _empty_enrichment() -> BucketEnrichment:
     )
 
 
-def _fetch_json(url: str, *, timeout_seconds: float) -> dict[str, Any] | None:
+def _fetch_json(
+    url: str,
+    *,
+    timeout_seconds: float,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    parsed = _fetch_json_value(url, timeout_seconds=timeout_seconds, headers=headers)
+    if not isinstance(parsed, dict):
+        return None
+    raw_dict = cast(dict[object, object], parsed)
+    payload: dict[str, Any] = {}
+    for key, value in raw_dict.items():
+        if isinstance(key, str):
+            payload[key] = value
+    return payload
+
+
+def _fetch_json_list(
+    url: str,
+    *,
+    timeout_seconds: float,
+    headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]] | None:
+    parsed = _fetch_json_value(url, timeout_seconds=timeout_seconds, headers=headers)
+    if not isinstance(parsed, list):
+        return None
+    raw_list = cast(list[object], parsed)
+    items: list[dict[str, Any]] = []
+    for entry in raw_list:
+        if not isinstance(entry, dict):
+            continue
+        items.append(_normalize_object_dict(cast(dict[object, object], entry)))
+    return items
+
+
+def _fetch_json_value(
+    url: str,
+    *,
+    timeout_seconds: float,
+    headers: dict[str, str] | None = None,
+) -> object | None:
+    request = Request(url, headers=headers or {}, method="GET")
     try:
-        with urlopen(url, timeout=timeout_seconds) as response:
+        with urlopen(request, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
     except (HTTPError, URLError, TimeoutError, OSError):
         return None
@@ -463,15 +792,7 @@ def _fetch_json(url: str, *, timeout_seconds: float) -> dict[str, Any] | None:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    if not isinstance(parsed, dict):
-        return None
-
-    raw_dict = cast(dict[object, object], parsed)
-    payload: dict[str, Any] = {}
-    for key, value in raw_dict.items():
-        if isinstance(key, str):
-            payload[key] = value
-    return payload
+    return parsed
 
 
 def _pick_best_itunes_match(title: str, candidates: list[object]) -> dict[str, Any] | None:
@@ -529,6 +850,7 @@ def _tmdb_search_candidates(
         matches.append(
             BucketResolveCandidate(
                 canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+                provider="tmdb",
                 tmdb_id=tmdb_id,
                 media_type=media_type,
                 title=candidate_title,
@@ -571,6 +893,7 @@ def _candidate_from_tmdb_detail(
     year = _parse_year(_as_str(payload.get(date_key)))
     return BucketResolveCandidate(
         canonical_id=f"tmdb:{media_type}:{tmdb_id}",
+        provider="tmdb",
         tmdb_id=tmdb_id,
         media_type=media_type,
         title=title,
@@ -697,6 +1020,233 @@ def _enrichment_from_tmdb_search_item(
     )
 
 
+def _bookwyrm_search_candidates(
+    *,
+    payload: list[dict[str, Any]],
+    query_title: str,
+    query_year: int | None,
+    max_candidates: int,
+) -> list[BucketResolveCandidate]:
+    matches: list[BucketResolveCandidate] = []
+    for item in payload:
+        key = _normalize_bookwyrm_key(_as_str(item.get("key")))
+        title = _as_str(item.get("title"))
+        if key is None or title is None:
+            continue
+        candidate_year = _as_int(item.get("year"))
+        confidence = _bookwyrm_match_confidence(
+            query_title=query_title,
+            candidate_title=title,
+            query_year=query_year,
+            candidate_year=candidate_year,
+            provider_confidence=_as_float(item.get("confidence")),
+        )
+        if confidence < 0.5:
+            continue
+        matches.append(
+            BucketResolveCandidate(
+                canonical_id=f"bookwyrm:{key}",
+                provider="bookwyrm",
+                title=title,
+                year=candidate_year,
+                confidence=round(confidence, 4),
+                external_url=key,
+                media_type="book",
+                bookwyrm_key=key,
+                author=_as_str(item.get("author")),
+            )
+        )
+    matches = _collapse_duplicate_bookwyrm_candidates(matches)
+    matches.sort(
+        key=lambda candidate: (
+            candidate.confidence,
+            candidate.year or 0,
+        ),
+        reverse=True,
+    )
+    return matches[: max(1, max_candidates)]
+
+
+def _collapse_duplicate_bookwyrm_candidates(
+    candidates: list[BucketResolveCandidate],
+) -> list[BucketResolveCandidate]:
+    if len(candidates) <= 1:
+        return candidates
+
+    # BookWyrm often returns multiple editions for the same work where one
+    # entry has year/metadata and another is sparse. Collapse strict duplicates.
+    grouped: dict[tuple[str, str, str], list[BucketResolveCandidate]] = {}
+    by_title_author_known_year: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        normalized_title = _normalize_match_text(candidate.title)
+        normalized_author = _normalize_match_text(candidate.author)
+        year_key = str(candidate.year) if candidate.year is not None else "-"
+        if candidate.year is not None:
+            by_title_author_known_year.add((normalized_title, normalized_author))
+        grouped.setdefault((normalized_title, normalized_author, year_key), []).append(candidate)
+
+    collapsed: list[BucketResolveCandidate] = []
+    for (normalized_title, normalized_author, year_key), group in grouped.items():
+        if (
+            year_key == "-"
+            and (normalized_title, normalized_author) in by_title_author_known_year
+        ):
+            # Prefer dated entries when the same title/author exists with known year.
+            continue
+        collapsed.append(_best_bookwyrm_candidate(group))
+    return collapsed
+
+
+def _best_bookwyrm_candidate(candidates: list[BucketResolveCandidate]) -> BucketResolveCandidate:
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def _candidate_rank(candidate: BucketResolveCandidate) -> tuple[float, int, int, int]:
+        has_year = 1 if candidate.year is not None else 0
+        has_author = 1 if _normalize_optional_text(candidate.author) is not None else 0
+        numeric_id = _bookwyrm_numeric_id(candidate.bookwyrm_key)
+        id_tiebreak = -(numeric_id if numeric_id is not None else 1_000_000_000)
+        return (candidate.confidence, has_year, has_author, id_tiebreak)
+
+    return max(candidates, key=_candidate_rank)
+
+
+def _candidate_from_bookwyrm_detail(
+    *,
+    payload: dict[str, Any],
+    query_title: str,
+    query_year: int | None,
+    fallback_key: str,
+) -> BucketResolveCandidate | None:
+    key = _normalize_bookwyrm_key(_as_str(payload.get("id"))) or fallback_key
+    title = _as_str(payload.get("title"))
+    if title is None:
+        return None
+    year = _parse_year(
+        _as_str(payload.get("publishedDate")) or _as_str(payload.get("firstPublishedDate"))
+    )
+    confidence = _bookwyrm_match_confidence(
+        query_title=query_title,
+        candidate_title=title,
+        query_year=query_year,
+        candidate_year=year,
+        provider_confidence=None,
+    )
+    return BucketResolveCandidate(
+        canonical_id=f"bookwyrm:{key}",
+        provider="bookwyrm",
+        title=title,
+        year=year,
+        confidence=round(confidence, 4),
+        external_url=key,
+        media_type="book",
+        bookwyrm_key=key,
+    )
+
+
+def _enrichment_from_bookwyrm_payload(
+    *,
+    payload: dict[str, Any],
+    query_title: str,
+    query_year: int | None,
+    fallback_key: str,
+    fallback_author: str | None,
+) -> BucketEnrichment | None:
+    key = _normalize_bookwyrm_key(_as_str(payload.get("id"))) or fallback_key
+    title = _as_str(payload.get("title"))
+    confidence_title = title or query_title
+    year = _parse_year(
+        _as_str(payload.get("publishedDate")) or _as_str(payload.get("firstPublishedDate"))
+    )
+    confidence = _bookwyrm_match_confidence(
+        query_title=query_title,
+        candidate_title=confidence_title,
+        query_year=query_year,
+        candidate_year=year,
+        provider_confidence=None,
+    )
+    author = fallback_author
+    authors_raw = payload.get("authors")
+    if isinstance(authors_raw, list):
+        authors = cast(list[object], authors_raw)
+        if authors:
+            first_author = _as_str(authors[0])
+            if first_author is not None:
+                author = first_author
+
+    subjects = _as_str_list(payload.get("subjects"))
+    metadata: dict[str, Any] = {
+        "title": title,
+        "author": author,
+        "description": _bookwyrm_description_text(payload.get("description")),
+        "languages": _as_str_list(payload.get("languages")),
+        "subjects": subjects,
+        "bookwyrm_key": key,
+        "bookwyrm_type": _as_str(payload.get("type")),
+        "bookwyrm_openlibrary_key": _as_str(payload.get("openlibraryKey")),
+        "isbn10": _as_str(payload.get("isbn10")),
+        "isbn13": _as_str(payload.get("isbn13")),
+    }
+    cover_raw = payload.get("cover")
+    if isinstance(cover_raw, dict):
+        cover = cast(dict[object, object], cover_raw)
+        cover_url = _as_str(cover.get("url"))
+        if cover_url is not None:
+            metadata["cover_url"] = cover_url
+
+    return BucketEnrichment(
+        canonical_id=f"bookwyrm:{key}",
+        year=year,
+        duration_minutes=None,
+        rating=None,
+        popularity=None,
+        genres=[],
+        tags=subjects,
+        providers=[],
+        external_url=key,
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[{"type": "external_api", "id": f"bookwyrm:{key}"}],
+        provider="bookwyrm",
+    )
+
+
+def _enrichment_from_bookwyrm_search_candidate(
+    *,
+    candidate: BucketResolveCandidate,
+    query_title: str,
+    query_year: int | None,
+) -> BucketEnrichment:
+    year = candidate.year
+    confidence = _bookwyrm_match_confidence(
+        query_title=query_title,
+        candidate_title=candidate.title,
+        query_year=query_year,
+        candidate_year=year,
+        provider_confidence=candidate.confidence,
+    )
+    metadata = {
+        "title": candidate.title,
+        "author": candidate.author,
+        "bookwyrm_key": candidate.bookwyrm_key,
+    }
+    return BucketEnrichment(
+        canonical_id=candidate.canonical_id,
+        year=year,
+        duration_minutes=None,
+        rating=None,
+        popularity=None,
+        genres=[],
+        tags=[],
+        providers=[],
+        external_url=candidate.external_url,
+        confidence=round(confidence, 4),
+        metadata=metadata,
+        source_refs=[{"type": "external_api", "id": candidate.canonical_id}],
+        provider="bookwyrm",
+    )
+
+
 def _should_auto_resolve(candidates: list[BucketResolveCandidate]) -> bool:
     if not candidates:
         return False
@@ -711,6 +1261,8 @@ def _should_auto_resolve(candidates: list[BucketResolveCandidate]) -> bool:
 
     best_signal = _candidate_signal(best)
     second_signal = _candidate_signal(second)
+    if best_signal <= 0 and second_signal <= 0:
+        return False
     return best.confidence >= 0.9 and best_signal >= (second_signal * 2.8)
 
 
@@ -914,6 +1466,24 @@ def _as_float(value: object) -> float | None:
     return None
 
 
+def _as_str_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    raw_items = cast(list[object], value)
+    output: list[str] = []
+    seen: set[str] = set()
+    for entry in raw_items:
+        normalized = _normalize_optional_text(_as_str(entry))
+        if normalized is None:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(normalized)
+    return output
+
+
 def _parse_year(value: str | None) -> int | None:
     if value is None:
         return None
@@ -934,6 +1504,69 @@ def _as_str(value: object) -> str | None:
     return None
 
 
+def _bookwyrm_description_text(value: object) -> str | None:
+    if isinstance(value, str):
+        return _normalize_optional_text(value)
+    if isinstance(value, dict):
+        raw_dict = cast(dict[object, object], value)
+        if "content" in raw_dict:
+            return _normalize_optional_text(_as_str(raw_dict.get("content")))
+        if "summary" in raw_dict:
+            return _normalize_optional_text(_as_str(raw_dict.get("summary")))
+    return None
+
+
+def _bookwyrm_match_confidence(
+    *,
+    query_title: str,
+    candidate_title: str,
+    query_year: int | None,
+    candidate_year: int | None,
+    provider_confidence: float | None,
+) -> float:
+    score = _title_similarity(query_title, candidate_title)
+    if provider_confidence is not None:
+        bounded_provider = min(1.0, max(0.0, provider_confidence))
+        score = (score * 0.85) + (bounded_provider * 0.15)
+    if query_year is None or candidate_year is None:
+        return min(1.0, max(0.0, score))
+    if query_year == candidate_year:
+        score += 0.06
+    elif abs(query_year - candidate_year) == 1:
+        score += 0.02
+    else:
+        score -= 0.05
+    return min(1.0, max(0.0, score))
+
+
+def _normalize_match_text(value: str | None) -> str:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return ""
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return normalized.strip()
+
+
+def _normalize_bookwyrm_key(value: str | None) -> str | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    if not normalized.startswith(("http://", "https://")):
+        return None
+    return normalized.rstrip("/")
+
+
+def _bookwyrm_numeric_id(value: str | None) -> int | None:
+    normalized = _normalize_bookwyrm_key(value)
+    if normalized is None:
+        return None
+    match = re.search(r"/book/(\d+)$", normalized)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def _normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -941,3 +1574,8 @@ def _normalize_optional_text(value: str | None) -> str | None:
     if not stripped:
         return None
     return stripped
+
+
+def _normalize_base_url(value: str, *, fallback: str) -> str:
+    normalized = _normalize_optional_text(value) or fallback
+    return normalized.rstrip("/")

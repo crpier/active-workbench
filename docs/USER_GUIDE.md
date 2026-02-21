@@ -71,12 +71,17 @@ Use:
 What it does:
 - Keeps items as structured records in SQLite.
 - Supports filtering, recommendations, and health diagnostics.
+- Duplicate add requests for an already-active item return `status=already_exists` (no write).
 - Requires explicit domain on add (for example movie, tv, book, game, place, travel).
 - For `movie`/`tv`, add requests run TMDb resolution before write.
   - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
   - Confirm by retrying `bucket.item.add` with `tmdb_id` (chat follow-up, no question tool needed).
   - Optional escape hatch: `allow_unresolved=true` writes without confirmation.
   - Low-signal obscure matches are skipped by default unless you give explicit disambiguation (for example `year` or `tmdb_id`).
+- For `book`, add requests run BookWyrm resolution before write.
+  - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
+  - Confirm by choosing an option (for example by author/year); assistant then retries with the mapped `bookwyrm_key`.
+  - BookWyrm requests include an explicit User-Agent and follow local soft-limit/burst guardrails.
 - Background annotation runs periodically (scheduler loop) to enrich low-detail items.
 - Search results include unannotated items and expose their annotation status.
 - Recommendations exclude unannotated items.

@@ -198,6 +198,19 @@ class BucketRepository:
                 canonical_id=merged_canonical_id,
             )
             merged_source_refs = _merge_source_refs(existing.source_refs, incoming_source_refs)
+            merged_title = title.strip() or existing.title
+            merged_normalized_title = _normalize_title(merged_title)
+
+            if (
+                existing.status == ACTIVE_STATUS
+                and merged_title == existing.title
+                and merged_normalized_title == existing.normalized_title
+                and normalized_domain == existing.domain
+                and merged_canonical_id == existing.canonical_id
+                and merged_metadata == existing.metadata
+                and merged_source_refs == existing.source_refs
+            ):
+                return existing, "already_exists"
 
             conn.execute(
                 """
@@ -215,8 +228,8 @@ class BucketRepository:
                 WHERE id = ?
                 """,
                 (
-                    (title.strip() or existing.title),
-                    _normalize_title(title.strip() or existing.title),
+                    merged_title,
+                    merged_normalized_title,
                     normalized_domain,
                     ACTIVE_STATUS,
                     merged_canonical_id,
@@ -333,6 +346,69 @@ class BucketRepository:
         if row is None:
             return None
         return _row_to_item(row)
+
+    def find_confident_active_match(
+        self,
+        *,
+        title: str,
+        domain: str,
+        year: int | None,
+        canonical_id: str | None,
+    ) -> BucketItem | None:
+        normalized_domain = _normalize_domain(domain)
+        normalized_title = _normalize_title(title)
+        normalized_canonical_id = _normalize_optional_text(canonical_id)
+
+        with self._db.connection() as conn:
+            if normalized_canonical_id is not None:
+                canonical_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM bucket_items
+                    WHERE status = ? AND canonical_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 2
+                    """,
+                    (ACTIVE_STATUS, normalized_canonical_id),
+                ).fetchall()
+                if len(canonical_rows) == 1:
+                    return _row_to_item(canonical_rows[0])
+                if len(canonical_rows) > 1:
+                    return None
+
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM bucket_items
+                WHERE status = ? AND domain = ? AND normalized_title = ?
+                ORDER BY updated_at DESC
+                LIMIT 20
+                """,
+                (ACTIVE_STATUS, normalized_domain, normalized_title),
+            ).fetchall()
+
+        if not rows:
+            return None
+
+        candidates = [_row_to_item(row) for row in rows]
+
+        if year is not None:
+            year_matches = [candidate for candidate in candidates if candidate.year == year]
+            if len(year_matches) == 1:
+                return year_matches[0]
+            return None
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        known_canonical_ids = {
+            candidate.canonical_id
+            for candidate in candidates
+            if candidate.canonical_id
+        }
+        if len(known_canonical_ids) == 1:
+            return candidates[0]
+        return None
 
     def list_items(self, limit: int = 1000) -> list[BucketItem]:
         with self._db.connection() as conn:

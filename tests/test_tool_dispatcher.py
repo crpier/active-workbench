@@ -369,6 +369,287 @@ def test_bucket_item_add_auto_resolves_high_confidence_tmdb_match(
     assert add_response.result["enrichment_provider"] == "tmdb"
 
 
+def test_bucket_item_add_returns_clarification_for_ambiguous_bookwyrm_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_json_list(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        _ = timeout_seconds
+        assert "/search.json?" in url
+        assert headers is not None
+        assert "User-Agent" in headers
+        return [
+            {
+                "title": "Dune",
+                "key": "https://bookwyrm.social/book/111",
+                "author": "Frank Herbert",
+                "year": 1965,
+                "confidence": 0.45,
+            },
+            {
+                "title": "Dune",
+                "key": "https://bookwyrm.social/book/222",
+                "author": "Brian Herbert",
+                "year": 2001,
+                "confidence": 0.44,
+            },
+        ]
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json_list",
+        _fake_fetch_json_list,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            bookwyrm_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Dune", "domain": "book"},
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "needs_clarification"
+    assert add_response.result["resolution_status"] == "ambiguous"
+    assert add_response.result["write_performed"] is False
+    assert add_response.result["candidates"][0]["provider"] == "bookwyrm"
+    assert add_response.result["candidates"][0]["bookwyrm_key"] == "https://bookwyrm.social/book/111"
+
+
+def test_bucket_item_add_collapses_duplicate_bookwyrm_editions_for_ddia(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_json_list(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        _ = timeout_seconds
+        assert "/search.json?" in url
+        assert headers is not None
+        return [
+            {
+                "title": "Designing Data-Intensive Applications",
+                "key": "https://bookwyrm.social/book/43993",
+                "author": "Martin Kleppmann",
+                "year": 2017,
+                "confidence": 0.2578227,
+            },
+            {
+                "title": "Designing Data-Intensive Applications",
+                "key": "https://bookwyrm.social/book/344061",
+                "author": "Martin Kleppmann",
+                "year": None,
+                "confidence": 0.2578227,
+            },
+            {
+                "title": "Designing Data-Intensive Applications",
+                "key": "https://bookwyrm.social/book/1225529",
+                "author": "Martin Kleppmann",
+                "year": 2017,
+                "confidence": 0.2578227,
+            },
+        ]
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json_list",
+        _fake_fetch_json_list,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            bookwyrm_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Designing Data Intensive Applications", "domain": "book"},
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["resolution_status"] == "resolved"
+    assert add_response.result["enrichment_provider"] == "bookwyrm"
+    assert (
+        add_response.result["selected_candidate"]["bookwyrm_key"]
+        == "https://bookwyrm.social/book/43993"
+    )
+
+
+def test_bucket_item_add_returns_already_exists_for_duplicate_active_item(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search_calls = 0
+
+    def _fake_fetch_json_list(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]] | None:
+        nonlocal search_calls
+        _ = (url, timeout_seconds, headers)
+        search_calls += 1
+        return [
+            {
+                "title": "Designing Data-Intensive Applications",
+                "key": "https://bookwyrm.social/book/43993",
+                "author": "Martin Kleppmann",
+                "year": 2017,
+                "confidence": 0.2578227,
+            }
+        ]
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json_list",
+        _fake_fetch_json_list,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            bookwyrm_min_interval_seconds=0,
+        ),
+    )
+
+    first_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Designing Data-Intensive Applications", "domain": "book"},
+        ),
+    )
+    assert first_add.ok is True
+    assert first_add.result["status"] == "created"
+    assert first_add.result["write_performed"] is True
+
+    second_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Designing Data-Intensive Applications", "domain": "book"},
+        ),
+    )
+
+    assert second_add.ok is True
+    assert second_add.result["status"] == "already_exists"
+    assert second_add.result["write_performed"] is False
+    assert (
+        second_add.result["bucket_item"]["item_id"]
+        == first_add.result["bucket_item"]["item_id"]
+    )
+    assert (
+        second_add.result["bucket_item"]["updated_at"]
+        == first_add.result["bucket_item"]["updated_at"]
+    )
+    assert search_calls == 1
+
+
+def test_bucket_item_add_uses_bookwyrm_key_confirmation_to_write_item(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_json(
+        url: str,
+        *,
+        timeout_seconds: float,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        _ = timeout_seconds
+        assert headers is not None
+        if "bookwyrm.social/book/111" in url:
+            return {
+                "id": "https://bookwyrm.social/book/111",
+                "type": "Edition",
+                "title": "Dune",
+                "publishedDate": "1965-08-01",
+                "languages": ["English"],
+                "subjects": ["Science Fiction", "Arrakis"],
+                "isbn13": "9780441172719",
+                "description": "Set on the desert planet Arrakis.",
+                "authors": ["Frank Herbert"],
+                "openlibraryKey": "OL1M",
+            }
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_json",
+        _fake_fetch_json,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=True,
+            http_timeout_seconds=0.5,
+            tmdb_api_key="test-key",
+            tmdb_daily_soft_limit=50,
+            tmdb_min_interval_seconds=0,
+            bookwyrm_min_interval_seconds=0,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Dune",
+                "domain": "book",
+                "bookwyrm_key": "https://bookwyrm.social/book/111",
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["resolution_status"] == "resolved"
+    assert add_response.result["enriched"] is True
+    assert add_response.result["enrichment_provider"] == "bookwyrm"
+    assert add_response.result["bucket_item"]["canonical_id"] == "bookwyrm:https://bookwyrm.social/book/111"
+    assert add_response.result["selected_candidate"]["bookwyrm_key"] == "https://bookwyrm.social/book/111"
+    assert (
+        add_response.result["bucket_item"]["metadata"]["bookwyrm_key"]
+        == "https://bookwyrm.social/book/111"
+    )
+
+
 def test_bucket_item_complete_accepts_bucket_item_id_alias(tmp_path: Path) -> None:
     dispatcher = _build_dispatcher(
         tmp_path,

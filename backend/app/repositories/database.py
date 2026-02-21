@@ -160,6 +160,12 @@ CREATE TABLE IF NOT EXISTS bucket_tmdb_quota_daily (
     calls INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bucket_bookwyrm_quota_daily (
+    date_utc TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

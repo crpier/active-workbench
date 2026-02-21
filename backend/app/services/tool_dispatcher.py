@@ -61,8 +61,8 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "bucket.item.add": (
         "Add or merge a structured bucket item. "
         "payload.domain (or payload.kind) is required. "
-        "Movie/TV add requests may return a clarification response before write; "
-        "handle clarifications in normal chat and retry with tmdb_id."
+        "Movie/TV/Book add requests may return a clarification response before write; "
+        "handle clarifications in normal chat and retry with tmdb_id or bookwyrm_key."
     ),
     "bucket.item.update": "Update a structured bucket item.",
     "bucket.item.complete": (
@@ -897,8 +897,41 @@ class ToolDispatcher:
         source_refs = _extract_source_refs(request.payload)
         auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=False)
         allow_unresolved = _bool_or_default(request.payload.get("allow_unresolved"), default=False)
+
+        local_match = self._bucket_repository.find_confident_active_match(
+            title=title,
+            domain=domain,
+            year=year,
+            canonical_id=canonical_id,
+        )
+        if local_match is not None:
+            result: dict[str, Any] = {
+                "tool": request.tool,
+                "status": "already_exists",
+                "bucket_item": _bucket_item_payload(local_match),
+                "write_performed": False,
+                "enriched": False,
+                "enrichment_provider": None,
+                "resolution_status": "local_duplicate",
+                "resolution_reason": "local_active_match",
+                "selected_candidate": None,
+            }
+            provenance = [ProvenanceRef(type="bucket_item", id=local_match.item_id)]
+            provenance.extend(_source_ref_provenance(local_match.source_refs))
+            return ToolResponse(
+                ok=True,
+                request_id=request.request_id,
+                result=result,
+                provenance=provenance,
+                error=None,
+            )
+
         tmdb_id = _payload_tmdb_id(
             request.payload.get("tmdb_id"),
+            canonical_id=canonical_id,
+        )
+        bookwyrm_key = _payload_bookwyrm_key(
+            request.payload.get("bookwyrm_key"),
             canonical_id=canonical_id,
         )
         media_domain = _normalize_bucket_media_domain(domain)
@@ -911,6 +944,7 @@ class ToolDispatcher:
                 domain=domain,
                 year=year,
                 tmdb_id=tmdb_id,
+                bookwyrm_key=bookwyrm_key,
                 max_candidates=5,
             )
             self._telemetry.emit(
@@ -921,6 +955,7 @@ class ToolDispatcher:
                 reason=add_resolution.reason,
                 candidates=len(add_resolution.candidates),
                 tmdb_id=tmdb_id,
+                bookwyrm_key=bookwyrm_key,
             )
             if (
                 add_resolution.status in {"ambiguous", "no_match", "rate_limited"}
@@ -943,7 +978,9 @@ class ToolDispatcher:
                     "message": _bucket_add_resolution_message(add_resolution),
                     "follow_up_mode": "chat",
                     "assistant_follow_up": (
-                        "Ask the user to pick one candidate in normal chat and retry with tmdb_id."
+                        "Ask the user to choose the intended candidate by option number "
+                        "or by author/year in normal chat, then retry with the matching "
+                        "provider identifier."
                     ),
                     "candidates": candidates,
                     "selected_candidate": selected_candidate,
@@ -1025,7 +1062,7 @@ class ToolDispatcher:
             "tool": request.tool,
             "status": action,
             "bucket_item": _bucket_item_payload(refreshed_item),
-            "write_performed": True,
+            "write_performed": action in {"created", "merged", "reactivated"},
             "enriched": enrichment is not None and enrichment.provider is not None,
             "enrichment_provider": enrichment.provider if enrichment is not None else None,
             "resolution_status": add_resolution.status if add_resolution is not None else None,
@@ -1806,6 +1843,8 @@ def _normalize_bucket_media_domain(domain: str) -> str | None:
         return "movie"
     if normalized in {"tv", "show"}:
         return "tv"
+    if normalized == "book":
+        return "book"
     return None
 
 
@@ -1821,11 +1860,29 @@ def _payload_tmdb_id(raw_value: object, *, canonical_id: str | None) -> int | No
     return int(match.group(2))
 
 
+def _payload_bookwyrm_key(raw_value: object, *, canonical_id: str | None) -> str | None:
+    parsed_from_payload = _payload_str({"value": raw_value}, "value")
+    if parsed_from_payload is not None and parsed_from_payload.startswith(("http://", "https://")):
+        return parsed_from_payload.rstrip("/")
+    if canonical_id is None:
+        return None
+    prefix = "bookwyrm:"
+    if not canonical_id.lower().startswith(prefix):
+        return None
+    candidate = canonical_id[len(prefix) :].strip()
+    if candidate.startswith(("http://", "https://")):
+        return candidate.rstrip("/")
+    return None
+
+
 def _bucket_resolve_candidate_payload(candidate: BucketResolveCandidate) -> dict[str, Any]:
     return {
+        "provider": candidate.provider,
         "canonical_id": candidate.canonical_id,
         "tmdb_id": candidate.tmdb_id,
         "media_type": candidate.media_type,
+        "bookwyrm_key": candidate.bookwyrm_key,
+        "author": candidate.author,
         "title": candidate.title,
         "year": candidate.year,
         "confidence": candidate.confidence,
@@ -1836,17 +1893,36 @@ def _bucket_resolve_candidate_payload(candidate: BucketResolveCandidate) -> dict
 
 
 def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
+    provider = "tmdb"
+    if resolution.selected_candidate is not None:
+        provider = resolution.selected_candidate.provider
+    elif resolution.candidates:
+        provider = resolution.candidates[0].provider
+    elif isinstance(resolution.reason, str) and resolution.reason.startswith("bookwyrm_"):
+        provider = "bookwyrm"
     if resolution.status == "ambiguous":
+        if provider == "bookwyrm":
+            return (
+                "Multiple BookWyrm matches were found for this title. "
+                "Please choose by option number or by author/year, then retry bucket.item.add."
+            )
         return (
             "Multiple TMDb matches were found for this title. "
             "Please choose one candidate by tmdb_id and retry bucket.item.add."
         )
     if resolution.status == "no_match":
+        if provider == "bookwyrm":
+            return (
+                "No confident BookWyrm match was found. "
+                "Please provide a more specific title, release year, or bookwyrm_key."
+            )
         return (
             "No confident TMDb match was found. "
             "Please provide a more specific title, release year, or tmdb_id."
         )
     if resolution.status == "rate_limited":
+        if provider == "bookwyrm":
+            return "BookWyrm enrichment is currently rate limited. Please retry shortly."
         return "TMDb enrichment is currently rate limited. Please retry shortly."
     return "Resolution skipped."
 

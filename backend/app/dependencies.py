@@ -4,6 +4,9 @@ from functools import lru_cache
 
 from backend.app.config import AppSettings, load_settings
 from backend.app.repositories.audit_repository import AuditRepository
+from backend.app.repositories.bucket_bookwyrm_quota_repository import (
+    BucketBookwyrmQuotaRepository,
+)
 from backend.app.repositories.bucket_repository import BucketRepository
 from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuotaRepository
 from backend.app.repositories.database import Database
@@ -44,6 +47,11 @@ def get_dispatcher() -> ToolDispatcher:
             tmdb_quota_repository=BucketTmdbQuotaRepository(database),
             tmdb_daily_soft_limit=settings.bucket_tmdb_daily_soft_limit,
             tmdb_min_interval_seconds=settings.bucket_tmdb_min_interval_seconds,
+            bookwyrm_base_url=settings.bucket_bookwyrm_base_url,
+            bookwyrm_user_agent=settings.bucket_bookwyrm_user_agent,
+            bookwyrm_quota_repository=BucketBookwyrmQuotaRepository(database),
+            bookwyrm_daily_soft_limit=settings.bucket_bookwyrm_daily_soft_limit,
+            bookwyrm_min_interval_seconds=settings.bucket_bookwyrm_min_interval_seconds,
         ),
         youtube_quota_repository=YouTubeQuotaRepository(database),
         youtube_service=YouTubeService(

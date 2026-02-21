@@ -268,6 +268,25 @@ class AppSettings(BaseSettings):
         default=1.1,
         description="Minimum interval between TMDb enrichment calls to prevent bursts.",
     )
+    bucket_bookwyrm_base_url: str = Field(
+        default="https://bookwyrm.social",
+        description="BookWyrm base URL used for book metadata enrichment.",
+    )
+    bucket_bookwyrm_user_agent: str = Field(
+        default="active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+        description=(
+            "User-Agent sent to BookWyrm APIs for identification "
+            "(include app name and a contact URL/email)."
+        ),
+    )
+    bucket_bookwyrm_daily_soft_limit: int = Field(
+        default=500,
+        description="Soft limit for BookWyrm enrichment calls per UTC day.",
+    )
+    bucket_bookwyrm_min_interval_seconds: float = Field(
+        default=1.1,
+        description="Minimum interval between BookWyrm enrichment calls to prevent bursts.",
+    )
 
     # Logging.
     log_dir: Path = Field(
@@ -321,6 +340,26 @@ class AppSettings(BaseSettings):
         if normalized in {"none", "log"}:
             return normalized
         raise ValueError("ACTIVE_WORKBENCH_TELEMETRY_SINK must be set to: none, log.")
+
+    @field_validator("bucket_bookwyrm_base_url", mode="before")
+    @classmethod
+    def _normalize_bookwyrm_base_url(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_BASE_URL must be a string.")
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_BASE_URL must not be empty.")
+        return normalized
+
+    @field_validator("bucket_bookwyrm_user_agent", mode="before")
+    @classmethod
+    def _normalize_bookwyrm_user_agent(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_USER_AGENT must be a string.")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("ACTIVE_WORKBENCH_BUCKET_BOOKWYRM_USER_AGENT must not be empty.")
+        return normalized
 
     @field_validator(*_PATH_FIELDS, mode="before")
     @classmethod
