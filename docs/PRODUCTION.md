@@ -6,6 +6,9 @@ Production mode means:
 - real YouTube OAuth
 - startup fails fast if required secrets/config are missing
 
+For VM deployment with Nginx + systemd, use:
+- `docs/DEPLOY_NGINX_VM.md`
+
 ## 1. Prepare `.env`
 
 From repo root:

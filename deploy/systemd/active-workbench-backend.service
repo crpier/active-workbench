@@ -1,0 +1,25 @@
+[Unit]
+Description=Active Workbench Backend (FastAPI/Uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=active-workbench
+Group=active-workbench
+WorkingDirectory=/opt/active-workbench
+EnvironmentFile=/etc/active-workbench/active-workbench.env
+Environment=PATH=/home/active-workbench/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=/usr/bin/env uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/var/lib/active-workbench /opt/active-workbench
+
+[Install]
+WantedBy=multi-user.target
+

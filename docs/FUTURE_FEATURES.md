@@ -33,6 +33,11 @@ This is the staging space for features we plan to ship later.
   - Goal: add one-time, short-lived enrollment tokens (QR + manual fallback) so app can claim a per-device key securely.
   - Proposed flow: `create enrollment token -> scan QR in app -> claim device key once -> store in EncryptedSharedPreferences -> invalidate enrollment token`.
   - Status: captured for incubator; implementation deferred by request.
+- `Cloud voice mode (STT/TTS)` (deferred)
+  - User story: user wants higher-quality voice interaction than on-device Android speech tools.
+  - Goal: add push-to-talk voice chat where audio is transcribed by cloud STT, sent programmatically into an assistant session, then played back via cloud TTS.
+  - Scope notes: evaluate provider strategy (single vendor vs split STT/TTS), latency/cost targets, and whether voice shares session context with web/native text chat.
+  - Status: captured for incubator; implementation deferred by request.
 
 ## Intent
 

@@ -1,0 +1,14 @@
+[Unit]
+Description=Backup Active Workbench SQLite state and logs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=active-workbench
+Group=active-workbench
+EnvironmentFile=/etc/active-workbench/active-workbench.env
+Environment=ACTIVE_WORKBENCH_BACKUP_DIR=/var/lib/active-workbench/backups
+Environment=ACTIVE_WORKBENCH_BACKUP_RETENTION_DAYS=14
+ExecStart=/opt/active-workbench/deploy/scripts/backup_active_workbench.sh
+
