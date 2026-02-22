@@ -17,7 +17,7 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 - Flag tradeoffs or uncertainty explicitly.
 - Ask the user before making design decisions or changing architectural direction.
 - Default to behavior/outcome summaries; do not include file-by-file or code-location details unless the user asks.
-- Be explicit about architecture boundaries: OpenCode is the agent runtime that calls tools; the Active Workbench backend implements tools and backend logging/telemetry.
+- Keep architecture boundaries in mind internally; mention them in user-facing responses only when directly relevant or explicitly requested.
 
 ## Updates
 - When a new issue repeats, add one concise rule here.
