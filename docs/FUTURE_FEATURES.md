@@ -28,6 +28,11 @@ This is the staging space for features we plan to ship later.
     the name reflects current capabilities.
   - Status: explicitly deferred; revisit during a future naming/branding
     pass.
+- `Mobile QR enrollment for device keys` (deferred)
+  - User story: user wants fast mobile pairing without copy/pasting long API keys.
+  - Goal: add one-time, short-lived enrollment tokens (QR + manual fallback) so app can claim a per-device key securely.
+  - Proposed flow: `create enrollment token -> scan QR in app -> claim device key once -> store in EncryptedSharedPreferences -> invalidate enrollment token`.
+  - Status: captured for incubator; implementation deferred by request.
 
 ## Intent
 
