@@ -116,12 +116,14 @@ def test_main_lifespan_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatc
             transcript_poll_interval_seconds: int | None = None,
             youtube_service: object | None = None,
             telemetry: object | None = None,
+            lock_path: Path | None = None,
         ) -> None:
             _ = dispatcher
             _ = poll_interval_seconds
             _ = transcript_poll_interval_seconds
             _ = youtube_service
             _ = telemetry
+            _ = lock_path
 
         def start(self) -> None:
             FakeScheduler.started = True

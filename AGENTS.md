@@ -23,6 +23,11 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 - When a new issue repeats, add one concise rule here.
 - For workbench-assistant YouTube "analyze all likes" tasks, avoid plan/subagent exploration loops and return one final answer after direct pagination.
 - For workbench-assistant bucket completion intents, execute `search -> complete` once and stop; do not chain extra tool calls or auto-memory writes.
+- For live third-party API debugging (Supadata/YouTube), first correlate external dashboard timestamps to UTC and match them to local logs + telemetry by `scheduler_tick_id` before changing code.
+- Treat third-party status codes as provider-specific; confirm payload `code/message/details` patterns in logs before inferring semantics from HTTP status alone.
+- When credit usage looks abnormal, check for overlapping scheduler processes (different PIDs emitting scheduler ticks at the same time) before tuning retries.
+- Prefer persisted throttles for expensive fallbacks (store last-attempt timestamps in `youtube_cache_state`) so limits survive restarts and apply across processes sharing the same DB.
+- When adding fallback logic, log enough context to diagnose it later (`endpoint`, `mode`, `http_status`, provider details), and add targeted tests for both the fallback-success path and throttle/guard path.
 
 ## Debugging Files
 - Runtime logs: `.active-workbench/logs/active-workbench.log` (or `$ACTIVE_WORKBENCH_LOG_DIR/active-workbench.log`)

@@ -35,6 +35,7 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
             ),
             youtube_service=dispatcher.youtube_service,
             telemetry=telemetry,
+            lock_path=settings.data_dir / "scheduler.lock",
         )
         scheduler.start()
 

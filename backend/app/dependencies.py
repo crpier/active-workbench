@@ -81,6 +81,7 @@ def get_dispatcher() -> ToolDispatcher:
                 settings.youtube_background_backfill_pages_per_run
             ),
             likes_background_page_size=settings.youtube_background_page_size,
+            likes_cutoff_date=settings.youtube_likes_cutoff_date,
             likes_background_target_items=settings.youtube_background_target_items,
             transcript_cache_ttl_seconds=settings.youtube_transcript_cache_ttl_seconds,
             transcript_background_sync_enabled=(

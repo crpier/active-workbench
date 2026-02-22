@@ -169,10 +169,9 @@ class YouTubeCacheRepository:
             )
         return videos
 
-    def replace_likes(self, *, videos: list[CachedLikeVideo], max_items: int) -> None:
+    def replace_likes(self, *, videos: list[CachedLikeVideo], max_items: int | None = None) -> None:
         now_iso = utc_now_iso()
-        clamped_max_items = max(1, max_items)
-        selected = videos[:clamped_max_items]
+        selected = videos if max_items is None else videos[: max(1, max_items)]
 
         with self._db.connection() as conn:
             conn.execute("DELETE FROM youtube_likes_cache")
@@ -182,17 +181,17 @@ class YouTubeCacheRepository:
                 conn=conn, key="likes_last_sync_at", value=now_iso, updated_at=now_iso
             )
 
-    def upsert_likes(self, *, videos: list[CachedLikeVideo], max_items: int) -> None:
+    def upsert_likes(self, *, videos: list[CachedLikeVideo], max_items: int | None = None) -> None:
         if not videos:
             return
 
         now_iso = utc_now_iso()
-        clamped_max_items = max(1, max_items)
         with self._db.connection() as conn:
             for video in videos:
                 _upsert_like(conn=conn, video=video, cached_at=now_iso)
 
-            _trim_likes(conn=conn, max_items=clamped_max_items)
+            if max_items is not None:
+                _trim_likes(conn=conn, max_items=max(1, max_items))
             _set_cache_state_value(
                 conn=conn, key="likes_last_sync_at", value=now_iso, updated_at=now_iso
             )
@@ -201,6 +200,54 @@ class YouTubeCacheRepository:
         clamped_max_items = max(1, max_items)
         with self._db.connection() as conn:
             _trim_likes(conn=conn, max_items=clamped_max_items)
+
+    def purge_youtube_video(self, *, video_id: str) -> None:
+        with self._db.connection() as conn:
+            conn.execute(
+                "DELETE FROM youtube_likes_cache WHERE video_id = ?",
+                (video_id,),
+            )
+            conn.execute(
+                "DELETE FROM youtube_transcript_cache WHERE video_id = ?",
+                (video_id,),
+            )
+            conn.execute(
+                "DELETE FROM youtube_transcript_sync_state WHERE video_id = ?",
+                (video_id,),
+            )
+
+    def purge_likes_before(self, *, cutoff_liked_at: datetime) -> int:
+        with self._db.connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM youtube_likes_cache
+                WHERE datetime(liked_at) < datetime(?)
+                """,
+                (_datetime_to_utc_iso(cutoff_liked_at),),
+            )
+            deleted = cursor.rowcount
+        return max(0, deleted if isinstance(deleted, int) else 0)
+
+    def purge_transcript_rows_not_in_likes(self) -> tuple[int, int]:
+        with self._db.connection() as conn:
+            transcript_cursor = conn.execute(
+                """
+                DELETE FROM youtube_transcript_cache
+                WHERE video_id NOT IN (SELECT video_id FROM youtube_likes_cache)
+                """
+            )
+            sync_cursor = conn.execute(
+                """
+                DELETE FROM youtube_transcript_sync_state
+                WHERE video_id NOT IN (SELECT video_id FROM youtube_likes_cache)
+                """
+            )
+            transcript_deleted = transcript_cursor.rowcount
+            sync_deleted = sync_cursor.rowcount
+        return (
+            max(0, transcript_deleted if isinstance(transcript_deleted, int) else 0),
+            max(0, sync_deleted if isinstance(sync_deleted, int) else 0),
+        )
 
     def get_cache_state_value(self, key: str) -> str | None:
         with self._db.connection() as conn:
@@ -328,29 +375,23 @@ class YouTubeCacheRepository:
     def get_next_transcript_candidate(
         self,
         *,
-        recent_limit: int,
         not_before: datetime,
     ) -> TranscriptSyncCandidate | None:
         with self._db.connection() as conn:
             row = conn.execute(
                 """
-                SELECT recent.video_id, recent.title, recent.liked_at
-                FROM (
-                    SELECT video_id, title, liked_at
-                    FROM youtube_likes_cache
-                    ORDER BY liked_at DESC
-                    LIMIT ?
-                ) AS recent
+                SELECT likes.video_id, likes.title, likes.liked_at
+                FROM youtube_likes_cache AS likes
                 LEFT JOIN youtube_transcript_cache transcript
-                    ON transcript.video_id = recent.video_id
+                    ON transcript.video_id = likes.video_id
                 LEFT JOIN youtube_transcript_sync_state sync
-                    ON sync.video_id = recent.video_id
+                    ON sync.video_id = likes.video_id
                 WHERE transcript.video_id IS NULL
                   AND (sync.next_attempt_at IS NULL OR sync.next_attempt_at <= ?)
-                ORDER BY recent.liked_at DESC
+                ORDER BY likes.liked_at DESC
                 LIMIT 1
                 """,
-                (max(1, recent_limit), _datetime_to_utc_iso(not_before)),
+                (_datetime_to_utc_iso(not_before),),
             ).fetchone()
 
         if row is None:

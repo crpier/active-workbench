@@ -137,7 +137,6 @@ def test_youtube_cache_repository_transcript_sync_candidate_and_status(tmp_path:
     )
 
     candidate = cache_repo.get_next_transcript_candidate(
-        recent_limit=100,
         not_before=datetime.now(UTC),
     )
     assert candidate is not None
@@ -152,7 +151,6 @@ def test_youtube_cache_repository_transcript_sync_candidate_and_status(tmp_path:
     )
 
     blocked = cache_repo.get_next_transcript_candidate(
-        recent_limit=100,
         not_before=datetime.now(UTC),
     )
     assert blocked is None

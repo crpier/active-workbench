@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
@@ -157,7 +158,7 @@ class AppSettings(BaseSettings):
         description="Enable background liked-videos cache synchronization.",
     )
     youtube_background_min_interval_seconds: int = Field(
-        default=180,
+        default=600,
         description="Minimum time between liked-videos background sync runs.",
     )
     youtube_background_hot_pages: int = Field(
@@ -172,9 +173,16 @@ class AppSettings(BaseSettings):
         default=50,
         description="Page size for likes background fetching (capped by YouTube API).",
     )
+    youtube_likes_cutoff_date: date = Field(
+        default=date(2024, 10, 20),
+        description=(
+            "Inclusive UTC liked-at date cutoff for cached liked videos and transcript sync scope. "
+            "Videos liked before this date are purged from likes/transcript cache."
+        ),
+    )
     youtube_background_target_items: int = Field(
         default=1_000,
-        description="Target likes cache size after background sync and trimming.",
+        description="Deprecated sizing hint used by some refresh paths; likes cache retention is cutoff-based.",
     )
 
     # Transcript cache and background sync behavior.
@@ -192,7 +200,7 @@ class AppSettings(BaseSettings):
     )
     youtube_transcript_background_recent_limit: int = Field(
         default=1_000,
-        description="Only this many most-recent likes are considered for transcript sync.",
+        description="Deprecated transcript scope knob; transcript sync scope now follows the likes-cache cutoff.",
     )
     youtube_transcript_background_backoff_base_seconds: int = Field(
         default=300,

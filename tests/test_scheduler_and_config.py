@@ -89,6 +89,24 @@ def test_scheduler_service_decouples_transcript_polling() -> None:
     assert youtube_service.transcript_calls > youtube_service.likes_calls
 
 
+def test_scheduler_service_skips_start_when_lock_not_acquired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher = _FakeDispatcher()
+    scheduler = SchedulerService(
+        dispatcher=cast(Any, dispatcher),
+        poll_interval_seconds=1,
+    )
+    monkeypatch.setattr(scheduler, "_try_acquire_process_lock", lambda: False)
+
+    scheduler.start()
+    time.sleep(0.1)
+    scheduler.stop()
+
+    assert scheduler._thread is None  # pyright: ignore[reportPrivateUsage]
+    assert dispatcher.calls == 0
+
+
 def test_load_settings_parses_bool_and_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -128,6 +146,7 @@ def test_load_settings_parses_bool_and_paths(
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_HOT_PAGES", "3")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_BACKFILL_PAGES_PER_RUN", "2")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_PAGE_SIZE", "40")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_LIKES_CUTOFF_DATE", "2024-10-20")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_TARGET_ITEMS", "900")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_CACHE_TTL_SECONDS", "1800")
     monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_SYNC_ENABLED", "true")
@@ -174,6 +193,7 @@ def test_load_settings_parses_bool_and_paths(
     assert settings.youtube_background_hot_pages == 3
     assert settings.youtube_background_backfill_pages_per_run == 2
     assert settings.youtube_background_page_size == 40
+    assert str(settings.youtube_likes_cutoff_date) == "2024-10-20"
     assert settings.youtube_background_target_items == 900
     assert settings.youtube_transcript_cache_ttl_seconds == 1800
     assert settings.youtube_transcript_background_sync_enabled is True

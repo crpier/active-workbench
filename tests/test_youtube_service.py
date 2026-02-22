@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from backend.app.repositories.youtube_cache_repository import (
 )
 from backend.app.services.youtube_service import (
     SupadataTranscriptError,
+    TranscriptExcludedVideoError,
     TranscriptProviderBlockedError,
     YouTubeRateLimitedError,
     YouTubeService,
@@ -21,6 +23,7 @@ from backend.app.services.youtube_service import (
     YouTubeTranscript,
     YouTubeTranscriptResult,
     YouTubeVideo,
+    _extract_request_id_from_headers,
     resolve_oauth_paths,
 )
 
@@ -396,7 +399,7 @@ def test_oauth_mode_with_mocked_modules(monkeypatch: pytest.MonkeyPatch, tmp_pat
         assert params is not None
         assert params.get("url") == "https://www.youtube.com/watch?v=oauth_video_1"
         assert params.get("text") == "false"
-        assert params.get("lang") == "ro"
+        assert "lang" not in params
         assert url.endswith("/transcript")
         return (
             200,
@@ -457,6 +460,93 @@ def test_oauth_likes_cache_hit_returns_zero_units(tmp_path: Path) -> None:
     assert result.cache_hit is True
     assert result.estimated_api_units == 0
     assert result.videos and result.videos[0].video_id == "cached_1"
+
+
+def test_oauth_list_recent_filters_members_only_placeholder_titles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "youtube-token.json").write_text("{}", encoding="utf-8")
+
+    class FakeCredentials:
+        valid = True
+        expired = False
+        refresh_token = None
+
+        @classmethod
+        def from_authorized_user_file(cls, _path: str, _scopes: list[str]) -> FakeCredentials:
+            return cls()
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, _path: str, _scopes: list[str]) -> FakeFlow:
+            return cls()
+
+        def run_local_server(self, port: int = 0) -> FakeCredentials:
+            _ = port
+            return FakeCredentials()
+
+    class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
+        def videos(self) -> FakeClient:
+            return self
+
+        def list(self, **kwargs: object) -> FakeClient:
+            self._kwargs = kwargs
+            return self
+
+        def execute(self) -> dict[str, object]:
+            kwargs = getattr(self, "_kwargs", {})
+            if kwargs.get("mine") is True and kwargs.get("part") == "contentDetails":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"likes": "LL"}}}]}
+            if kwargs.get("playlistId") == "LL":
+                return {
+                    "items": [
+                        {
+                            "snippet": {
+                                "resourceId": {"videoId": "members_only_vid"},
+                                "title": "Members-only video",
+                                "publishedAt": "2026-02-01T12:00:00Z",
+                            },
+                            "contentDetails": {"videoPublishedAt": "2026-01-20T09:00:00Z"},
+                        },
+                        {
+                            "snippet": {
+                                "resourceId": {"videoId": "normal_vid"},
+                                "title": "Normal Video",
+                                "publishedAt": "2026-02-01T11:00:00Z",
+                            },
+                            "contentDetails": {"videoPublishedAt": "2026-01-19T09:00:00Z"},
+                        },
+                    ]
+                }
+            return {"items": []}
+
+    def fake_import_module(name: str) -> object:
+        def _build(*_args: object, **_kwargs: object) -> FakeClient:
+            return FakeClient()
+
+        if name == "google.auth.transport.requests":
+            return types.SimpleNamespace(Request=object)
+        if name == "google.oauth2.credentials":
+            return types.SimpleNamespace(Credentials=FakeCredentials)
+        if name == "google_auth_oauthlib.flow":
+            return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
+        if name == "googleapiclient.discovery":
+            return types.SimpleNamespace(build=_build)
+        raise AssertionError(f"Unexpected module import: {name}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
+
+    service = YouTubeService(mode="oauth", data_dir=tmp_path)
+    videos = service.list_recent(limit=5)
+
+    assert [video.video_id for video in videos] == ["normal_vid"]
 
 
 def test_oauth_likes_cache_only_does_not_refresh(
@@ -790,7 +880,7 @@ def test_oauth_transcript_polls_supadata_job_until_complete(
         calls.append(url)
         if url.endswith("/transcript"):
             assert params is not None and params["mode"] == "native"
-            assert params["lang"] == "ro"
+            assert "lang" not in params
             return 202, {"jobId": "job_123", "status": "queued"}
         if url.endswith("/transcript/job_123"):
             if len(calls) == 2:
@@ -838,6 +928,7 @@ def test_oauth_transcript_unavailable_includes_supadata_request_id(
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
 
     calls = 0
+    modes: list[str] = []
 
     def _fake_supadata(
         *,
@@ -851,7 +942,8 @@ def test_oauth_transcript_unavailable_includes_supadata_request_id(
         _ = url
         _ = api_key
         _ = timeout_seconds
-        _ = params
+        if params is not None:
+            modes.append(str(params.get("mode")))
         return 206, {
             "request_id": "supa_req_123",
             "error": "transcript-unavailable",
@@ -870,10 +962,11 @@ def test_oauth_transcript_unavailable_includes_supadata_request_id(
         match="supadata_request_id=supa_req_123",
     ):
         service.get_transcript_with_metadata("oauth_video_1")
-    assert calls == 3
+    assert calls == 2
+    assert modes == ["native", "generate"]
 
 
-def test_oauth_transcript_unavailable_immediate_retries_can_recover(
+def test_oauth_transcript_unavailable_falls_back_to_generate_and_recovers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -899,6 +992,7 @@ def test_oauth_transcript_unavailable_immediate_retries_can_recover(
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
 
     calls = 0
+    seen_modes: list[str] = []
 
     def _fake_supadata(
         *,
@@ -908,33 +1002,231 @@ def test_oauth_transcript_unavailable_immediate_retries_can_recover(
         params: dict[str, str] | None,
     ) -> tuple[int, dict[str, Any]]:
         nonlocal calls
-        _ = url
         _ = api_key
         _ = timeout_seconds
-        _ = params
         calls += 1
-        if calls < 3:
-            return 206, {
-                "request_id": f"supa_req_retry_{calls}",
-                "error": "transcript-unavailable",
-                "message": "Transcript Unavailable",
-                "details": "No transcript is available for this video",
-            }
-        return 200, {
-            "request_id": "supa_req_retry_3",
-            "content": [{"text": "recovered transcript", "offset": 0.0}],
-        }
+        if url.endswith("/transcript"):
+            assert params is not None
+            mode = str(params["mode"])
+            seen_modes.append(mode)
+            if mode == "native":
+                return 206, {
+                    "request_id": "native_req_1",
+                    "error": "transcript-unavailable",
+                    "message": "Transcript Unavailable",
+                    "details": "No transcript is available for this video",
+                }
+            if mode == "generate":
+                return 202, {
+                    "request_id": "generate_req_1",
+                    "jobId": "job_generate_123",
+                    "status": "queued",
+                }
+            raise AssertionError(f"Unexpected mode: {mode}")
+        if url.endswith("/transcript/job_generate_123"):
+            if calls == 3:
+                return 200, {
+                    "request_id": "generate_poll_req_1",
+                    "status": "processing",
+                }
+            if calls == 4:
+                return 200, {
+                    "request_id": "generate_poll_req_2",
+                    "status": "completed",
+                    "content": [{"text": "generated transcript", "offset": 0.0}],
+                }
+            raise AssertionError(f"Unexpected poll call number: {calls}")
+        raise AssertionError(f"Unexpected url: {url}")
 
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
-    def _noop_sleep(_seconds: float) -> None:
-        return None
+
+    sleep_calls: list[float] = []
+
+    def _noop_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
 
     monkeypatch.setattr("backend.app.services.youtube_service.time.sleep", _noop_sleep)
 
     result = service.get_transcript_with_metadata("oauth_video_1")
-    assert result.transcript.transcript == "recovered transcript"
-    assert result.provider_request_id == "supa_req_retry_3"
-    assert calls == 3
+    assert result.transcript.transcript == "generated transcript"
+    assert result.provider_request_id == "generate_poll_req_2"
+    assert calls == 4
+    assert seen_modes == ["native", "generate"]
+    assert sleep_calls == [30.0]
+
+
+def test_oauth_transcript_age_restricted_falls_back_to_youtube_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        supadata_api_key="supadata-test-key",
+    )
+
+    def _fake_snippet(
+        video_id: str,
+        data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = video_id
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        return types.SimpleNamespace(title="Age Restricted", description=None)
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
+
+    def _fake_supadata(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        _ = api_key
+        _ = timeout_seconds
+        assert url.endswith("/transcript")
+        assert params is not None
+        mode = str(params.get("mode"))
+        if mode == "native":
+            return 206, {
+                "error": "transcript-unavailable",
+                "message": "Transcript Unavailable",
+                "details": "No transcript is available for this video",
+            }
+        if mode == "generate":
+            return 403, {
+                "error": "forbidden",
+                "message": "Forbidden",
+                "details": "This video is age-restricted and requires authentication.",
+            }
+        raise AssertionError(f"Unexpected mode: {mode}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+
+    def _fake_youtube_captions(
+        *,
+        video_id: str,
+        data_dir: Path,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        assert video_id == "age_vid_1"
+        return "fallback transcript", [{"text": "fallback transcript", "start": 0.0}]
+
+    monkeypatch.setattr(
+        "backend.app.services.youtube_service._fetch_transcript_with_youtube_oauth_captions_api",
+        _fake_youtube_captions,
+    )
+
+    result = service.get_transcript_with_metadata("age_vid_1")
+
+    assert result.transcript.transcript == "fallback transcript"
+    assert result.transcript.source == "youtube_api_captions"
+
+
+def test_oauth_transcript_age_restricted_youtube_api_fallback_is_throttled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        supadata_api_key="supadata-test-key",
+    )
+
+    def _fake_snippet(
+        video_id: str,
+        data_dir: Path,
+        *,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> object:
+        _ = video_id
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        return types.SimpleNamespace(title=f"title-{video_id}", description=None)
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_video_snippet", _fake_snippet)
+
+    def _fake_supadata(
+        *,
+        url: str,
+        api_key: str,
+        timeout_seconds: float,
+        params: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        _ = api_key
+        _ = timeout_seconds
+        assert url.endswith("/transcript")
+        assert params is not None
+        mode = str(params.get("mode"))
+        if mode == "native":
+            return 206, {
+                "error": "transcript-unavailable",
+                "message": "Transcript Unavailable",
+                "details": "No transcript is available for this video",
+            }
+        if mode == "generate":
+            return 403, {
+                "error": "forbidden",
+                "message": "Forbidden",
+                "details": "This video is age-restricted and requires authentication.",
+            }
+        raise AssertionError(f"Unexpected mode: {mode}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+
+    youtube_calls = {"count": 0}
+
+    def _fake_youtube_captions(
+        *,
+        video_id: str,
+        data_dir: Path,
+        token_path: Path | None = None,
+        secrets_path: Path | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        _ = data_dir
+        _ = token_path
+        _ = secrets_path
+        youtube_calls["count"] += 1
+        return (f"captions-{video_id}", [])
+
+    monkeypatch.setattr(
+        "backend.app.services.youtube_service._fetch_transcript_with_youtube_oauth_captions_api",
+        _fake_youtube_captions,
+    )
+
+    first_transcript, _first_request_id = service._fetch_transcript_with_supadata("age_one")
+    assert first_transcript is not None
+    assert first_transcript.transcript == "captions-age_one"
+    assert youtube_calls["count"] == 1
+
+    with pytest.raises(SupadataTranscriptError, match="locally throttled"):
+        service._fetch_transcript_with_supadata("age_two")
+    assert youtube_calls["count"] == 1
+
+
+def test_extract_request_id_from_headers_supports_supadata_variants() -> None:
+    request_id = _extract_request_id_from_headers(
+        {
+            "id": "e8f86227-087f-488c-ae20-7dc1d99ec54e",
+            "content-type": "application/json",
+        }
+    )
+    assert request_id == "e8f86227-087f-488c-ae20-7dc1d99ec54e"
 
 
 def test_oauth_background_sync_populates_likes_with_metadata(
@@ -1115,6 +1407,128 @@ def test_oauth_background_sync_populates_likes_with_metadata(
     assert cache_repo.get_cache_state_value("likes_background_backfill_next_page_token") is None
 
 
+def test_oauth_background_sync_applies_likes_cutoff_and_purges_orphan_transcripts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "youtube-token.json").write_text("{}", encoding="utf-8")
+
+    class FakeCredentials:
+        valid = True
+        expired = False
+        refresh_token = None
+
+        @classmethod
+        def from_authorized_user_file(cls, _path: str, _scopes: list[str]) -> FakeCredentials:
+            return cls()
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, _path: str, _scopes: list[str]) -> FakeFlow:
+            return cls()
+
+        def run_local_server(self, port: int = 0) -> FakeCredentials:
+            _ = port
+            return FakeCredentials()
+
+    class FakeClient:
+        def channels(self) -> FakeClient:
+            return self
+
+        def playlistItems(self) -> FakeClient:  # noqa: N802
+            return self
+
+        def videos(self) -> FakeClient:
+            return self
+
+        def list(self, **kwargs: object) -> FakeClient:
+            self._kwargs = kwargs
+            return self
+
+        def execute(self) -> dict[str, object]:
+            kwargs = getattr(self, "_kwargs", {})
+            if kwargs.get("mine") is True and kwargs.get("part") == "contentDetails":
+                return {"items": [{"contentDetails": {"relatedPlaylists": {"likes": "LL"}}}]}
+            if kwargs.get("playlistId") == "LL":
+                return {
+                    "items": [
+                        {
+                            "snippet": {
+                                "resourceId": {"videoId": "new_vid"},
+                                "title": "New Video",
+                                "publishedAt": "2025-02-08T12:00:00Z",
+                            },
+                            "contentDetails": {"videoPublishedAt": "2025-02-01T10:00:00Z"},
+                        },
+                        {
+                            "snippet": {
+                                "resourceId": {"videoId": "old_vid"},
+                                "title": "Old Video",
+                                "publishedAt": "2024-01-01T12:00:00Z",
+                            },
+                            "contentDetails": {"videoPublishedAt": "2023-12-01T10:00:00Z"},
+                        },
+                    ]
+                }
+            if kwargs.get("id"):
+                return {"items": []}
+            return {"items": []}
+
+    def fake_import_module(name: str) -> object:
+        def _build(*_args: object, **_kwargs: object) -> FakeClient:
+            return FakeClient()
+
+        if name == "google.auth.transport.requests":
+            return types.SimpleNamespace(Request=object)
+        if name == "google.oauth2.credentials":
+            return types.SimpleNamespace(Credentials=FakeCredentials)
+        if name == "google_auth_oauthlib.flow":
+            return types.SimpleNamespace(InstalledAppFlow=FakeFlow)
+        if name == "googleapiclient.discovery":
+            return types.SimpleNamespace(build=_build)
+        raise AssertionError(f"Unexpected module import: {name}")
+
+    monkeypatch.setattr("backend.app.services.youtube_service.import_module", fake_import_module)
+
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="old_vid",
+                title="Old Video",
+                liked_at="2024-01-01T12:00:00Z",
+            )
+        ],
+        max_items=100,
+    )
+    cache_repo.upsert_transcript(
+        video_id="old_vid",
+        title="Old Video",
+        transcript="stale transcript",
+        source="supadata_captions",
+        segments=[],
+    )
+
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        likes_background_min_interval_seconds=0,
+        likes_background_hot_pages=1,
+        likes_background_backfill_pages_per_run=1,
+        likes_background_page_size=50,
+        likes_cutoff_date=date(2024, 10, 20),
+    )
+
+    service.run_background_likes_sync()
+
+    rows = cache_repo.list_likes(limit=10)
+    assert [row.video_id for row in rows] == ["new_vid"]
+    assert cache_repo.get_fresh_transcript(video_id="old_vid", ttl_seconds=3600) is None
+
+
 def test_oauth_background_transcript_sync_success(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1269,6 +1683,47 @@ def test_oauth_background_transcript_sync_failure_backoff(
     assert any("provider=youtube" in msg for msg in captured_logger.messages)
     assert any("error_type=YouTubeServiceError" in msg for msg in captured_logger.messages)
     assert any("error=forced transcript failure" in msg for msg in captured_logger.messages)
+
+
+def test_oauth_background_transcript_sync_excludes_members_only_video(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="vid_members_only",
+                title="Some Title",
+                liked_at="2026-02-10T12:00:00+00:00",
+            )
+        ],
+        max_items=100,
+    )
+    service = YouTubeService(
+        mode="oauth",
+        data_dir=tmp_path,
+        cache_repository=cache_repo,
+        transcript_background_min_interval_seconds=0,
+    )
+
+    def _excluded(_video_id: str) -> YouTubeTranscriptResult:
+        raise TranscriptExcludedVideoError("members_only_inferred_from_supadata")
+
+    monkeypatch.setattr(service, "get_transcript_with_metadata", _excluded)
+    captured_logger = _CaptureLogger()
+    monkeypatch.setattr("backend.app.services.youtube_service.LOGGER", captured_logger)
+
+    service.run_background_transcript_sync()
+
+    assert cache_repo.count_likes() == 0
+    assert cache_repo.get_transcript_sync_attempts(video_id="vid_members_only") == 0
+    status_counts = cache_repo.count_transcript_sync_state_by_status()
+    assert status_counts.get("retry_wait", 0) == 0
+    assert any("youtube transcript background_sync exclude" in msg for msg in captured_logger.messages)
+    assert any("reason=members_only" in msg for msg in captured_logger.messages)
 
 
 def test_oauth_background_transcript_sync_ip_block_global_pause(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
@@ -15,6 +18,11 @@ from backend.app.telemetry import TelemetryClient
 LOGGER = logging.getLogger("active_workbench.scheduler")
 BUCKET_ANNOTATION_POLL_INTERVAL_SECONDS = 300
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
+
 
 class SchedulerService:
     def __init__(
@@ -25,6 +33,7 @@ class SchedulerService:
         transcript_poll_interval_seconds: int | None = None,
         youtube_service: YouTubeService | None = None,
         telemetry: TelemetryClient | None = None,
+        lock_path: Path | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._poll_interval_seconds = max(1, poll_interval_seconds)
@@ -39,9 +48,15 @@ class SchedulerService:
         self._next_bucket_annotation_tick = 0.0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lock_path = lock_path
+        self._lock_file: Any | None = None
+        self._lock_acquired = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
+            return
+
+        if not self._try_acquire_process_lock():
             return
 
         self._stop_event.clear()
@@ -54,6 +69,72 @@ class SchedulerService:
         if self._thread is not None:
             self._thread.join(timeout=3)
             self._thread = None
+        self._release_process_lock()
+
+    def _try_acquire_process_lock(self) -> bool:
+        if self._lock_path is None:
+            return True
+
+        if fcntl is None:
+            LOGGER.warning(
+                "scheduler single-instance lock unavailable on this platform; starting scheduler"
+            )
+            return True
+
+        lock_path = self._lock_path
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = lock_path.open("a+", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if "lock_file" in locals():
+                try:
+                    lock_file.close()
+                except OSError:
+                    pass
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                LOGGER.info(
+                    "scheduler start skipped; lock held by another process path=%s",
+                    lock_path,
+                )
+                return False
+            LOGGER.warning(
+                "scheduler lock acquisition failed path=%s; starting scheduler anyway",
+                lock_path,
+                exc_info=True,
+            )
+            return True
+
+        try:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(f"{os.getpid()}\n")
+            lock_file.flush()
+        except OSError:
+            LOGGER.debug("scheduler lock file metadata write failed path=%s", lock_path, exc_info=True)
+
+        self._lock_file = lock_file
+        self._lock_acquired = True
+        return True
+
+    def _release_process_lock(self) -> None:
+        lock_file = self._lock_file
+        if lock_file is None:
+            self._lock_acquired = False
+            return
+
+        try:
+            if self._lock_acquired and fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            LOGGER.debug("scheduler lock release failed path=%s", self._lock_path, exc_info=True)
+        finally:
+            try:
+                lock_file.close()
+            except OSError:
+                pass
+            self._lock_file = None
+            self._lock_acquired = False
 
     def _run_loop(self) -> None:
         next_scheduler_tick = 0.0
