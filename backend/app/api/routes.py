@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal, cast
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from backend.app.dependencies import get_dispatcher
-from backend.app.models.tool_contracts import ToolCatalogEntry, ToolName, ToolRequest, ToolResponse
+from backend.app.models.mobile_contracts import ShareArticleRequest, ShareArticleResponse
+from backend.app.models.tool_contracts import (
+    ToolCatalogEntry,
+    ToolContext,
+    ToolName,
+    ToolRequest,
+    ToolResponse,
+)
 from backend.app.services.tool_dispatcher import ToolDispatcher
 
 router = APIRouter()
@@ -229,3 +237,111 @@ def memory_undo(
 ) -> ToolResponse:
     return _handle_tool("memory.undo", request, dispatcher)
 
+
+@router.post(
+    "/mobile/v1/share/article",
+    response_model=ShareArticleResponse,
+    tags=["mobile"],
+    operation_id="mobile_share_article",
+)
+def mobile_share_article(
+    request: ShareArticleRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ShareArticleResponse:
+    payload: dict[str, object] = {
+        "domain": "article",
+        "url": request.url,
+        "allow_unresolved": True,
+    }
+    if request.shared_text is not None:
+        payload["notes"] = request.shared_text
+    if request.source_app is not None:
+        payload["source_refs"] = [{"type": "mobile_share_app", "id": request.source_app}]
+
+    tool_response = _handle_tool(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            idempotency_key=request.idempotency_key,
+            payload=payload,
+            context=ToolContext(
+                timezone=request.timezone,
+                session_id=request.session_id,
+            ),
+        ),
+        dispatcher,
+    )
+
+    if not tool_response.ok:
+        return ShareArticleResponse(
+            status="failed",
+            request_id=tool_response.request_id,
+            backend_status=None,
+            message=(
+                tool_response.error.message
+                if tool_response.error is not None
+                else "Share flow failed."
+            ),
+            error=tool_response.error,
+        )
+
+    result: dict[str, object] = {
+        key: cast(object, value) for key, value in tool_response.result.items()
+    }
+    raw_backend_status = result.get("status")
+    backend_status = raw_backend_status if isinstance(raw_backend_status, str) else None
+
+    raw_message = result.get("message")
+    message = raw_message if isinstance(raw_message, str) else None
+
+    bucket_item_value = _normalize_object_dict(result.get("bucket_item")) or {}
+    raw_item_id = bucket_item_value.get("item_id")
+    bucket_item_id = raw_item_id if isinstance(raw_item_id, str) else None
+    raw_title = bucket_item_value.get("title")
+    title = raw_title if isinstance(raw_title, str) else None
+    raw_external_url = bucket_item_value.get("external_url")
+    canonical_url = raw_external_url if isinstance(raw_external_url, str) else None
+
+    raw_candidates = result.get("candidates")
+    candidates: list[dict[str, object]] = []
+    if isinstance(raw_candidates, list):
+        for raw_candidate in cast(list[object], raw_candidates):
+            normalized = _normalize_object_dict(raw_candidate)
+            if normalized is not None:
+                candidates.append(normalized)
+
+    status: Literal["saved", "already_exists", "needs_clarification", "failed"]
+    if backend_status in {"created", "merged", "reactivated"}:
+        status = "saved"
+    elif backend_status == "already_exists":
+        status = "already_exists"
+    elif backend_status == "needs_clarification":
+        status = "needs_clarification"
+    else:
+        status = "failed"
+        if message is None:
+            message = "Unexpected response status from bucket add."
+
+    return ShareArticleResponse(
+        status=status,
+        request_id=tool_response.request_id,
+        backend_status=backend_status,
+        bucket_item_id=bucket_item_id,
+        title=title,
+        canonical_url=canonical_url,
+        message=message,
+        candidates=candidates,
+        error=None if status != "failed" else tool_response.error,
+    )
+
+
+def _normalize_object_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_dict = cast(dict[object, object], value)
+    normalized: dict[str, object] = {}
+    for key, item_value in raw_dict.items():
+        if isinstance(key, str):
+            normalized[key] = item_value
+    return normalized

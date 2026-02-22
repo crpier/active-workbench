@@ -47,6 +47,48 @@ def test_health(client: TestClient) -> None:
     assert response.headers.get("X-Request-ID")
 
 
+def test_mobile_share_article_saves_link(client: TestClient) -> None:
+    response = client.post(
+        "/mobile/v1/share/article",
+        json={
+            "url": "https://example.com/posts/interesting-article?utm_source=twitter",
+            "source_app": "com.twitter.android",
+            "shared_text": "Read this later",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "saved"
+    assert body["backend_status"] == "created"
+    assert body["bucket_item_id"].startswith("bucket_")
+    assert body["canonical_url"] == "https://example.com/posts/interesting-article?utm_source=twitter"
+
+
+def test_mobile_share_article_duplicate_returns_already_exists(client: TestClient) -> None:
+    payload = {"url": "https://example.com/posts/dupe-me"}
+    first = client.post("/mobile/v1/share/article", json=payload)
+    second = client.post("/mobile/v1/share/article", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    first_body = first.json()
+    second_body = second.json()
+
+    assert first_body["status"] == "saved"
+    assert second_body["status"] == "already_exists"
+    assert second_body["backend_status"] == "already_exists"
+    assert second_body["bucket_item_id"] == first_body["bucket_item_id"]
+
+
+def test_mobile_share_article_rejects_invalid_url(client: TestClient) -> None:
+    response = client.post(
+        "/mobile/v1/share/article",
+        json={"url": "not-a-valid-url"},
+    )
+    assert response.status_code == 422
+
+
 def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:
     response = client.get("/tools")
     assert response.status_code == 200
