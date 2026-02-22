@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Workbench Share</string>
+    <string name="main_description">Share a URL from any app to save it into your Active Workbench bucket list.</string>
+    <string name="main_base_url_label">API base URL:</string>
+    <string name="main_chat_url_label">OpenCode Web URL:</string>
+    <string name="backend_url_hint">http://10.0.2.2:8000/</string>
+    <string name="opencode_url_hint">http://10.0.2.2:4096/</string>
+    <string name="save_endpoints">Save endpoints</string>
+    <string name="open_chat">Open Chat</string>
+    <string name="shortcut_sync_short">Sync queue</string>
+    <string name="shortcut_sync_long">Sync queued shares</string>
+    <string name="shortcut_chat_short">Open chat</string>
+    <string name="shortcut_chat_long">Open OpenCode chat</string>
+    <string name="shortcut_sync_triggered">Share sync started.</string>
+    <string name="endpoints_saved">Endpoints saved.</string>
+    <string name="invalid_backend_url">Invalid backend URL. Use absolute http/https URL.</string>
+    <string name="invalid_opencode_url">Invalid OpenCode URL. Use absolute http/https URL.</string>
+    <string name="share_title">Saving shared article…</string>
+    <string name="share_done">Done</string>
+    <string name="share_retry">Retry</string>
+    <string name="share_sync_now">Sync now</string>
+    <string name="open_history">Open history</string>
+    <string name="share_queued">Queued for sync</string>
+    <string name="share_queued_detail">The app will retry automatically when online.</string>
+    <string name="share_missing_url">No valid http/https URL found in shared text.</string>
+    <string name="share_status_saved">Saved to bucket list.</string>
+    <string name="share_status_already_exists">Already present in bucket list.</string>
+    <string name="share_status_needs_clarification">Saved with clarification needed.</string>
+    <string name="history_title">Recent Shares</string>
+    <string name="history_empty">No shares yet.</string>
+</resources>
