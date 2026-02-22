@@ -19,6 +19,10 @@ Open firewall ports:
 - `80/tcp` (Let's Encrypt challenge + HTTP redirect)
 - `443/tcp` (HTTPS)
 
+Keep admin/observability UIs off the public internet:
+- do **not** open `9090/tcp` (Cockpit) publicly
+- access Cockpit over Tailscale/private network
+
 ## 2. Bootstrap VM packages
 
 ```bash
@@ -187,3 +191,110 @@ sudo -u active-workbench uv sync --all-groups
 sudo systemctl restart active-workbench-backend.service
 sudo systemctl restart opencode-serve.service
 ```
+
+## 12. Observability (recommended for early-stage ops)
+
+This setup gives you:
+- phone-friendly VM/service checks (`Cockpit`)
+- private admin access without public exposure (`Tailscale`)
+- searchable logs + alerts (`Vector` -> Better Stack)
+
+### 12.1 Tailscale (private access for ops UIs)
+
+Install Tailscale using the official instructions for your distro, then:
+
+```bash
+sudo tailscale up
+tailscale ip -4
+```
+
+Use the Tailscale IP for private admin access (for example Cockpit at `https://<tailscale-ip>:9090`).
+
+### 12.2 Cockpit (systemd + VM health UI)
+
+```bash
+sudo apt-get install -y cockpit
+sudo systemctl enable --now cockpit.socket
+```
+
+Cockpit gives you:
+- `systemd` service status/restarts (backend + opencode + vector)
+- `journald` logs in browser
+- CPU / memory / disk quick checks
+
+Recommended access pattern:
+- expose Cockpit only over Tailscale/private network
+- do not open `9090/tcp` publicly
+
+### 12.3 Better Stack + Vector (searchable logs and alerts)
+
+Create a Better Stack Logs source first and note:
+- **Source token**
+- **Ingesting host**
+
+Then install Vector on the VM (Ubuntu example):
+- fastest path: Better Stack Vector setup script for Ubuntu (from Better Stack docs)
+- alternative: install Vector from the official Vector packages/docs
+
+After Vector is installed, wire it to this repo template:
+
+```bash
+sudo cp /opt/active-workbench/deploy/vector/vector.betterstack.yaml.example /etc/vector/vector.yaml
+sudo cp /opt/active-workbench/deploy/env/vector.env.example /etc/active-workbench/vector.env
+sudo mkdir -p /etc/systemd/system/vector.service.d
+sudo cp /opt/active-workbench/deploy/systemd/vector.service.d/override.conf.example /etc/systemd/system/vector.service.d/override.conf
+sudo chown root:root /etc/vector/vector.yaml /etc/systemd/system/vector.service.d/override.conf
+sudo chown root:active-workbench /etc/active-workbench/vector.env
+sudo chmod 640 /etc/active-workbench/vector.env
+```
+
+Edit `/etc/active-workbench/vector.env`:
+- `BETTER_STACK_INGESTING_HOST`
+- `BETTER_STACK_SOURCE_TOKEN`
+- `ACTIVE_WORKBENCH_DEPLOYMENT_ENV`
+
+Give the `vector` user access to the needed logs/journal:
+
+```bash
+sudo usermod -aG adm,systemd-journal,active-workbench vector
+```
+
+Restart Vector after group/env changes:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now vector
+sudo systemctl restart vector
+sudo systemctl status vector --no-pager
+sudo journalctl -u vector -n 100 --no-pager
+```
+
+The provided Vector config ships:
+- Active Workbench runtime log file
+- Active Workbench telemetry log file
+- Nginx access/error logs
+- `opencode-serve.service` logs from `journald`
+
+Notes:
+- Vector is configured with `read_from: end` and `since_now: true` to avoid surprise historical ingest/cost on first boot.
+- Backend app logs are shipped from files (not backend `journald`) to avoid duplicates.
+- The Nginx template forwards `X-Request-ID` to upstreams so backend request/telemetry IDs can be correlated with edge requests.
+
+### 12.4 Suggested monitors and alerts
+
+Uptime checks:
+- `https://api.example.com/health` expecting `200`
+- `https://chat.example.com/` expecting `401` (healthy auth challenge) unless your uptime provider supports authenticated checks
+
+Log alerts (high signal):
+- backend `level=error` spike
+- mobile share `401` spike
+- mobile share `429` spike
+- `opencode-serve.service` crash/restart patterns
+- nginx `5xx` spike
+
+### 12.5 Optional next step: Better Stack Error Tracking
+
+If you want Sentry-style exception tracking later:
+- add Better Stack Error Tracking (Sentry SDK-compatible) for backend exceptions
+- keep current telemetry and logs; error tracking complements both
