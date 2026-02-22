@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.dependencies import reset_cached_dependencies
+from backend.app.main import create_app
 from backend.app.models.tool_contracts import WRITE_TOOLS, ToolName
+from backend.app.repositories.database import Database
+from backend.app.repositories.mobile_api_key_repository import MobileApiKeyRepository
 
 ALL_TOOLS: tuple[ToolName, ...] = (
     "youtube.likes.list_recent",
@@ -38,6 +46,80 @@ def _request_body(
         "payload": payload or {"example": True},
         "context": {"timezone": "Europe/Bucharest", "session_id": "test"},
     }
+
+
+@contextmanager
+def _configured_mobile_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mobile_api_key: str | None = None,
+    mobile_rate_limit_max_requests: int = 30,
+) -> Iterator[TestClient]:
+    data_dir = tmp_path / "runtime-data-auth"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-supadata-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_ENRICHMENT_ENABLED", "0")
+    if mobile_api_key is None:
+        monkeypatch.delenv("ACTIVE_WORKBENCH_MOBILE_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("ACTIVE_WORKBENCH_MOBILE_API_KEY", mobile_api_key)
+    monkeypatch.setenv(
+        "ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_MAX_REQUESTS",
+        str(mobile_rate_limit_max_requests),
+    )
+    monkeypatch.setenv("ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_WINDOW_SECONDS", "60")
+
+    reset_cached_dependencies()
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    reset_cached_dependencies()
+
+
+@contextmanager
+def _configured_mobile_client_with_device_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    device_name: str,
+    mobile_rate_limit_max_requests: int = 30,
+) -> Iterator[tuple[TestClient, str, str]]:
+    data_dir = tmp_path / "runtime-data-device-keys"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
+    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
+    db_path = data_dir / "state.db"
+
+    database = Database(db_path)
+    database.initialize()
+    key_record, token = MobileApiKeyRepository(database).create_key(device_name)
+
+    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-supadata-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_ENRICHMENT_ENABLED", "0")
+    monkeypatch.delenv("ACTIVE_WORKBENCH_MOBILE_API_KEY", raising=False)
+    monkeypatch.setenv(
+        "ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_MAX_REQUESTS",
+        str(mobile_rate_limit_max_requests),
+    )
+    monkeypatch.setenv("ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_WINDOW_SECONDS", "60")
+
+    reset_cached_dependencies()
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client, token, key_record.key_id
+    reset_cached_dependencies()
 
 
 def test_health(client: TestClient) -> None:
@@ -87,6 +169,126 @@ def test_mobile_share_article_rejects_invalid_url(client: TestClient) -> None:
         json={"url": "not-a-valid-url"},
     )
     assert response.status_code == 422
+
+
+def test_mobile_share_article_rejects_invalid_timezone(client: TestClient) -> None:
+    response = client.post(
+        "/mobile/v1/share/article",
+        json={"url": "https://example.com/article", "timezone": "Mars/Olympus"},
+    )
+    assert response.status_code == 422
+
+
+def test_mobile_share_article_requires_auth_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _configured_mobile_client(tmp_path, monkeypatch, mobile_api_key="secret-key") as client:
+        response = client.post(
+            "/mobile/v1/share/article",
+            json={"url": "https://example.com/secure-share"},
+        )
+        assert response.status_code == 401
+        assert response.headers.get("WWW-Authenticate") == "Bearer"
+
+        invalid = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": "Bearer wrong-key"},
+            json={"url": "https://example.com/secure-share"},
+        )
+        assert invalid.status_code == 401
+
+        authorized = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": "Bearer secret-key"},
+            json={"url": "https://example.com/secure-share"},
+        )
+        assert authorized.status_code == 200
+        assert authorized.json()["status"] == "saved"
+
+
+def test_mobile_share_article_requires_device_key_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _configured_mobile_client_with_device_key(
+        tmp_path,
+        monkeypatch,
+        device_name="pixel-test",
+    ) as configured:
+        client, device_token, _key_id = configured
+        response = client.post(
+            "/mobile/v1/share/article",
+            json={"url": "https://example.com/device-share"},
+        )
+        assert response.status_code == 401
+
+        invalid = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": "Bearer mkey_missing.invalidsecretvalue"},
+            json={"url": "https://example.com/device-share"},
+        )
+        assert invalid.status_code == 401
+
+        authorized = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": f"Bearer {device_token}"},
+            json={"url": "https://example.com/device-share"},
+        )
+        assert authorized.status_code == 200
+        assert authorized.json()["status"] == "saved"
+
+
+def test_mobile_share_article_rejects_revoked_device_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _configured_mobile_client_with_device_key(
+        tmp_path,
+        monkeypatch,
+        device_name="pixel-revoked",
+    ) as configured:
+        client, device_token, key_id = configured
+        data_dir = tmp_path / "runtime-data-device-keys"
+        database = Database(data_dir / "state.db")
+        database.initialize()
+        repository = MobileApiKeyRepository(database)
+        assert repository.revoke_key(key_id) is True
+
+        response = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": f"Bearer {device_token}"},
+            json={"url": "https://example.com/revoked-key"},
+        )
+        assert response.status_code == 401
+
+
+def test_mobile_share_article_applies_rate_limit_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _configured_mobile_client(
+        tmp_path,
+        monkeypatch,
+        mobile_api_key="secret-key",
+        mobile_rate_limit_max_requests=1,
+    ) as client:
+        first = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": "Bearer secret-key"},
+            json={"url": "https://example.com/rate-limit-first"},
+        )
+        assert first.status_code == 200
+        assert first.headers.get("X-RateLimit-Limit") == "1"
+        assert first.headers.get("X-RateLimit-Remaining") == "0"
+
+        second = client.post(
+            "/mobile/v1/share/article",
+            headers={"Authorization": "Bearer secret-key"},
+            json={"url": "https://example.com/rate-limit-second"},
+        )
+        assert second.status_code == 429
+        assert second.headers.get("Retry-After") is not None
 
 
 def test_tool_catalog_exposes_expected_tools(client: TestClient) -> None:

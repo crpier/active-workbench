@@ -15,9 +15,11 @@ from backend.app.repositories.bucket_tmdb_quota_repository import BucketTmdbQuot
 from backend.app.repositories.database import Database
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.memory_repository import MemoryRepository
+from backend.app.repositories.mobile_api_key_repository import MobileApiKeyRepository
 from backend.app.repositories.youtube_cache_repository import YouTubeCacheRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 from backend.app.services.bucket_metadata_service import BucketMetadataService
+from backend.app.services.rate_limiter import SlidingWindowRateLimiter
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeService
 from backend.app.telemetry import TelemetryClient, build_telemetry_client
@@ -29,10 +31,17 @@ def get_settings() -> AppSettings:
 
 
 @lru_cache(maxsize=1)
-def get_dispatcher() -> ToolDispatcher:
+def get_database() -> Database:
     settings = get_settings()
     database = Database(settings.db_path)
     database.initialize()
+    return database
+
+
+@lru_cache(maxsize=1)
+def get_dispatcher() -> ToolDispatcher:
+    settings = get_settings()
+    database = get_database()
 
     return ToolDispatcher(
         audit_repository=AuditRepository(database),
@@ -115,7 +124,24 @@ def get_telemetry() -> TelemetryClient:
     )
 
 
+@lru_cache(maxsize=1)
+def get_mobile_api_key_repository() -> MobileApiKeyRepository:
+    return MobileApiKeyRepository(get_database())
+
+
+@lru_cache(maxsize=1)
+def get_mobile_share_rate_limiter() -> SlidingWindowRateLimiter:
+    settings = get_settings()
+    return SlidingWindowRateLimiter(
+        max_requests=settings.mobile_share_rate_limit_max_requests,
+        window_seconds=settings.mobile_share_rate_limit_window_seconds,
+    )
+
+
 def reset_cached_dependencies() -> None:
+    get_mobile_api_key_repository.cache_clear()
     get_dispatcher.cache_clear()
+    get_database.cache_clear()
     get_telemetry.cache_clear()
+    get_mobile_share_rate_limiter.cache_clear()
     get_settings.cache_clear()

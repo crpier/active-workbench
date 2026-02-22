@@ -37,3 +37,15 @@ youtube-auth:
 
 youtube-auth-secret CLIENT_SECRET_PATH:
   ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_oauth_setup --client-secret "{{CLIENT_SECRET_PATH}}"
+
+mobile-key-create DEVICE_NAME:
+  uv run python -m backend.app.scripts.mobile_api_keys create --device-name "{{DEVICE_NAME}}"
+
+mobile-key-list:
+  uv run python -m backend.app.scripts.mobile_api_keys list
+
+mobile-key-list-all:
+  uv run python -m backend.app.scripts.mobile_api_keys list --all
+
+mobile-key-revoke KEY_ID:
+  uv run python -m backend.app.scripts.mobile_api_keys revoke --key-id "{{KEY_ID}}"

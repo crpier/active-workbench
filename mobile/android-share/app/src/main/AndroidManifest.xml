@@ -10,7 +10,7 @@
         android:roundIcon="@mipmap/nano_banana"
         android:supportsRtl="true"
         android:theme="@style/Theme.ActiveWorkbenchShare"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="${usesCleartextTraffic}">
 
         <activity
             android:name=".MainActivity"

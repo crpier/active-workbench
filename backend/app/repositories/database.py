@@ -172,6 +172,19 @@ CREATE TABLE IF NOT EXISTS bucket_musicbrainz_quota_daily (
     calls INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS mobile_api_keys (
+    key_id TEXT PRIMARY KEY,
+    device_name TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT NULL,
+    last_used_at TEXT NULL,
+    last_seen_ip TEXT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_api_keys_active
+ON mobile_api_keys(revoked_at, created_at DESC);
 """
 
 

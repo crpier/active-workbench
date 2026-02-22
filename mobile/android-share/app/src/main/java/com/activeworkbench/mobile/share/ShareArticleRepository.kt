@@ -12,6 +12,7 @@ sealed interface ShareSubmissionResult {
 
 class ShareArticleRepository(
     private val api: WorkbenchApi,
+    private val mobileApiKey: String?,
 ) {
     suspend fun submit(
         url: String,
@@ -20,7 +21,8 @@ class ShareArticleRepository(
     ): ShareSubmissionResult {
         return try {
             val response = api.shareArticle(
-                ShareArticleRequest(
+                authorization = WorkbenchApiFactory.toAuthorizationHeader(mobileApiKey),
+                request = ShareArticleRequest(
                     url = url,
                     sharedText = sharedText,
                     sourceApp = sourceApp,
@@ -38,10 +40,20 @@ class ShareArticleRepository(
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: HttpException) {
-            ShareSubmissionResult.Failure(
-                message = "Server error (${exception.code()}) while saving the article.",
-                canRetry = exception.code() >= 500,
-            )
+            when (exception.code()) {
+                401 -> ShareSubmissionResult.Failure(
+                    message = "Unauthorized. Check the mobile API key in app settings.",
+                    canRetry = false,
+                )
+                429 -> ShareSubmissionResult.Failure(
+                    message = "Rate limit reached. The app will retry automatically.",
+                    canRetry = true,
+                )
+                else -> ShareSubmissionResult.Failure(
+                    message = "Server error (${exception.code()}) while saving the article.",
+                    canRetry = exception.code() >= 500,
+                )
+            }
         } catch (_: IOException) {
             ShareSubmissionResult.Failure(
                 message = "Network error while contacting Active Workbench.",

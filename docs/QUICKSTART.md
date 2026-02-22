@@ -170,6 +170,17 @@ source ~/.config/active-workbench/secrets.env
 - `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
 - `ACTIVE_WORKBENCH_TELEMETRY_ENABLED` (default `true`; set `false` to disable telemetry events)
 - `ACTIVE_WORKBENCH_TELEMETRY_SINK` (default `log`; set `none` to suppress sink output)
+- `ACTIVE_WORKBENCH_MOBILE_API_KEY` (optional legacy fallback shared key; prefer per-device DB keys)
+- `ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+- `ACTIVE_WORKBENCH_MOBILE_SHARE_RATE_LIMIT_MAX_REQUESTS` (default `30`)
+
+Per-device mobile keys (recommended):
+
+```bash
+just mobile-key-create "pixel-test"
+just mobile-key-list
+just mobile-key-revoke mkey_xxxxx
+```
 
 Log files written under `ACTIVE_WORKBENCH_LOG_DIR`:
 - app/runtime logs: `active-workbench.log`

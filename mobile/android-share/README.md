@@ -31,6 +31,19 @@ Adjust in:
 
 - `mobile/android-share/app/build.gradle.kts`
 
+## Configure Mobile API Key (for secure share endpoint)
+
+If backend sets `ACTIVE_WORKBENCH_MOBILE_API_KEY`, the Android app must send:
+
+- `Authorization: Bearer <key>`
+
+You can set it either:
+
+- in app settings (`Mobile API key (Bearer)` field), or
+- as build default in `WORKBENCH_MOBILE_API_KEY` (`app/build.gradle.kts`)
+
+Mobile API key is stored with `EncryptedSharedPreferences` when available.
+
 ## Configure OpenCode Web URL
 
 The app uses `BuildConfig.OPENCODE_WEB_URL` as default, and you can override it in app UI:
@@ -46,7 +59,7 @@ opencode web --hostname=127.0.0.1 --port=4096
 
 Then in app, tap **Open Chat**.
 
-You can update both URLs from the app home screen and tap **Save endpoints**.
+You can update URLs and mobile API key from the app home screen and tap **Save endpoints**.
 
 ## Manual Test
 
@@ -59,5 +72,6 @@ You can update both URLs from the app home screen and tap **Save endpoints**.
 
 ## Notes
 
-- `android:usesCleartextTraffic="true"` is enabled for local HTTP testing.
-- For production, move to HTTPS and tighten network security policy.
+- Debug builds allow cleartext HTTP for local testing.
+- Release builds disable cleartext traffic; use HTTPS endpoints.
+- Chat traffic goes to OpenCode Web URL; article-share sync goes only to Active Workbench backend URL.

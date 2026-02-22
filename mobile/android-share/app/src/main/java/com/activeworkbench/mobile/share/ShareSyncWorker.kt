@@ -23,8 +23,10 @@ class ShareSyncWorker(
     }
 
     private suspend fun processDueQueueItems() {
+        val mobileApiKey = endpointConfigStore.getMobileApiKey()
         val repository = ShareArticleRepository(
             api = WorkbenchApiFactory.create(endpointConfigStore.getBackendBaseUrl()),
+            mobileApiKey = mobileApiKey,
         )
         while (true) {
             val due = queueStore.nextDueEntry() ?: break

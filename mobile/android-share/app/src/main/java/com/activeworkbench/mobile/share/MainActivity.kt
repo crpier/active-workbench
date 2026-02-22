@@ -14,6 +14,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var historyText: TextView
     private lateinit var backendUrlInput: EditText
     private lateinit var opencodeUrlInput: EditText
+    private lateinit var mobileApiKeyInput: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -21,8 +22,10 @@ class MainActivity : AppCompatActivity() {
 
         backendUrlInput = findViewById(R.id.backendUrlInput)
         opencodeUrlInput = findViewById(R.id.opencodeUrlInput)
+        mobileApiKeyInput = findViewById(R.id.mobileApiKeyInput)
         backendUrlInput.setText(endpointConfigStore.getBackendBaseUrl())
         opencodeUrlInput.setText(endpointConfigStore.getOpencodeWebUrl())
+        mobileApiKeyInput.setText(endpointConfigStore.getMobileApiKey().orEmpty())
 
         historyText = findViewById(R.id.historyText)
         findViewById<Button>(R.id.saveEndpointsButton).setOnClickListener {
@@ -104,7 +107,8 @@ class MainActivity : AppCompatActivity() {
     private fun saveEndpoints() {
         val backendUrl = backendUrlInput.text?.toString().orEmpty()
         val opencodeUrl = opencodeUrlInput.text?.toString().orEmpty()
-        when (endpointConfigStore.saveUrls(backendUrl, opencodeUrl)) {
+        val mobileApiKey = mobileApiKeyInput.text?.toString().orEmpty()
+        when (endpointConfigStore.saveConfig(backendUrl, opencodeUrl, mobileApiKey)) {
             SaveResult.Saved -> {
                 Toast.makeText(this, getString(R.string.endpoints_saved), Toast.LENGTH_SHORT).show()
             }

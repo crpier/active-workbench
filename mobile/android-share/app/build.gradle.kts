@@ -17,12 +17,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "WORKBENCH_BASE_URL", "\"http://10.0.2.2:8000/\"")
         buildConfigField("String", "OPENCODE_WEB_URL", "\"http://10.0.2.2:4096/\"")
+        buildConfigField("String", "WORKBENCH_MOBILE_API_KEY", "\"\"")
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
     }
 
     buildTypes {
         debug {
             buildConfigField("String", "WORKBENCH_BASE_URL", "\"http://10.0.2.2:8000/\"")
             buildConfigField("String", "OPENCODE_WEB_URL", "\"http://10.0.2.2:4096/\"")
+            buildConfigField("String", "WORKBENCH_MOBILE_API_KEY", "\"\"")
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
         release {
             isMinifyEnabled = false
@@ -36,6 +40,8 @@ android {
                 "OPENCODE_WEB_URL",
                 "\"https://your-opencode-host.example/\"",
             )
+            buildConfigField("String", "WORKBENCH_MOBILE_API_KEY", "\"\"")
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
         }
     }
 
@@ -66,6 +72,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
