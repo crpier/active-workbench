@@ -348,8 +348,9 @@ class AppSettings(BaseSettings):
     mobile_api_key: str | None = Field(
         default=None,
         description=(
-            "Legacy global bearer token for `/mobile/v1/share/article`. "
-            "Prefer per-device keys managed in the database; keep this only for migration."
+            "Deprecated legacy global bearer token for `/mobile/v1/share/article` "
+            "(currently ignored by the mobile share endpoint). "
+            "Kept only for compatibility with older deployments/config files."
         ),
     )
     mobile_share_rate_limit_window_seconds: int = Field(

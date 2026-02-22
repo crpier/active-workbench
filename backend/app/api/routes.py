@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import secrets
 from typing import Annotated, Literal, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
-from backend.app.config import AppSettings
 from backend.app.dependencies import (
     get_dispatcher,
-    get_mobile_api_key_repository,
     get_mobile_share_rate_limiter,
-    get_settings,
 )
 from backend.app.models.mobile_contracts import ShareArticleRequest, ShareArticleResponse
 from backend.app.models.tool_contracts import (
@@ -22,7 +18,6 @@ from backend.app.models.tool_contracts import (
     ToolRequest,
     ToolResponse,
 )
-from backend.app.repositories.mobile_api_key_repository import MobileApiKeyRepository
 from backend.app.services.rate_limiter import SlidingWindowRateLimiter
 from backend.app.services.tool_dispatcher import ToolDispatcher
 
@@ -258,22 +253,10 @@ def mobile_share_article(
     http_request: Request,
     http_response: Response,
     dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
-    settings: Annotated[AppSettings, Depends(get_settings)],
-    mobile_key_repository: Annotated[
-        MobileApiKeyRepository,
-        Depends(get_mobile_api_key_repository),
-    ],
     rate_limiter: Annotated[SlidingWindowRateLimiter, Depends(get_mobile_share_rate_limiter)],
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> ShareArticleResponse:
     client_ip = _resolve_client_ip(http_request)
-    auth_principal = _authenticate_mobile_request(
-        authorization=authorization,
-        settings=settings,
-        mobile_key_repository=mobile_key_repository,
-        client_ip=client_ip,
-    )
-    client_key = _resolve_client_key(client_ip=client_ip, auth_principal=auth_principal)
+    client_key = client_ip
     rate_limit = rate_limiter.take(client_key)
     rate_limit_headers = {
         "X-RateLimit-Limit": str(rate_limit.limit),
@@ -388,70 +371,6 @@ def _normalize_object_dict(value: object) -> dict[str, object] | None:
             normalized[key] = item_value
     return normalized
 
-
-def _extract_bearer_token(authorization: str | None) -> str | None:
-    if authorization is None:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.strip().lower() != "bearer":
-        return None
-    normalized = token.strip()
-    return normalized or None
-
-
-def _authenticate_mobile_request(
-    *,
-    authorization: str | None,
-    settings: AppSettings,
-    mobile_key_repository: MobileApiKeyRepository,
-    client_ip: str,
-) -> str | None:
-    raw_token = _extract_bearer_token(authorization)
-    has_active_device_keys = mobile_key_repository.has_active_keys()
-    legacy_api_key = settings.mobile_api_key
-    auth_required = has_active_device_keys or legacy_api_key is not None
-
-    if not auth_required:
-        if raw_token is not None:
-            _raise_mobile_unauthorized()
-        return None
-    if raw_token is None:
-        _raise_mobile_unauthorized()
-
-    parsed_device_token = _parse_device_token(raw_token)
-    if parsed_device_token is not None:
-        key_id, secret = parsed_device_token
-        if mobile_key_repository.verify_active_token(key_id=key_id, secret=secret):
-            mobile_key_repository.mark_used(key_id=key_id, client_ip=client_ip)
-            return f"device:{key_id}"
-
-    if legacy_api_key is not None and secrets.compare_digest(legacy_api_key, raw_token):
-        return "legacy"
-
-    _raise_mobile_unauthorized()
-
-
-def _raise_mobile_unauthorized() -> None:
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unauthorized mobile share request.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-def _parse_device_token(token: str) -> tuple[str, str] | None:
-    key_id, separator, secret = token.partition(".")
-    if separator != ".":
-        return None
-    normalized_key_id = key_id.strip()
-    normalized_secret = secret.strip()
-    if not normalized_key_id.startswith("mkey_"):
-        return None
-    if len(normalized_secret) < 16:
-        return None
-    return normalized_key_id, normalized_secret
-
-
 def _resolve_client_ip(http_request: Request) -> str:
     forwarded_for = http_request.headers.get("X-Forwarded-For", "")
     if forwarded_for:
@@ -462,9 +381,3 @@ def _resolve_client_ip(http_request: Request) -> str:
     else:
         client_ip = "unknown"
     return client_ip
-
-
-def _resolve_client_key(*, client_ip: str, auth_principal: str | None) -> str:
-    if auth_principal is None:
-        return client_ip
-    return f"{client_ip}:{auth_principal}"

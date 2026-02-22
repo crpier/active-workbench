@@ -2,6 +2,9 @@
 
 **Updated:** 2026-02-22
 
+This is the public-internet deployment variant.
+For a simpler single-user setup on your own devices, use `docs/DEPLOY_TAILSCALE_VM.md` instead.
+
 This runbook deploys:
 - Active Workbench backend on `127.0.0.1:8000`
 - OpenCode serve on `127.0.0.1:4096`
@@ -59,6 +62,10 @@ sudo chmod 640 /etc/active-workbench/active-workbench.env /etc/active-workbench/
 Edit env files:
 - `/etc/active-workbench/active-workbench.env` (set API keys, data dir, auth/rate limits)
 - `/etc/active-workbench/opencode.env` (set provider keys/model defaults and OpenCode server auth)
+
+Because the systemd unit templates now default to Tailscale-friendly `0.0.0.0` binding, set these for the Nginx reverse-proxy deployment:
+- `ACTIVE_WORKBENCH_BIND_HOST=127.0.0.1`
+- `OPENCODE_SERVER_HOSTNAME=127.0.0.1`
 
 For OpenCode UI/API protection, set both:
 - `OPENCODE_SERVER_USERNAME`

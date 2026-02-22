@@ -1,12 +1,15 @@
 # Active Workbench - Production Mode
 
-**Updated:** 2026-02-20
+**Updated:** 2026-02-22
 
 Production mode means:
 - real YouTube OAuth
 - startup fails fast if required secrets/config are missing
 
-For VM deployment with Nginx + systemd, use:
+For VM deployment (recommended, Tailscale-only + systemd), use:
+- `docs/DEPLOY_TAILSCALE_VM.md`
+
+For public internet deployment (advanced, Nginx + TLS + app auth), use:
 - `docs/DEPLOY_NGINX_VM.md`
 
 ## 1. Prepare `.env`

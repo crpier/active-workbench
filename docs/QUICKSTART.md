@@ -73,7 +73,8 @@ just youtube-auth
 
 Use the production runbook:
 - `docs/PRODUCTION.md`
-- `docs/DEPLOY_NGINX_VM.md` (VM + Nginx + systemd)
+- `docs/DEPLOY_TAILSCALE_VM.md` (recommended: VM + Tailscale + systemd)
+- `docs/DEPLOY_NGINX_VM.md` (advanced: public VM + Nginx + TLS)
 
 Short version:
 1. `cp .env.example .env`

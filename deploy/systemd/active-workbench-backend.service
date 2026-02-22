@@ -10,7 +10,8 @@ Group=active-workbench
 WorkingDirectory=/opt/active-workbench
 EnvironmentFile=/etc/active-workbench/active-workbench.env
 Environment=PATH=/home/active-workbench/.local/bin:/usr/local/bin:/usr/bin
-ExecStart=/usr/bin/env uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+Environment=ACTIVE_WORKBENCH_BIND_HOST=0.0.0.0
+ExecStart=/usr/bin/env uv run uvicorn backend.app.main:app --host ${ACTIVE_WORKBENCH_BIND_HOST} --port 8000
 Restart=always
 RestartSec=2
 TimeoutStopSec=30
@@ -22,4 +23,3 @@ ReadWritePaths=/var/lib/active-workbench /opt/active-workbench
 
 [Install]
 WantedBy=multi-user.target
-

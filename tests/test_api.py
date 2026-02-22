@@ -179,35 +179,36 @@ def test_mobile_share_article_rejects_invalid_timezone(client: TestClient) -> No
     assert response.status_code == 422
 
 
-def test_mobile_share_article_requires_auth_when_configured(
+def test_mobile_share_article_ignores_legacy_auth_when_configured(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _configured_mobile_client(tmp_path, monkeypatch, mobile_api_key="secret-key") as client:
         response = client.post(
             "/mobile/v1/share/article",
-            json={"url": "https://example.com/secure-share"},
+            json={"url": "https://example.com/no-auth-needed"},
         )
-        assert response.status_code == 401
-        assert response.headers.get("WWW-Authenticate") == "Bearer"
+        assert response.status_code == 200
+        assert response.json()["status"] == "saved"
 
-        invalid = client.post(
+        wrong_header = client.post(
             "/mobile/v1/share/article",
             headers={"Authorization": "Bearer wrong-key"},
-            json={"url": "https://example.com/secure-share"},
+            json={"url": "https://example.com/wrong-header-still-works"},
         )
-        assert invalid.status_code == 401
+        assert wrong_header.status_code == 200
+        assert wrong_header.json()["status"] == "saved"
 
-        authorized = client.post(
+        legacy_header = client.post(
             "/mobile/v1/share/article",
             headers={"Authorization": "Bearer secret-key"},
-            json={"url": "https://example.com/secure-share"},
+            json={"url": "https://example.com/legacy-header-still-works"},
         )
-        assert authorized.status_code == 200
-        assert authorized.json()["status"] == "saved"
+        assert legacy_header.status_code == 200
+        assert legacy_header.json()["status"] == "saved"
 
 
-def test_mobile_share_article_requires_device_key_when_present(
+def test_mobile_share_article_ignores_device_keys_when_present(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,21 +220,21 @@ def test_mobile_share_article_requires_device_key_when_present(
         client, device_token, _key_id = configured
         response = client.post(
             "/mobile/v1/share/article",
-            json={"url": "https://example.com/device-share"},
+            json={"url": "https://example.com/device-share-no-header"},
         )
-        assert response.status_code == 401
+        assert response.status_code == 200
 
         invalid = client.post(
             "/mobile/v1/share/article",
             headers={"Authorization": "Bearer mkey_missing.invalidsecretvalue"},
-            json={"url": "https://example.com/device-share"},
+            json={"url": "https://example.com/device-share-wrong-header"},
         )
-        assert invalid.status_code == 401
+        assert invalid.status_code == 200
 
         authorized = client.post(
             "/mobile/v1/share/article",
             headers={"Authorization": f"Bearer {device_token}"},
-            json={"url": "https://example.com/device-share"},
+            json={"url": "https://example.com/device-share-valid-header"},
         )
         assert authorized.status_code == 200
         assert authorized.json()["status"] == "saved"
@@ -260,7 +261,8 @@ def test_mobile_share_article_rejects_revoked_device_key(
             headers={"Authorization": f"Bearer {device_token}"},
             json={"url": "https://example.com/revoked-key"},
         )
-        assert response.status_code == 401
+        assert response.status_code == 200
+        assert response.json()["status"] == "saved"
 
 
 def test_mobile_share_article_applies_rate_limit_when_configured(
@@ -275,7 +277,6 @@ def test_mobile_share_article_applies_rate_limit_when_configured(
     ) as client:
         first = client.post(
             "/mobile/v1/share/article",
-            headers={"Authorization": "Bearer secret-key"},
             json={"url": "https://example.com/rate-limit-first"},
         )
         assert first.status_code == 200
@@ -284,7 +285,6 @@ def test_mobile_share_article_applies_rate_limit_when_configured(
 
         second = client.post(
             "/mobile/v1/share/article",
-            headers={"Authorization": "Bearer secret-key"},
             json={"url": "https://example.com/rate-limit-second"},
         )
         assert second.status_code == 429

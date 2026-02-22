@@ -10,7 +10,8 @@ Group=active-workbench
 WorkingDirectory=/opt/active-workbench
 EnvironmentFile=/etc/active-workbench/opencode.env
 Environment=PATH=/home/active-workbench/.local/bin:/usr/local/bin:/usr/bin
-ExecStart=/usr/bin/env opencode serve --hostname 127.0.0.1 --port 4096
+Environment=OPENCODE_SERVER_HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/env opencode serve --hostname ${OPENCODE_SERVER_HOSTNAME} --port 4096
 Restart=always
 RestartSec=2
 TimeoutStopSec=30
@@ -22,4 +23,3 @@ ReadWritePaths=/var/lib/active-workbench /opt/active-workbench /home/active-work
 
 [Install]
 WantedBy=multi-user.target
-
