@@ -43,6 +43,14 @@ This is the staging space for features we plan to ship later.
     - Use `Supadata scrape` + LLM polish as fallback when local extraction is low quality or fails
     - Store both source and cleaned outputs so extraction can be re-run/improved later
     - Keep LLM-polished output distinct from source extraction output if both are persisted (fidelity for notes/highlights)
+  - Policy/guardrails (must define before shipping article ingestion):
+    - Keep the workflow user-initiated (fetch/store URLs explicitly saved by the user), not broad discovery crawling
+    - Respect site terms/robots guidance where applicable and document any exceptions/limitations of third-party fetch providers
+    - Do not bypass paywalls, logins, or other access controls; only ingest content the user can lawfully access
+    - Apply per-domain rate limits / backoff behavior (including honoring provider/site throttling signals where available)
+    - Track provenance on stored snapshots (source URL, canonical URL, fetch timestamp, extraction method, and whether LLM polishing was used)
+    - Define retention/deletion behavior for raw HTML, cleaned content, and metadata before mobile/browser capture is rolled out broadly
+    - Default posture is personal-use knowledge capture/reading, not republishing or bulk redistribution of extracted content
   - Reader/UX direction:
     - Expose the cleaned/readable Markdown version in the app (not only the original URL)
     - Support re-opening the original URL as an option
@@ -62,7 +70,7 @@ This is the staging space for features we plan to ship later.
   - Implementation posture:
     - Prioritize low-maintenance personal-use reliability over universal scraping coverage
     - Focus on reducing cognitive load (capture + triage + recommendations + notes), with extraction treated as supporting infrastructure
-  - Status: captured with architectural direction and initial extractor/fallback decisions; implementation deferred.
+  - Status: captured with architectural direction, initial extractor/fallback decisions, and required policy/guardrail reminders; implementation deferred.
 - `Book review drafting assistant` (planned)
   - User story: after finishing a book, user wants guided help writing a personal review (for learning + reflection) and optionally preparing a publish-ready version.
   - Goal: offer a lightweight post-completion review flow (prompting, structure, draft iteration, optional publish-target formatting).
