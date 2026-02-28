@@ -10,6 +10,9 @@ from backend.app.models.tool_contracts import WRITE_TOOLS, ToolName
 ALL_TOOLS: tuple[ToolName, ...] = (
     "youtube.likes.list_recent",
     "youtube.likes.search_recent_content",
+    "youtube.watch_later.list",
+    "youtube.watch_later.search_content",
+    "youtube.watch_later.recommend",
     "youtube.transcript.get",
     "bucket.item.add",
     "bucket.item.update",
@@ -64,6 +67,9 @@ def test_tool_catalog_marks_all_tools_ready(client: TestClient) -> None:
     assert ready_tools == {
         "youtube.likes.list_recent",
         "youtube.likes.search_recent_content",
+        "youtube.watch_later.list",
+        "youtube.watch_later.search_content",
+        "youtube.watch_later.recommend",
         "youtube.transcript.get",
         "bucket.item.add",
         "bucket.item.update",
@@ -88,6 +94,10 @@ def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
         payload: dict[str, Any] | None = None
         if tool == "youtube.likes.search_recent_content":
             payload = {"query": "soup"}
+        elif tool == "youtube.watch_later.search_content":
+            payload = {"query": "microservices"}
+        elif tool == "youtube.watch_later.recommend":
+            payload = {"query": "programming", "target_minutes": 15}
         elif tool == "memory.create":
             payload = {"text": "Remember to buy leeks"}
         elif tool == "memory.search":
@@ -240,6 +250,88 @@ def test_youtube_likes_search_recent_content_returns_matches(client: TestClient)
     assert body["matches"]
     assert body["coverage"]["recent_videos_count"] >= 1
     assert "matched_in" in body["matches"][0]
+
+
+def test_youtube_watch_later_list_returns_cached_rows(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.watch_later.list",
+        json=_request_body(
+            "youtube.watch_later.list",
+            payload={"limit": 2, "query": "microservices"},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["result"]["videos"]
+    assert body["result"]["videos"][0]["video_id"] == "test_micro_001"
+
+
+def test_youtube_watch_later_search_content_returns_matches(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.watch_later.search_content",
+        json=_request_body(
+            "youtube.watch_later.search_content",
+            payload={"query": "distributed systems", "window_days": 30, "limit": 5},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["matches"]
+    assert body["matches"][0]["video_id"] == "test_micro_001"
+
+
+def test_youtube_watch_later_recommend_honors_duration_target(client: TestClient) -> None:
+    response = client.post(
+        "/tools/youtube.watch_later.recommend",
+        json=_request_body(
+            "youtube.watch_later.recommend",
+            payload={"query": "programming", "target_minutes": 15},
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["recommendation"]["video_id"] == "test_programming_015"
+    assert body["recommendation"]["duration_seconds"] == 900
+
+
+def test_watch_later_snapshot_push_endpoint_accepts_payload(client: TestClient) -> None:
+    response = client.post(
+        "/youtube/watch-later/snapshot",
+        json={
+            "generated_at_utc": "2026-02-28T18:00:00+00:00",
+            "source_client": "test-client",
+            "videos": [
+                {
+                    "video_id": "test_micro_001",
+                    "title": "Microservices Done Right - Real Lessons",
+                    "snapshot_position": 1,
+                },
+                {
+                    "video_id": "test_programming_015",
+                    "title": "Programming Interview Tips in 15 Minutes",
+                    "snapshot_position": 2,
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["result"]["videos_received"] == 2
+
+
+def test_watch_later_snapshot_push_rejects_empty_by_default(client: TestClient) -> None:
+    response = client.post(
+        "/youtube/watch-later/snapshot",
+        json={
+            "generated_at_utc": "2026-02-28T18:00:00+00:00",
+            "source_client": "test-client",
+            "videos": [],
+        },
+    )
+    assert response.status_code == 400
+    assert "allow_empty_snapshot=true" in response.json()["detail"]
 
 
 def test_structured_bucket_recommend_completion_and_health(client: TestClient) -> None:

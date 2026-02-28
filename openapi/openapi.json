@@ -112,6 +112,129 @@
         }
       }
     },
+    "/tools/youtube.watch_later.list": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Youtube Watch Later List",
+        "operationId": "youtube_watch_later_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/youtube.watch_later.search_content": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Youtube Watch Later Search Content",
+        "operationId": "youtube_watch_later_search_content",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tools/youtube.watch_later.recommend": {
+      "post": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Youtube Watch Later Recommend",
+        "operationId": "youtube_watch_later_recommend",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tools/youtube.transcript.get": {
       "post": {
         "tags": [
@@ -136,6 +259,47 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ToolResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/youtube/watch-later/snapshot": {
+      "post": {
+        "tags": [
+          "youtube"
+        ],
+        "summary": "Youtube Watch Later Snapshot Push",
+        "operationId": "youtube_watch_later_snapshot_push",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchLaterSnapshotPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchLaterSnapshotPushResponse"
                 }
               }
             }
@@ -671,6 +835,9 @@
             "enum": [
               "youtube.likes.list_recent",
               "youtube.likes.search_recent_content",
+              "youtube.watch_later.list",
+              "youtube.watch_later.search_content",
+              "youtube.watch_later.recommend",
               "youtube.transcript.get",
               "bucket.item.add",
               "bucket.item.update",
@@ -774,6 +941,9 @@
             "enum": [
               "youtube.likes.list_recent",
               "youtube.likes.search_recent_content",
+              "youtube.watch_later.list",
+              "youtube.watch_later.search_content",
+              "youtube.watch_later.recommend",
               "youtube.transcript.get",
               "bucket.item.add",
               "bucket.item.update",
@@ -926,6 +1096,369 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WatchLaterSnapshotPushRequest": {
+        "properties": {
+          "generated_at_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At Utc"
+          },
+          "source_client": {
+            "type": "string",
+            "title": "Source Client",
+            "default": "unknown"
+          },
+          "videos": {
+            "items": {
+              "$ref": "#/components/schemas/WatchLaterSnapshotVideo"
+            },
+            "type": "array",
+            "title": "Videos"
+          },
+          "allow_empty_snapshot": {
+            "type": "boolean",
+            "title": "Allow Empty Snapshot",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WatchLaterSnapshotPushRequest"
+      },
+      "WatchLaterSnapshotPushResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ok",
+          "result"
+        ],
+        "title": "WatchLaterSnapshotPushResponse"
+      },
+      "WatchLaterSnapshotVideo": {
+        "properties": {
+          "video_id": {
+            "type": "string",
+            "title": "Video Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "watch_later_added_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Later Added At"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
+          "snapshot_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Position"
+          },
+          "video_published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Published At"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
+          },
+          "channel_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Title"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Id"
+          },
+          "default_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Language"
+          },
+          "default_audio_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Audio Language"
+          },
+          "caption_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption Available"
+          },
+          "privacy_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Privacy Status"
+          },
+          "licensed_content": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Licensed Content"
+          },
+          "made_for_kids": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Made For Kids"
+          },
+          "live_broadcast_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Broadcast Content"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          },
+          "dimension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimension"
+          },
+          "thumbnails": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnails"
+          },
+          "topic_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic Categories"
+          },
+          "statistics_view_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics View Count"
+          },
+          "statistics_like_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics Like Count"
+          },
+          "statistics_comment_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics Comment Count"
+          },
+          "statistics_fetched_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics Fetched At"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "type": "object",
+        "required": [
+          "video_id"
+        ],
+        "title": "WatchLaterSnapshotVideo"
       }
     }
   }

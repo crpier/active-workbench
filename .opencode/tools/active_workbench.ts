@@ -8,6 +8,9 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
 const TOOL_NAMES = {
   youtube_likes_list_recent: "youtube.likes.list_recent",
   youtube_likes_search_recent_content: "youtube.likes.search_recent_content",
+  youtube_watch_later_list: "youtube.watch_later.list",
+  youtube_watch_later_search_content: "youtube.watch_later.search_content",
+  youtube_watch_later_recommend: "youtube.watch_later.recommend",
   youtube_transcript_get: "youtube.transcript.get",
   bucket_item_add: "bucket.item.add",
   bucket_item_update: "bucket.item.update",
@@ -178,6 +181,82 @@ export const youtube_likes_search_recent_content = backendTool(
       limit: tool.schema.number().int().optional().describe("Maximum number of matches."),
     },
     payloadFields: ["query", "window_days", "limit"],
+  },
+);
+
+export const youtube_watch_later_list = backendTool(
+  TOOL_NAMES.youtube_watch_later_list,
+  "List cached watch later videos from pushed snapshots.",
+  {
+    extraArgs: {
+      limit: tool.schema.any().optional().describe("Maximum number of videos to fetch."),
+      cursor: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Optional page cursor from result.next_cursor."),
+      compact: tool.schema.boolean().optional().describe("Return compact payload."),
+      query: tool.schema.string().optional().describe("Optional filter query."),
+      topic: tool.schema.string().optional().describe("Alias for query."),
+      include_removed: tool.schema
+        .boolean()
+        .optional()
+        .describe("Include removed watch-later rows."),
+    },
+    payloadFields: ["limit", "cursor", "compact", "query", "topic", "include_removed"],
+  },
+);
+
+export const youtube_watch_later_search_content = backendTool(
+  TOOL_NAMES.youtube_watch_later_search_content,
+  "Search watch later content by title/description/transcript.",
+  {
+    extraArgs: {
+      query: tool.schema.string().optional().describe("Search query text."),
+      window_days: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Optional lookback window in days."),
+      limit: tool.schema.number().int().optional().describe("Maximum number of matches."),
+      include_removed: tool.schema
+        .boolean()
+        .optional()
+        .describe("Include removed watch-later rows."),
+    },
+    payloadFields: ["query", "window_days", "limit", "include_removed"],
+  },
+);
+
+export const youtube_watch_later_recommend = backendTool(
+  TOOL_NAMES.youtube_watch_later_recommend,
+  "Recommend one watch later video by topic and optional duration target.",
+  {
+    extraArgs: {
+      query: tool.schema.string().optional().describe("Topic or query hint."),
+      topic: tool.schema.string().optional().describe("Alias for query."),
+      target_minutes: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Preferred video length in minutes."),
+      duration_tolerance_minutes: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Allowed duration gap in minutes."),
+      include_removed: tool.schema
+        .boolean()
+        .optional()
+        .describe("Include removed watch-later rows."),
+    },
+    payloadFields: [
+      "query",
+      "topic",
+      "target_minutes",
+      "duration_tolerance_minutes",
+      "include_removed",
+    ],
   },
 );
 

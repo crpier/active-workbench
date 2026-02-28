@@ -23,6 +23,7 @@ _PATH_FIELDS: tuple[str, ...] = (
 _BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
     "scheduler_enabled",
     "youtube_background_sync_enabled",
+    "youtube_watch_later_metadata_sync_enabled",
     "youtube_transcript_background_sync_enabled",
     "bucket_enrichment_enabled",
     "telemetry_enabled",
@@ -184,6 +185,18 @@ class AppSettings(BaseSettings):
         default=1_000,
         description="Deprecated sizing hint used by some refresh paths; likes cache retention is cutoff-based.",
     )
+    youtube_watch_later_metadata_sync_enabled: bool = Field(
+        default=True,
+        description="Enable background metadata refresh for active watch-later cache rows.",
+    )
+    youtube_watch_later_metadata_sync_min_interval_seconds: int = Field(
+        default=900,
+        description="Minimum time between watch-later metadata refresh runs.",
+    )
+    youtube_watch_later_metadata_sync_batch_size: int = Field(
+        default=30,
+        description="Maximum watch-later rows to enrich per metadata refresh run.",
+    )
 
     # Transcript cache and background sync behavior.
     youtube_transcript_cache_ttl_seconds: int = Field(
@@ -344,6 +357,7 @@ class AppSettings(BaseSettings):
             "`none` disables sink output."
         ),
     )
+
     @field_validator("youtube_mode", mode="before")
     @classmethod
     def _normalize_mode(cls, value: Any) -> str:

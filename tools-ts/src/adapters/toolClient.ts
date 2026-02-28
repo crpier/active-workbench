@@ -14,6 +14,10 @@ const TOOL_METHODS: Record<ToolName, ToolCall> = {
   "youtube.likes.list_recent": (request) => ToolsService.youtubeLikesListRecent(request),
   "youtube.likes.search_recent_content": (request) =>
     ToolsService.youtubeLikesSearchRecentContent(request),
+  "youtube.watch_later.list": (request) => ToolsService.youtubeWatchLaterList(request),
+  "youtube.watch_later.search_content": (request) =>
+    ToolsService.youtubeWatchLaterSearchContent(request),
+  "youtube.watch_later.recommend": (request) => ToolsService.youtubeWatchLaterRecommend(request),
   "youtube.transcript.get": (request) => ToolsService.youtubeTranscriptGet(request),
   "bucket.item.add": (request) => ToolsService.bucketItemAdd(request),
   "bucket.item.update": (request) => ToolsService.bucketItemUpdate(request),

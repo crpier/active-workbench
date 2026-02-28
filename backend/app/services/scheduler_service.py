@@ -194,6 +194,32 @@ class SchedulerService:
                         duration_ms=int((time.perf_counter() - sync_started) * 1000),
                         outcome="ok",
                     )
+
+                watch_later_sync_started = time.perf_counter()
+                self._telemetry.emit(
+                    "youtube.watch_later.metadata_sync.start",
+                    tick_id=tick_id,
+                )
+                try:
+                    metadata_units = (
+                        self._youtube_service.run_background_watch_later_metadata_sync()
+                    )
+                except Exception as exc:
+                    self._telemetry.emit(
+                        "youtube.watch_later.metadata_sync.error",
+                        tick_id=tick_id,
+                        duration_ms=int((time.perf_counter() - watch_later_sync_started) * 1000),
+                        error_type=type(exc).__name__,
+                    )
+                    LOGGER.warning("youtube watch later metadata sync failed", exc_info=True)
+                else:
+                    self._telemetry.emit(
+                        "youtube.watch_later.metadata_sync.finish",
+                        tick_id=tick_id,
+                        duration_ms=int((time.perf_counter() - watch_later_sync_started) * 1000),
+                        estimated_api_units=metadata_units,
+                        outcome="ok",
+                    )
             self._telemetry.emit(
                 "scheduler.tick.finish",
                 tick_id=tick_id,

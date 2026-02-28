@@ -40,3 +40,6 @@ youtube-auth:
 
 youtube-auth-secret CLIENT_SECRET_PATH:
   ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_oauth_setup --client-secret "{{CLIENT_SECRET_PATH}}"
+
+youtube-watch-later-push:
+  ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_watch_later_push

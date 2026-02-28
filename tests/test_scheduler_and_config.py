@@ -36,10 +36,15 @@ class _FakeDispatcherWithBucketPoll(_FakeDispatcher):
 class _FakeYouTubeService:
     def __init__(self) -> None:
         self.likes_calls = 0
+        self.watch_later_metadata_calls = 0
         self.transcript_calls = 0
 
     def run_background_likes_sync(self) -> None:
         self.likes_calls += 1
+
+    def run_background_watch_later_metadata_sync(self) -> int:
+        self.watch_later_metadata_calls += 1
+        return 0
 
     def run_background_transcript_sync(self) -> None:
         self.transcript_calls += 1
@@ -85,6 +90,7 @@ def test_scheduler_service_decouples_transcript_polling() -> None:
     scheduler.stop()
 
     assert youtube_service.likes_calls >= 1
+    assert youtube_service.watch_later_metadata_calls >= 1
     assert youtube_service.transcript_calls >= 2
     assert youtube_service.transcript_calls > youtube_service.likes_calls
 

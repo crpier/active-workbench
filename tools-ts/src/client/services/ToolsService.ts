@@ -60,6 +60,63 @@ export class ToolsService {
         });
     }
     /**
+     * Youtube Watch Later List
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static youtubeWatchLaterList(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/youtube.watch_later.list',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Youtube Watch Later Search Content
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static youtubeWatchLaterSearchContent(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/youtube.watch_later.search_content',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Youtube Watch Later Recommend
+     * @param requestBody
+     * @returns ToolResponse Successful Response
+     * @throws ApiError
+     */
+    public static youtubeWatchLaterRecommend(
+        requestBody: ToolRequest,
+    ): CancelablePromise<ToolResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/tools/youtube.watch_later.recommend',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Youtube Transcript Get
      * @param requestBody
      * @returns ToolResponse Successful Response

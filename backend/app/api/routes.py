@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from backend.app.dependencies import get_dispatcher
@@ -15,6 +16,60 @@ from backend.app.models.tool_contracts import (
 from backend.app.services.tool_dispatcher import ToolDispatcher
 
 router = APIRouter()
+
+
+def _default_watch_later_snapshot_videos() -> list[WatchLaterSnapshotVideo]:
+    return []
+
+
+class WatchLaterSnapshotVideo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    video_id: str
+    title: str | None = None
+    watch_later_added_at: str | None = None
+    first_seen_at: str | None = None
+    snapshot_position: int | None = None
+    video_published_at: str | None = None
+    description: str | None = None
+    channel_id: str | None = None
+    channel_title: str | None = None
+    duration_seconds: int | None = None
+    category_id: str | None = None
+    default_language: str | None = None
+    default_audio_language: str | None = None
+    caption_available: bool | None = None
+    privacy_status: str | None = None
+    licensed_content: bool | None = None
+    made_for_kids: bool | None = None
+    live_broadcast_content: str | None = None
+    definition: str | None = None
+    dimension: str | None = None
+    thumbnails: dict[str, str] | None = None
+    topic_categories: list[str] | None = None
+    statistics_view_count: int | None = None
+    statistics_like_count: int | None = None
+    statistics_comment_count: int | None = None
+    statistics_fetched_at: str | None = None
+    tags: list[str] | None = None
+
+
+class WatchLaterSnapshotPushRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at_utc: str | None = None
+    source_client: str = "unknown"
+    videos: list[WatchLaterSnapshotVideo] = Field(
+        default_factory=_default_watch_later_snapshot_videos
+    )
+    allow_empty_snapshot: bool = False
+
+
+class WatchLaterSnapshotPushResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    result: dict[str, Any]
 
 
 def _validate_tool_name(expected_tool: ToolName, request: ToolRequest) -> None:
@@ -80,6 +135,45 @@ def youtube_likes_search_recent_content(
 
 
 @router.post(
+    "/tools/youtube.watch_later.list",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="youtube_watch_later_list",
+)
+def youtube_watch_later_list(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.watch_later.list", request, dispatcher)
+
+
+@router.post(
+    "/tools/youtube.watch_later.search_content",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="youtube_watch_later_search_content",
+)
+def youtube_watch_later_search_content(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.watch_later.search_content", request, dispatcher)
+
+
+@router.post(
+    "/tools/youtube.watch_later.recommend",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="youtube_watch_later_recommend",
+)
+def youtube_watch_later_recommend(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("youtube.watch_later.recommend", request, dispatcher)
+
+
+@router.post(
     "/tools/youtube.transcript.get",
     response_model=ToolResponse,
     tags=["tools"],
@@ -90,6 +184,33 @@ def youtube_transcript_get(
     dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
 ) -> ToolResponse:
     return _handle_tool("youtube.transcript.get", request, dispatcher)
+
+
+@router.post(
+    "/youtube/watch-later/snapshot",
+    response_model=WatchLaterSnapshotPushResponse,
+    tags=["youtube"],
+    operation_id="youtube_watch_later_snapshot_push",
+)
+def youtube_watch_later_snapshot_push(
+    request: WatchLaterSnapshotPushRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> WatchLaterSnapshotPushResponse:
+    if not request.allow_empty_snapshot and not request.videos:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Empty watch-later snapshots are blocked by default; "
+                "set allow_empty_snapshot=true to force."
+            ),
+        )
+    result = dispatcher.youtube_service.push_watch_later_snapshot(
+        video_ids=[video.video_id for video in request.videos],
+        source_client=request.source_client,
+        generated_at_utc=request.generated_at_utc,
+        videos=[video.model_dump(exclude_none=True) for video in request.videos],
+    )
+    return WatchLaterSnapshotPushResponse(ok=True, result=result)
 
 
 @router.post(

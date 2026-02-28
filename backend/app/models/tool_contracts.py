@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 ToolName = Literal[
     "youtube.likes.list_recent",
     "youtube.likes.search_recent_content",
+    "youtube.watch_later.list",
+    "youtube.watch_later.search_content",
+    "youtube.watch_later.recommend",
     "youtube.transcript.get",
     "bucket.item.add",
     "bucket.item.update",

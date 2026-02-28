@@ -81,6 +81,13 @@ def get_dispatcher() -> ToolDispatcher:
             likes_background_page_size=settings.youtube_background_page_size,
             likes_cutoff_date=settings.youtube_likes_cutoff_date,
             likes_background_target_items=settings.youtube_background_target_items,
+            watch_later_metadata_sync_enabled=(settings.youtube_watch_later_metadata_sync_enabled),
+            watch_later_metadata_sync_min_interval_seconds=(
+                settings.youtube_watch_later_metadata_sync_min_interval_seconds
+            ),
+            watch_later_metadata_sync_batch_size=(
+                settings.youtube_watch_later_metadata_sync_batch_size
+            ),
             transcript_cache_ttl_seconds=settings.youtube_transcript_cache_ttl_seconds,
             transcript_background_sync_enabled=(
                 settings.youtube_transcript_background_sync_enabled

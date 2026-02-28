@@ -11,7 +11,9 @@ from backend.app.dependencies import reset_cached_dependencies
 from backend.app.main import create_app
 from backend.app.repositories.database import Database
 from backend.app.repositories.youtube_cache_repository import (
+    WATCH_LATER_STATUS_ACTIVE,
     CachedLikeVideo,
+    CachedWatchLaterVideo,
     YouTubeCacheRepository,
 )
 
@@ -57,6 +59,38 @@ def _seed_cached_youtube_data(data_dir: Path) -> None:
         ],
         max_items=500,
     )
+    cache_repo.upsert_watch_later_videos(
+        videos=[
+            CachedWatchLaterVideo(
+                video_id="test_micro_001",
+                title="Microservices Done Right - Real Lessons",
+                watch_later_added_at=_iso(4),
+                first_seen_at=_iso(4),
+                last_seen_at=_iso(2),
+                status=WATCH_LATER_STATUS_ACTIVE,
+                snapshot_position=1,
+                video_published_at=_iso(4),
+                description="Architecture trade-offs and distributed systems pitfalls.",
+                channel_title="Test Engineering",
+                duration_seconds=900,
+                tags=("microservices", "architecture"),
+            ),
+            CachedWatchLaterVideo(
+                video_id="test_programming_015",
+                title="Programming Interview Tips in 15 Minutes",
+                watch_later_added_at=_iso(6),
+                first_seen_at=_iso(6),
+                last_seen_at=_iso(5),
+                status=WATCH_LATER_STATUS_ACTIVE,
+                snapshot_position=2,
+                video_published_at=_iso(8),
+                description="Practical coding interview advice and patterns.",
+                channel_title="Test Career",
+                duration_seconds=15 * 60,
+                tags=("programming", "interview", "career"),
+            ),
+        ]
+    )
     cache_repo.upsert_transcript(
         video_id="test_cooking_001",
         title="How To Cook Leek And Potato Soup",
@@ -64,6 +98,7 @@ def _seed_cached_youtube_data(data_dir: Path) -> None:
             "Today we're cooking a leek and potato soup. Chop the leeks and potatoes and simmer."
         ),
         source="supadata_captions",
+        initial_request_source="likes",
         segments=[],
     )
     cache_repo.upsert_transcript(
@@ -74,6 +109,7 @@ def _seed_cached_youtube_data(data_dir: Path) -> None:
             "operational complexity."
         ),
         source="supadata_captions",
+        initial_request_source="likes",
         segments=[],
     )
 

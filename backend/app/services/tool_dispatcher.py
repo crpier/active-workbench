@@ -41,6 +41,16 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "youtube.likes.search_recent_content": (
         "Search recent liked videos by content (title/description/transcript) in a recent window."
     ),
+    "youtube.watch_later.list": (
+        "List watch later videos from local cache populated by pushed snapshots. "
+        "Supports payload.query and cursor pagination."
+    ),
+    "youtube.watch_later.search_content": (
+        "Search watch later videos by content (title/description/transcript)."
+    ),
+    "youtube.watch_later.recommend": (
+        "Recommend one watch later video using query and optional duration target."
+    ),
     "youtube.transcript.get": (
         "Retrieve transcript for a YouTube video (cache-first, fetch fallback)."
     ),
@@ -70,6 +80,9 @@ READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
     {
         "youtube.likes.list_recent",
         "youtube.likes.search_recent_content",
+        "youtube.watch_later.list",
+        "youtube.watch_later.search_content",
+        "youtube.watch_later.recommend",
         "youtube.transcript.get",
         "bucket.item.add",
         "bucket.item.update",
@@ -262,6 +275,12 @@ class ToolDispatcher:
             return self._handle_youtube_likes(request)
         if tool_name == "youtube.likes.search_recent_content":
             return self._handle_youtube_likes_search_recent_content(request)
+        if tool_name == "youtube.watch_later.list":
+            return self._handle_youtube_watch_later_list(request)
+        if tool_name == "youtube.watch_later.search_content":
+            return self._handle_youtube_watch_later_search_content(request)
+        if tool_name == "youtube.watch_later.recommend":
+            return self._handle_youtube_watch_later_recommend(request)
         if tool_name == "youtube.transcript.get":
             return self._handle_youtube_transcript(request)
         if tool_name == "bucket.item.add":
@@ -492,6 +511,283 @@ class ToolDispatcher:
             response,
             tool_name=request.tool,
             estimated_units_this_call=likes_result.estimated_api_units,
+        )
+
+    def _handle_youtube_watch_later_list(self, request: ToolRequest) -> ToolResponse:
+        requested_limit = _int_or_default(request.payload.get("limit"), default=5)
+        applied_limit = max(1, min(100, requested_limit))
+        raw_cursor = request.payload.get("cursor")
+        if raw_cursor is None:
+            raw_cursor = request.payload.get("offset")
+        cursor = max(0, _optional_int(raw_cursor) or 0)
+        compact = _bool_or_default(request.payload.get("compact"), default=False)
+        query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        include_removed = _bool_or_default(request.payload.get("include_removed"), default=False)
+
+        try:
+            watch_later_result = self._youtube_service.list_watch_later_cached_only_with_metadata(
+                limit=applied_limit,
+                query=query,
+                cursor=cursor,
+                include_removed=include_removed,
+            )
+        except YouTubeServiceError as exc:
+            error_response = _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="youtube_unavailable",
+                message=str(exc),
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+
+        if compact:
+            payload_videos = [
+                {
+                    "video_id": item.video_id,
+                    "title": item.title,
+                    "watch_later_added_at": item.published_at,
+                    "video_published_at": item.video_published_at,
+                    "channel_title": item.channel_title,
+                    "duration_seconds": item.duration_seconds,
+                    "topic_categories": list(item.topic_categories),
+                    "tags": list(item.tags),
+                }
+                for item in watch_later_result.videos
+            ]
+        else:
+            payload_videos = [
+                {
+                    "video_id": item.video_id,
+                    "title": item.title,
+                    "watch_later_added_at": item.published_at,
+                    "video_published_at": item.video_published_at,
+                    "description": item.description,
+                    "channel_id": item.channel_id,
+                    "channel_title": item.channel_title,
+                    "duration_seconds": item.duration_seconds,
+                    "category_id": item.category_id,
+                    "default_language": item.default_language,
+                    "default_audio_language": item.default_audio_language,
+                    "caption_available": item.caption_available,
+                    "privacy_status": item.privacy_status,
+                    "licensed_content": item.licensed_content,
+                    "made_for_kids": item.made_for_kids,
+                    "live_broadcast_content": item.live_broadcast_content,
+                    "definition": item.definition,
+                    "dimension": item.dimension,
+                    "thumbnails": item.thumbnails or {},
+                    "topic_categories": list(item.topic_categories),
+                    "statistics_view_count": item.statistics_view_count,
+                    "statistics_like_count": item.statistics_like_count,
+                    "statistics_comment_count": item.statistics_comment_count,
+                    "statistics_fetched_at": item.statistics_fetched_at,
+                    "tags": list(item.tags),
+                }
+                for item in watch_later_result.videos
+            ]
+
+        response = ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "compact": compact,
+                "videos": payload_videos,
+                "requested_limit": requested_limit,
+                "applied_limit": watch_later_result.applied_limit,
+                "requested_cursor": cursor,
+                "cursor": watch_later_result.cursor,
+                "next_cursor": watch_later_result.next_cursor,
+                "has_more": watch_later_result.has_more,
+                "total_matches": watch_later_result.total_matches,
+                "truncated": watch_later_result.has_more,
+                "cache": {
+                    "hit": watch_later_result.cache_hit,
+                    "miss": watch_later_result.cache_miss,
+                },
+                "include_removed": include_removed,
+            },
+            provenance=[
+                ProvenanceRef(type="youtube_video", id=item.video_id)
+                for item in watch_later_result.videos
+            ],
+            error=None,
+        )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=watch_later_result.estimated_api_units,
+        )
+
+    def _handle_youtube_watch_later_search_content(self, request: ToolRequest) -> ToolResponse:
+        query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        if query is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.query is required",
+            )
+        requested_window_days = _optional_int(request.payload.get("window_days"))
+        window_days = (
+            None if requested_window_days is None else max(1, min(30, requested_window_days))
+        )
+        limit = max(1, min(25, _int_or_default(request.payload.get("limit"), default=5)))
+        include_removed = _bool_or_default(request.payload.get("include_removed"), default=False)
+
+        try:
+            search_result = self._youtube_service.search_watch_later_content_with_metadata(
+                query=query,
+                window_days=window_days,
+                limit=limit,
+                include_removed=include_removed,
+            )
+        except YouTubeServiceError as exc:
+            error_response = _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="youtube_unavailable",
+                message=str(exc),
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+
+        matches = [
+            {
+                "video_id": match.video.video_id,
+                "title": match.video.title,
+                "watch_later_added_at": match.video.published_at,
+                "video_published_at": match.video.video_published_at,
+                "score": match.score,
+                "matched_in": list(match.matched_in),
+                "snippet": match.snippet,
+            }
+            for match in search_result.matches
+        ]
+        response = ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "query": query,
+                "window_days": window_days,
+                "matches": matches,
+                "coverage": {
+                    "watch_later_videos_count": search_result.recent_videos_count,
+                    "transcripts_available_count": search_result.transcripts_available_count,
+                    "transcript_coverage_percent": search_result.transcript_coverage_percent,
+                },
+                "cache": {"miss": search_result.cache_miss},
+                "include_removed": include_removed,
+            },
+            provenance=[
+                ProvenanceRef(type="youtube_video", id=match.video.video_id)
+                for match in search_result.matches
+            ],
+            error=None,
+        )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=search_result.estimated_api_units,
+        )
+
+    def _handle_youtube_watch_later_recommend(self, request: ToolRequest) -> ToolResponse:
+        query = _payload_str(request.payload, "query") or _payload_str(request.payload, "topic")
+        target_minutes = _optional_int(
+            request.payload.get("target_minutes") or request.payload.get("duration_minutes")
+        )
+        duration_tolerance_minutes = max(
+            0,
+            _int_or_default(request.payload.get("duration_tolerance_minutes"), default=5),
+        )
+        include_removed = _bool_or_default(request.payload.get("include_removed"), default=False)
+
+        try:
+            recommendation = self._youtube_service.recommend_watch_later_video_with_metadata(
+                query=query,
+                target_duration_minutes=target_minutes,
+                duration_tolerance_minutes=duration_tolerance_minutes,
+                include_removed=include_removed,
+            )
+        except YouTubeServiceError as exc:
+            error_response = _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="youtube_unavailable",
+                message=str(exc),
+            )
+            return self._attach_quota_snapshot(
+                error_response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+
+        video = recommendation.video
+        if video is None:
+            response = ToolResponse(
+                ok=False,
+                request_id=request.request_id,
+                result={
+                    "tool": request.tool,
+                    "status": "not_found",
+                    "reason": recommendation.reason,
+                },
+                provenance=[],
+                error=ToolError(
+                    code="not_found",
+                    message="No matching watch later video found",
+                    retryable=False,
+                ),
+            )
+            return self._attach_quota_snapshot(
+                response,
+                tool_name=request.tool,
+                estimated_units_this_call=0,
+            )
+
+        response = ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": "ok",
+                "query": query,
+                "target_minutes": target_minutes,
+                "duration_tolerance_minutes": duration_tolerance_minutes,
+                "recommendation": {
+                    "video_id": video.video_id,
+                    "title": video.title,
+                    "watch_later_added_at": video.published_at,
+                    "video_published_at": video.video_published_at,
+                    "description": video.description,
+                    "channel_id": video.channel_id,
+                    "channel_title": video.channel_title,
+                    "duration_seconds": video.duration_seconds,
+                    "thumbnails": video.thumbnails or {},
+                    "tags": list(video.tags),
+                    "topic_categories": list(video.topic_categories),
+                    "score": recommendation.score,
+                    "reason": recommendation.reason,
+                },
+                "include_removed": include_removed,
+            },
+            provenance=[ProvenanceRef(type="youtube_video", id=video.video_id)],
+            error=None,
+        )
+        return self._attach_quota_snapshot(
+            response,
+            tool_name=request.tool,
+            estimated_units_this_call=0,
         )
 
     def _handle_youtube_transcript(self, request: ToolRequest) -> ToolResponse:

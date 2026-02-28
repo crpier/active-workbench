@@ -16,6 +16,10 @@ export type { ToolError } from './models/ToolError';
 export type { ToolRequest } from './models/ToolRequest';
 export type { ToolResponse } from './models/ToolResponse';
 export type { ValidationError } from './models/ValidationError';
+export type { WatchLaterSnapshotPushRequest } from './models/WatchLaterSnapshotPushRequest';
+export type { WatchLaterSnapshotPushResponse } from './models/WatchLaterSnapshotPushResponse';
+export type { WatchLaterSnapshotVideo } from './models/WatchLaterSnapshotVideo';
 
 export { SystemService } from './services/SystemService';
 export { ToolsService } from './services/ToolsService';
+export { YoutubeService } from './services/YoutubeService';

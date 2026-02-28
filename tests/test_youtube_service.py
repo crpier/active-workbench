@@ -91,6 +91,7 @@ def _build_service_with_seeded_cache(tmp_path: Path) -> YouTubeService:
         title="How To Cook Leek And Potato Soup",
         transcript="Today we're cooking a leek and potato soup.",
         source="supadata_captions",
+        initial_request_source="likes",
         segments=[],
     )
     return YouTubeService(mode="oauth", data_dir=tmp_path, cache_repository=cache_repo)
@@ -670,6 +671,7 @@ def test_oauth_search_recent_content_matches_transcript(tmp_path: Path) -> None:
         title="Console teardown",
         transcript="We tested game controllers and button latency.",
         source="youtube_captions",
+        initial_request_source="likes",
         segments=[],
     )
 
@@ -709,6 +711,7 @@ def test_oauth_search_recent_content_without_window_searches_full_cache(tmp_path
         title="Kimi K2.5 deep dive",
         transcript="Great notes about Kimi K2.5",
         source="supadata_captions",
+        initial_request_source="likes",
         segments=[],
     )
 
@@ -812,6 +815,7 @@ def test_oauth_transcript_cache_hit_returns_zero_units(tmp_path: Path) -> None:
         title="Cached Transcript Video",
         transcript="cached transcript text",
         source="youtube_captions",
+        initial_request_source="likes",
         segments=[{"text": "cached", "start": 0.0, "duration": 1.0}],
     )
 
@@ -1517,6 +1521,7 @@ def test_oauth_background_sync_applies_likes_cutoff_and_purges_orphan_transcript
         title="Old Video",
         transcript="stale transcript",
         source="supadata_captions",
+        initial_request_source="likes",
         segments=[],
     )
 
@@ -1568,6 +1573,7 @@ def test_oauth_background_transcript_sync_success(
             title="Transcript Target",
             transcript="hello from background sync",
             source="youtube_captions",
+            initial_request_source="likes",
             segments=[],
         )
         return YouTubeTranscriptResult(
@@ -1629,6 +1635,7 @@ def test_oauth_background_transcript_sync_start_log_includes_supadata_provider(
             title="Transcript Target",
             transcript="hello from supadata provider run",
             source="supadata_captions",
+            initial_request_source="likes",
             segments=[],
         )
         return YouTubeTranscriptResult(

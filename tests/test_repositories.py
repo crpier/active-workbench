@@ -5,6 +5,9 @@ from pathlib import Path
 
 from backend.app.repositories.database import Database
 from backend.app.repositories.youtube_cache_repository import (
+    WATCH_LATER_STATUS_ACTIVE,
+    WATCH_LATER_STATUS_REMOVED_NOT_LIKED,
+    WATCH_LATER_STATUS_REMOVED_WATCHED,
     CachedLikeVideo,
     YouTubeCacheRepository,
 )
@@ -96,6 +99,7 @@ def test_youtube_cache_repository_transcript_ttl(tmp_path: Path) -> None:
         title="Transcript Video",
         transcript="hello world",
         source="youtube_captions",
+        initial_request_source="likes",
         segments=[{"text": "hello", "start": 0.0, "duration": 1.0}],
     )
 
@@ -133,6 +137,7 @@ def test_youtube_cache_repository_transcript_sync_candidate_and_status(tmp_path:
         title="Recent One",
         transcript="already cached",
         source="youtube_captions",
+        initial_request_source="likes",
         segments=[],
     )
 
@@ -157,3 +162,57 @@ def test_youtube_cache_repository_transcript_sync_candidate_and_status(tmp_path:
 
     cache_repo.mark_transcript_sync_success(video_id="recent_2")
     assert cache_repo.get_transcript_sync_attempts(video_id="recent_2") == 2
+
+
+def test_youtube_cache_repository_watch_later_snapshot_transitions(tmp_path: Path) -> None:
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    cache_repo = YouTubeCacheRepository(db)
+
+    first = cache_repo.apply_watch_later_snapshot(
+        video_ids=["watch_1", "watch_2"],
+        generated_at_utc="2026-02-28T10:00:00+00:00",
+        source_client="tests",
+    )
+    assert first["accepted"] is True
+    assert first["dedupe_skipped"] is False
+    assert cache_repo.count_watch_later(statuses=(WATCH_LATER_STATUS_ACTIVE,)) == 2
+
+    cache_repo.upsert_likes(
+        videos=[
+            CachedLikeVideo(
+                video_id="watch_1",
+                title="Watched Item",
+                liked_at="2026-02-28T11:00:00+00:00",
+            )
+        ]
+    )
+
+    second = cache_repo.apply_watch_later_snapshot(
+        video_ids=["watch_2"],
+        generated_at_utc="2026-02-28T11:30:00+00:00",
+        source_client="tests",
+    )
+    assert second["accepted"] is True
+    assert second["dedupe_skipped"] is False
+    assert second["videos_marked_removed_watched"] == 1
+    assert second["videos_marked_removed_not_liked"] == 0
+    assert cache_repo.count_watch_later(statuses=(WATCH_LATER_STATUS_ACTIVE,)) == 1
+    assert cache_repo.count_watch_later(statuses=(WATCH_LATER_STATUS_REMOVED_WATCHED,)) == 1
+
+    third = cache_repo.apply_watch_later_snapshot(
+        video_ids=["watch_2"],
+        generated_at_utc="2026-02-28T11:45:00+00:00",
+        source_client="tests",
+    )
+    assert third["accepted"] is True
+    assert third["dedupe_skipped"] is True
+
+    fourth = cache_repo.apply_watch_later_snapshot(
+        video_ids=[],
+        generated_at_utc="2026-02-28T12:00:00+00:00",
+        source_client="tests",
+    )
+    assert fourth["accepted"] is True
+    assert fourth["videos_marked_removed_not_liked"] == 1
+    assert cache_repo.count_watch_later(statuses=(WATCH_LATER_STATUS_REMOVED_NOT_LIKED,)) == 1

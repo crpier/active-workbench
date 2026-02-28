@@ -14,7 +14,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from backend.app.repositories.youtube_cache_repository import (
+    WATCH_LATER_STATUS_ACTIVE,
+    WATCH_LATER_STATUS_REMOVED_NOT_LIKED,
+    WATCH_LATER_STATUS_REMOVED_WATCHED,
     CachedLikeVideo,
+    CachedWatchLaterVideo,
     YouTubeCacheRepository,
 )
 
@@ -100,6 +104,13 @@ class YouTubeRecentContentSearchResult:
     cache_miss: bool
     recent_probe_applied: bool
     recent_probe_pages_used: int
+
+
+@dataclass(frozen=True)
+class YouTubeWatchLaterRecommendationResult:
+    video: YouTubeVideo | None
+    score: int
+    reason: str
 
 
 class YouTubeServiceError(Exception):
@@ -263,6 +274,7 @@ LIKES_BACKGROUND_LAST_RUN_AT_KEY = "likes_background_last_run_at"
 LIKES_BACKGROUND_BACKFILL_NEXT_PAGE_TOKEN_KEY = "likes_background_backfill_next_page_token"
 LIKES_RECENT_PROBE_RATE_LIMIT_PAUSED_UNTIL_KEY = "likes_recent_probe_rate_limit_paused_until"
 LIKES_RECENT_PROBE_RATE_LIMIT_STREAK_KEY = "likes_recent_probe_rate_limit_streak"
+WATCH_LATER_METADATA_BACKGROUND_LAST_RUN_AT_KEY = "watch_later_metadata_background_last_run_at"
 TRANSCRIPTS_BACKGROUND_LAST_RUN_AT_KEY = "transcripts_background_last_run_at"
 TRANSCRIPTS_BACKGROUND_IP_BLOCK_PAUSED_UNTIL_KEY = "transcripts_background_ip_block_paused_until"
 TRANSCRIPTS_BACKGROUND_IP_BLOCK_STREAK_KEY = "transcripts_background_ip_block_streak"
@@ -305,6 +317,9 @@ class YouTubeService:
         likes_background_page_size: int = 50,
         likes_cutoff_date: date = date(2024, 10, 20),
         likes_background_target_items: int = 1_000,
+        watch_later_metadata_sync_enabled: bool = True,
+        watch_later_metadata_sync_min_interval_seconds: int = 900,
+        watch_later_metadata_sync_batch_size: int = 30,
         transcript_cache_ttl_seconds: int = 86_400,
         transcript_background_sync_enabled: bool = True,
         transcript_background_min_interval_seconds: int = 120,
@@ -349,6 +364,11 @@ class YouTubeService:
             self._likes_background_page_size,
             likes_background_target_items,
         )
+        self._watch_later_metadata_sync_enabled = watch_later_metadata_sync_enabled
+        self._watch_later_metadata_sync_min_interval_seconds = max(
+            0, watch_later_metadata_sync_min_interval_seconds
+        )
+        self._watch_later_metadata_sync_batch_size = max(1, watch_later_metadata_sync_batch_size)
         self._transcript_cache_ttl_seconds = max(0, transcript_cache_ttl_seconds)
         self._transcript_background_sync_enabled = transcript_background_sync_enabled
         self._transcript_background_min_interval_seconds = max(
@@ -439,19 +459,24 @@ class YouTubeService:
             cutoff_liked_at=self._likes_cutoff_datetime
         )
         purged_transcripts, purged_sync_rows = (
-            self._cache_repository.purge_transcript_rows_not_in_likes()
+            self._cache_repository.purge_transcript_rows_not_in_active_sources()
         )
-        if purged_likes or purged_transcripts or purged_sync_rows:
+        transitioned_watch_later = (
+            self._cache_repository.transition_removed_not_liked_to_watched_for_likes()
+        )
+        if purged_likes or purged_transcripts or purged_sync_rows or transitioned_watch_later:
             LOGGER.info(
                 (
                     "youtube likes scope_apply source=%s cutoff_date=%s "
-                    "purged_likes=%s purged_transcripts=%s purged_sync_rows=%s"
+                    "purged_likes=%s purged_transcripts=%s purged_sync_rows=%s "
+                    "watch_later_transitioned=%s"
                 ),
                 source,
                 self._likes_cutoff_date.isoformat(),
                 purged_likes,
                 purged_transcripts,
                 purged_sync_rows,
+                transitioned_watch_later,
             )
 
     def run_background_likes_sync(self) -> None:
@@ -489,7 +514,7 @@ class YouTubeService:
                 likes_playlist_id=likes_playlist_id,
                 page_size=self._likes_background_page_size,
                 page_token=hot_next_page_token,
-                enrich_metadata=True,
+                enrich_metadata=False,
             )
             total_units += page_fetch.estimated_api_units
             hot_pages_processed += 1
@@ -508,6 +533,12 @@ class YouTubeService:
                 hot_next_page_token = None
                 break
 
+            scoped_videos, metadata_calls = self._enrich_videos_from_cache_then_api(
+                client=client,
+                videos=scoped_videos,
+                enrich_metadata=True,
+            )
+            total_units += metadata_calls
             cached_rows = [_video_to_cached_like(video) for video in scoped_videos]
             self._cache_repository.upsert_likes(
                 videos=cached_rows,
@@ -544,7 +575,7 @@ class YouTubeService:
                 likes_playlist_id=likes_playlist_id,
                 page_size=self._likes_background_page_size,
                 page_token=backfill_page_token,
-                enrich_metadata=True,
+                enrich_metadata=False,
             )
             total_units += page_fetch.estimated_api_units
             backfill_pages_processed += 1
@@ -554,6 +585,12 @@ class YouTubeService:
             )
             scoped_videos, reached_cutoff = self._filter_likes_videos_by_cutoff(page_fetch.videos)
             if scoped_videos:
+                scoped_videos, metadata_calls = self._enrich_videos_from_cache_then_api(
+                    client=client,
+                    videos=scoped_videos,
+                    enrich_metadata=True,
+                )
+                total_units += metadata_calls
                 cached_rows = [_video_to_cached_like(video) for video in scoped_videos]
                 self._cache_repository.upsert_likes(
                     videos=cached_rows,
@@ -611,6 +648,361 @@ class YouTubeService:
             likes_rows_after,
             self._likes_cutoff_date.isoformat(),
         )
+
+    def run_background_watch_later_metadata_sync(
+        self,
+        *,
+        force: bool = False,
+        max_videos: int | None = None,
+    ) -> int:
+        if self._cache_repository is None:
+            return 0
+        if not force and not self._watch_later_metadata_sync_enabled:
+            return 0
+        if not force and not self._watch_later_metadata_sync_interval_elapsed():
+            return 0
+
+        batch_size = (
+            self._watch_later_metadata_sync_batch_size if max_videos is None else max(1, max_videos)
+        )
+        scan_limit = max(batch_size, batch_size * 4)
+        active_rows = self._cache_repository.list_watch_later(
+            limit=scan_limit,
+            statuses=(WATCH_LATER_STATUS_ACTIVE,),
+        )
+        candidates = [row for row in active_rows if _watch_later_row_needs_metadata(row)][
+            :batch_size
+        ]
+        if not candidates:
+            self._mark_watch_later_metadata_sync_run()
+            return 0
+
+        videos = [_cached_watch_later_to_video(row) for row in candidates]
+        enriched_videos, metadata_calls = self._enrich_videos_from_cache_then_api(
+            videos=videos,
+            enrich_metadata=True,
+        )
+        candidates_by_id = {row.video_id: row for row in candidates}
+        updated_rows = [
+            _video_to_cached_watch_later(
+                video=video,
+                existing=candidates_by_id[video.video_id],
+            )
+            for video in enriched_videos
+        ]
+        self._cache_repository.upsert_watch_later_videos(videos=updated_rows)
+        self._mark_watch_later_metadata_sync_run()
+        LOGGER.info(
+            (
+                "youtube watch_later metadata_sync done candidates=%s updated=%s "
+                "metadata_api_units=%s"
+            ),
+            len(candidates),
+            len(updated_rows),
+            metadata_calls,
+        )
+        return metadata_calls
+
+    def push_watch_later_snapshot(
+        self,
+        *,
+        video_ids: list[str],
+        source_client: str,
+        generated_at_utc: str | None,
+        videos: list[dict[str, Any]] | None = None,
+    ) -> dict[str, object]:
+        if self._cache_repository is None:
+            raise YouTubeServiceError("YouTube cache repository is required for watch later ingest")
+
+        ingest_result = self._cache_repository.apply_watch_later_snapshot(
+            video_ids=video_ids,
+            generated_at_utc=generated_at_utc,
+            source_client=source_client.strip() or "unknown",
+        )
+        transitioned = self._cache_repository.transition_removed_not_liked_to_watched_for_likes()
+        ingest_result["watch_later_transitioned_from_likes"] = transitioned
+
+        snapshot_videos = videos or []
+        if snapshot_videos:
+            self._upsert_watch_later_snapshot_details(snapshot_videos)
+            ingest_result["videos_with_snapshot_details"] = len(snapshot_videos)
+        else:
+            ingest_result["videos_with_snapshot_details"] = 0
+
+        metadata_api_units = self.run_background_watch_later_metadata_sync(force=True)
+        ingest_result["metadata_api_units"] = metadata_api_units
+        return ingest_result
+
+    def _upsert_watch_later_snapshot_details(self, videos: list[dict[str, Any]]) -> None:
+        if self._cache_repository is None or not videos:
+            return
+
+        now_iso = datetime.now(UTC).isoformat()
+        by_video_id: dict[str, dict[str, Any]] = {}
+        for payload in videos:
+            raw_video_id = payload.get("video_id")
+            if not isinstance(raw_video_id, str):
+                continue
+            video_id = raw_video_id.strip()
+            if not video_id:
+                continue
+            by_video_id[video_id] = payload
+        if not by_video_id:
+            return
+
+        ordered_ids = list(by_video_id.keys())
+        existing_by_id = self._cache_repository.get_watch_later_by_video_ids(video_ids=ordered_ids)
+        likes_by_id = self._cache_repository.get_likes_by_video_ids(video_ids=ordered_ids)
+
+        upsert_rows: list[CachedWatchLaterVideo] = []
+        for video_id in ordered_ids:
+            payload = by_video_id[video_id]
+            existing = existing_by_id.get(video_id)
+            from_likes = likes_by_id.get(video_id)
+            tags = _extract_string_list(payload.get("tags"))
+            if not tags:
+                tags = (
+                    existing.tags
+                    if existing is not None
+                    else (from_likes.tags if from_likes is not None else ())
+                )
+            topic_categories = _extract_string_list(payload.get("topic_categories"))
+            if not topic_categories:
+                topic_categories = (
+                    existing.topic_categories
+                    if existing is not None
+                    else (from_likes.topic_categories if from_likes is not None else ())
+                )
+            thumbnails = _coerce_thumbnail_map(payload.get("thumbnails"))
+            if not thumbnails:
+                thumbnails = (
+                    dict(existing.thumbnails)
+                    if existing is not None
+                    else (dict(from_likes.thumbnails) if from_likes is not None else {})
+                )
+            watch_later_added_at = _coerce_nonempty_string(payload.get("watch_later_added_at"))
+            first_seen_at = _coerce_nonempty_string(payload.get("first_seen_at"))
+            upsert_rows.append(
+                CachedWatchLaterVideo(
+                    video_id=video_id,
+                    title=(
+                        _coerce_nonempty_string(payload.get("title"))
+                        or (existing.title if existing is not None else None)
+                        or (from_likes.title if from_likes is not None else None)
+                        or video_id
+                    ),
+                    watch_later_added_at=(
+                        watch_later_added_at
+                        or (existing.watch_later_added_at if existing is not None else now_iso)
+                    ),
+                    first_seen_at=(
+                        first_seen_at
+                        or (existing.first_seen_at if existing is not None else now_iso)
+                    ),
+                    last_seen_at=(existing.last_seen_at if existing is not None else now_iso),
+                    status=(existing.status if existing is not None else WATCH_LATER_STATUS_ACTIVE),
+                    removed_at=(existing.removed_at if existing is not None else None),
+                    snapshot_position=(
+                        _coerce_int(payload.get("snapshot_position"))
+                        or (existing.snapshot_position if existing is not None else None)
+                    ),
+                    video_published_at=(
+                        _coerce_nonempty_string(payload.get("video_published_at"))
+                        or (existing.video_published_at if existing is not None else None)
+                        or (from_likes.video_published_at if from_likes is not None else None)
+                    ),
+                    description=(
+                        _coerce_nonempty_string(payload.get("description"))
+                        or (existing.description if existing is not None else None)
+                        or (from_likes.description if from_likes is not None else None)
+                    ),
+                    channel_id=(
+                        _coerce_nonempty_string(payload.get("channel_id"))
+                        or (existing.channel_id if existing is not None else None)
+                        or (from_likes.channel_id if from_likes is not None else None)
+                    ),
+                    channel_title=(
+                        _coerce_nonempty_string(payload.get("channel_title"))
+                        or (existing.channel_title if existing is not None else None)
+                        or (from_likes.channel_title if from_likes is not None else None)
+                    ),
+                    duration_seconds=(
+                        _coerce_int(payload.get("duration_seconds"))
+                        or (existing.duration_seconds if existing is not None else None)
+                        or (from_likes.duration_seconds if from_likes is not None else None)
+                    ),
+                    category_id=(
+                        _coerce_nonempty_string(payload.get("category_id"))
+                        or (existing.category_id if existing is not None else None)
+                        or (from_likes.category_id if from_likes is not None else None)
+                    ),
+                    default_language=(
+                        _coerce_nonempty_string(payload.get("default_language"))
+                        or (existing.default_language if existing is not None else None)
+                        or (from_likes.default_language if from_likes is not None else None)
+                    ),
+                    default_audio_language=(
+                        _coerce_nonempty_string(payload.get("default_audio_language"))
+                        or (existing.default_audio_language if existing is not None else None)
+                        or (from_likes.default_audio_language if from_likes is not None else None)
+                    ),
+                    caption_available=(
+                        _coerce_bool(payload.get("caption_available"))
+                        if payload.get("caption_available") is not None
+                        else (
+                            existing.caption_available
+                            if existing is not None
+                            else (from_likes.caption_available if from_likes is not None else None)
+                        )
+                    ),
+                    privacy_status=(
+                        _coerce_nonempty_string(payload.get("privacy_status"))
+                        or (existing.privacy_status if existing is not None else None)
+                        or (from_likes.privacy_status if from_likes is not None else None)
+                    ),
+                    licensed_content=(
+                        _coerce_bool(payload.get("licensed_content"))
+                        if payload.get("licensed_content") is not None
+                        else (
+                            existing.licensed_content
+                            if existing is not None
+                            else (from_likes.licensed_content if from_likes is not None else None)
+                        )
+                    ),
+                    made_for_kids=(
+                        _coerce_bool(payload.get("made_for_kids"))
+                        if payload.get("made_for_kids") is not None
+                        else (
+                            existing.made_for_kids
+                            if existing is not None
+                            else (from_likes.made_for_kids if from_likes is not None else None)
+                        )
+                    ),
+                    live_broadcast_content=(
+                        _coerce_nonempty_string(payload.get("live_broadcast_content"))
+                        or (existing.live_broadcast_content if existing is not None else None)
+                        or (from_likes.live_broadcast_content if from_likes is not None else None)
+                    ),
+                    definition=(
+                        _coerce_nonempty_string(payload.get("definition"))
+                        or (existing.definition if existing is not None else None)
+                        or (from_likes.definition if from_likes is not None else None)
+                    ),
+                    dimension=(
+                        _coerce_nonempty_string(payload.get("dimension"))
+                        or (existing.dimension if existing is not None else None)
+                        or (from_likes.dimension if from_likes is not None else None)
+                    ),
+                    thumbnails=thumbnails,
+                    topic_categories=topic_categories,
+                    statistics_view_count=(
+                        _coerce_int(payload.get("statistics_view_count"))
+                        or (existing.statistics_view_count if existing is not None else None)
+                        or (from_likes.statistics_view_count if from_likes is not None else None)
+                    ),
+                    statistics_like_count=(
+                        _coerce_int(payload.get("statistics_like_count"))
+                        or (existing.statistics_like_count if existing is not None else None)
+                        or (from_likes.statistics_like_count if from_likes is not None else None)
+                    ),
+                    statistics_comment_count=(
+                        _coerce_int(payload.get("statistics_comment_count"))
+                        or (existing.statistics_comment_count if existing is not None else None)
+                        or (from_likes.statistics_comment_count if from_likes is not None else None)
+                    ),
+                    statistics_fetched_at=(
+                        _coerce_nonempty_string(payload.get("statistics_fetched_at"))
+                        or (existing.statistics_fetched_at if existing is not None else None)
+                        or (from_likes.statistics_fetched_at if from_likes is not None else None)
+                    ),
+                    tags=tags,
+                )
+            )
+        if upsert_rows:
+            self._cache_repository.upsert_watch_later_videos(videos=upsert_rows)
+
+    def _watch_later_metadata_sync_interval_elapsed(self) -> bool:
+        if self._cache_repository is None:
+            return False
+        if self._watch_later_metadata_sync_min_interval_seconds <= 0:
+            return True
+
+        raw_last_run = self._cache_repository.get_cache_state_value(
+            WATCH_LATER_METADATA_BACKGROUND_LAST_RUN_AT_KEY
+        )
+        if raw_last_run is None:
+            return True
+        parsed = _parse_datetime_utc(raw_last_run)
+        if parsed is None:
+            return True
+        return datetime.now(UTC) - parsed >= timedelta(
+            seconds=self._watch_later_metadata_sync_min_interval_seconds
+        )
+
+    def _mark_watch_later_metadata_sync_run(self) -> None:
+        if self._cache_repository is None:
+            return
+        self._cache_repository.set_cache_state_value(
+            key=WATCH_LATER_METADATA_BACKGROUND_LAST_RUN_AT_KEY,
+            value=datetime.now(UTC).isoformat(),
+        )
+
+    def _enrich_videos_from_cache_then_api(
+        self,
+        *,
+        videos: list[YouTubeVideo],
+        enrich_metadata: bool,
+        client: Any | None = None,
+    ) -> tuple[list[YouTubeVideo], int]:
+        if not videos:
+            return [], 0
+
+        hydrated_videos = list(videos)
+        if self._cache_repository is not None:
+            video_ids = [video.video_id for video in hydrated_videos]
+            likes_by_id = self._cache_repository.get_likes_by_video_ids(video_ids=video_ids)
+            watch_later_by_id = self._cache_repository.get_watch_later_by_video_ids(
+                video_ids=video_ids
+            )
+            hydrated: list[YouTubeVideo] = []
+            for video in hydrated_videos:
+                enriched_video = video
+                like = likes_by_id.get(video.video_id)
+                if like is not None:
+                    enriched_video = _merge_video_metadata(
+                        enriched_video,
+                        _metadata_from_cached_like(like),
+                    )
+                watch_later = watch_later_by_id.get(video.video_id)
+                if watch_later is not None:
+                    enriched_video = _merge_video_metadata(
+                        enriched_video,
+                        _metadata_from_cached_watch_later(watch_later),
+                    )
+                hydrated.append(enriched_video)
+            hydrated_videos = hydrated
+
+        if not enrich_metadata:
+            return hydrated_videos, 0
+        videos_needing_api_metadata = [
+            video for video in hydrated_videos if _video_needs_metadata_refresh(video)
+        ]
+        if not videos_needing_api_metadata:
+            return hydrated_videos, 0
+        resolved_client = client if client is not None else self._build_oauth_client()
+        fetched_videos, metadata_calls = _enrich_liked_video_metadata(
+            resolved_client,
+            videos_needing_api_metadata,
+        )
+        fetched_by_id = {video.video_id: video for video in fetched_videos}
+        merged: list[YouTubeVideo] = []
+        for video in hydrated_videos:
+            fetched = fetched_by_id.get(video.video_id)
+            if fetched is None:
+                merged.append(video)
+                continue
+            merged.append(_merge_video_metadata(video, _video_to_metadata(fetched), overwrite=True))
+        return merged, metadata_calls
 
     def _background_sync_interval_elapsed(self) -> bool:
         if self._cache_repository is None:
@@ -751,13 +1143,19 @@ class YouTubeService:
                     likes_playlist_id=likes_playlist_id,
                     page_size=self._likes_background_page_size,
                     page_token=next_page_token,
-                    enrich_metadata=enrich_metadata,
+                    enrich_metadata=False,
                 )
                 estimated_units += page_fetch.estimated_api_units
                 pages_used += 1
                 scoped_videos, reached_cutoff = self._filter_likes_videos_by_cutoff(
                     page_fetch.videos
                 )
+                scoped_videos, metadata_calls = self._enrich_videos_from_cache_then_api(
+                    client=client,
+                    videos=scoped_videos,
+                    enrich_metadata=enrich_metadata,
+                )
+                estimated_units += metadata_calls
                 fetched_videos.extend(scoped_videos)
                 next_page_token = page_fetch.next_page_token
                 if next_page_token is None or reached_cutoff:
@@ -846,12 +1244,12 @@ class YouTubeService:
 
         LOGGER.info(
             (
-                "youtube transcript background_sync start video_id=%s provider=%s liked_at=%s "
+                "youtube transcript background_sync start video_id=%s provider=%s recency_at=%s "
                 "likes_rows=%s transcript_rows=%s coverage=%s%% done=%s retry_wait=%s"
             ),
             candidate.video_id,
             provider,
-            candidate.liked_at,
+            candidate.recency_at,
             likes_rows,
             transcript_rows_before,
             coverage_before,
@@ -1064,6 +1462,216 @@ class YouTubeService:
 
     def list_recent(self, limit: int, query: str | None = None) -> list[YouTubeVideo]:
         return self.list_recent_with_metadata(limit=limit, query=query).videos
+
+    def list_watch_later_cached_only_with_metadata(
+        self,
+        *,
+        limit: int,
+        query: str | None = None,
+        cursor: int = 0,
+        include_removed: bool = False,
+    ) -> YouTubeListRecentResult:
+        normalized_limit = max(1, min(100, limit))
+        normalized_cursor = max(0, cursor)
+        if self._cache_repository is None:
+            raise YouTubeServiceError(
+                "YouTube cache repository is required for cached watch later flow"
+            )
+
+        statuses = (
+            (WATCH_LATER_STATUS_ACTIVE,)
+            if not include_removed
+            else (
+                WATCH_LATER_STATUS_ACTIVE,
+                WATCH_LATER_STATUS_REMOVED_WATCHED,
+                WATCH_LATER_STATUS_REMOVED_NOT_LIKED,
+            )
+        )
+        cached_rows = self._cache_repository.list_watch_later(
+            limit=max(self._likes_cache_max_items, normalized_limit + normalized_cursor),
+            statuses=statuses,
+        )
+        videos = [_cached_watch_later_to_video(row) for row in cached_rows]
+        filtered = videos if query is None else _filter_videos_by_query(videos, query)
+        total_matches = len(filtered)
+        page_start = min(normalized_cursor, total_matches)
+        page_end = min(total_matches, page_start + normalized_limit)
+        page = filtered[page_start:page_end]
+        has_more = page_end < total_matches
+        next_cursor = page_end if has_more else None
+
+        return YouTubeListRecentResult(
+            videos=page,
+            estimated_api_units=0,
+            cache_hit=bool(videos),
+            refreshed=False,
+            cache_miss=query is not None and not filtered,
+            recent_probe_applied=False,
+            recent_probe_pages_used=0,
+            cursor=page_start,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            total_matches=total_matches,
+            applied_limit=normalized_limit,
+        )
+
+    def search_watch_later_content_with_metadata(
+        self,
+        *,
+        query: str,
+        window_days: int | None,
+        limit: int,
+        include_removed: bool = False,
+    ) -> YouTubeRecentContentSearchResult:
+        normalized_limit = max(1, min(25, limit))
+        normalized_window_days = None if window_days is None else max(1, min(30, window_days))
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise YouTubeServiceError("payload.query is required")
+        if self._cache_repository is None:
+            raise YouTubeServiceError(
+                "YouTube cache repository is required for cached watch later flow"
+            )
+
+        cutoff = (
+            None
+            if normalized_window_days is None
+            else datetime.now(UTC) - timedelta(days=normalized_window_days)
+        )
+        statuses = (
+            (WATCH_LATER_STATUS_ACTIVE,)
+            if not include_removed
+            else (
+                WATCH_LATER_STATUS_ACTIVE,
+                WATCH_LATER_STATUS_REMOVED_WATCHED,
+                WATCH_LATER_STATUS_REMOVED_NOT_LIKED,
+            )
+        )
+        cached_rows = self._cache_repository.list_watch_later(
+            limit=self._likes_cache_max_items,
+            statuses=statuses,
+        )
+        videos: list[YouTubeVideo] = []
+        for row in cached_rows:
+            recency_raw = row.watch_later_added_at or row.last_seen_at or row.first_seen_at
+            recency = _parse_datetime_utc(recency_raw)
+            if recency is None:
+                continue
+            if cutoff is not None and recency < cutoff:
+                continue
+            videos.append(_cached_watch_later_to_video(row))
+
+        transcript_texts = self._cache_repository.get_cached_transcript_texts(
+            video_ids=[video.video_id for video in videos]
+        )
+        matches = _search_recent_content_matches(
+            query=normalized_query,
+            videos=videos,
+            transcript_texts=transcript_texts,
+        )
+        transcript_count = len(transcript_texts)
+        return YouTubeRecentContentSearchResult(
+            matches=matches[:normalized_limit],
+            recent_videos_count=len(videos),
+            transcripts_available_count=transcript_count,
+            transcript_coverage_percent=_percent_progress(transcript_count, len(videos)),
+            estimated_api_units=0,
+            cache_miss=not matches,
+            recent_probe_applied=False,
+            recent_probe_pages_used=0,
+        )
+
+    def recommend_watch_later_video_with_metadata(
+        self,
+        *,
+        query: str | None,
+        target_duration_minutes: int | None,
+        duration_tolerance_minutes: int,
+        include_removed: bool = False,
+    ) -> YouTubeWatchLaterRecommendationResult:
+        if self._cache_repository is None:
+            raise YouTubeServiceError(
+                "YouTube cache repository is required for cached watch later flow"
+            )
+        statuses = (
+            (WATCH_LATER_STATUS_ACTIVE,)
+            if not include_removed
+            else (
+                WATCH_LATER_STATUS_ACTIVE,
+                WATCH_LATER_STATUS_REMOVED_WATCHED,
+                WATCH_LATER_STATUS_REMOVED_NOT_LIKED,
+            )
+        )
+        cached_rows = self._cache_repository.list_watch_later(
+            limit=self._likes_cache_max_items,
+            statuses=statuses,
+        )
+        candidates = [_cached_watch_later_to_video(row) for row in cached_rows]
+        if not candidates:
+            return YouTubeWatchLaterRecommendationResult(
+                video=None,
+                score=0,
+                reason="no_watch_later_candidates",
+            )
+
+        normalized_query = query.strip() if isinstance(query, str) else ""
+        score_by_video_id: dict[str, int] = {}
+        if normalized_query:
+            transcripts = self._cache_repository.get_cached_transcript_texts(
+                video_ids=[video.video_id for video in candidates]
+            )
+            matches = _search_recent_content_matches(
+                query=normalized_query,
+                videos=candidates,
+                transcript_texts=transcripts,
+            )
+            if matches:
+                match_ids = {match.video.video_id for match in matches}
+                candidates = [video for video in candidates if video.video_id in match_ids]
+                score_by_video_id = {match.video.video_id: match.score for match in matches}
+            else:
+                candidates = _filter_videos_by_query(candidates, normalized_query)
+            if not candidates:
+                return YouTubeWatchLaterRecommendationResult(
+                    video=None,
+                    score=0,
+                    reason="no_query_match",
+                )
+
+        target_seconds = (
+            None if target_duration_minutes is None else max(1, target_duration_minutes) * 60
+        )
+        tolerance_seconds = max(0, duration_tolerance_minutes) * 60
+
+        def _rank(video: YouTubeVideo) -> tuple[int, int, int]:
+            score = score_by_video_id.get(video.video_id, 0)
+            if target_seconds is None:
+                return (0, -score, 0)
+            duration_seconds = video.duration_seconds
+            if duration_seconds is None:
+                return (2, -score, 999_999)
+            distance = abs(duration_seconds - target_seconds)
+            in_tolerance = 0 if distance <= tolerance_seconds else 1
+            return (in_tolerance, -score, distance)
+
+        ranked = sorted(candidates, key=_rank)
+        selected = ranked[0]
+        selected_score = score_by_video_id.get(selected.video_id, 0)
+        if target_seconds is None:
+            reason = "best_query_match" if normalized_query else "most_recent_watch_later"
+        else:
+            duration_seconds = selected.duration_seconds
+            if duration_seconds is None:
+                reason = "best_query_match_missing_duration"
+            elif abs(duration_seconds - target_seconds) <= tolerance_seconds:
+                reason = "duration_within_tolerance"
+            else:
+                reason = "closest_duration_available"
+        return YouTubeWatchLaterRecommendationResult(
+            video=selected,
+            score=selected_score,
+            reason=reason,
+        )
 
     def search_recent_content_with_metadata(
         self,
@@ -1322,6 +1930,7 @@ class YouTubeService:
                     title=transcript.title,
                     transcript=transcript.transcript,
                     source=transcript.source,
+                    initial_request_source=self._infer_transcript_initial_request_source(video_id),
                     segments=segments_payload,
                 )
                 LOGGER.info("youtube transcript cache_store video_id=%s", video_id)
@@ -1339,6 +1948,20 @@ class YouTubeService:
                 provider_request_id,
             )
         )
+
+    def _infer_transcript_initial_request_source(self, video_id: str) -> str | None:
+        if self._cache_repository is None:
+            return None
+        likes_match = self._cache_repository.get_likes_by_video_ids(video_ids=[video_id])
+        if video_id in likes_match:
+            return "likes"
+        watch_later_match = self._cache_repository.get_watch_later_by_video_ids(
+            video_ids=[video_id]
+        )
+        watch_later_row = watch_later_match.get(video_id)
+        if watch_later_row is not None and watch_later_row.status == WATCH_LATER_STATUS_ACTIVE:
+            return "watch_later"
+        return None
 
     def _list_recent_oauth_with_cache(
         self,
@@ -1467,18 +2090,23 @@ class YouTubeService:
         client = self._build_oauth_client()
 
         try:
-            oauth_fetch = _list_from_liked_videos(client, limit, enrich_metadata=enrich_metadata)
+            oauth_fetch = _list_from_liked_videos(client, limit, enrich_metadata=False)
         except Exception as exc:
             raise YouTubeServiceError(
                 f"Failed to fetch liked videos for OAuth user: {exc}"
             ) from exc
 
-        if not oauth_fetch.videos:
+        videos, metadata_calls = self._enrich_videos_from_cache_then_api(
+            client=client,
+            videos=oauth_fetch.videos,
+            enrich_metadata=enrich_metadata,
+        )
+        if not videos:
             raise YouTubeServiceError("No liked videos available for this OAuth account.")
 
         return _OAuthLikedFetch(
-            videos=oauth_fetch.videos[:limit],
-            estimated_api_units=oauth_fetch.estimated_api_units,
+            videos=videos[:limit],
+            estimated_api_units=oauth_fetch.estimated_api_units + metadata_calls,
         )
 
     def _fetch_transcript_with_supadata(
@@ -1994,9 +2622,7 @@ def _query_has_recency_signal(query: str) -> bool:
 
 
 def _contains_sparse_metadata(videos: list[YouTubeVideo]) -> bool:
-    return any(
-        not video.description and not video.channel_title and not video.tags for video in videos
-    )
+    return any(_video_needs_metadata_refresh(video) for video in videos)
 
 
 def _cached_like_to_video(cached_video: CachedLikeVideo) -> YouTubeVideo:
@@ -2058,6 +2684,251 @@ def _video_to_cached_like(video: YouTubeVideo) -> CachedLikeVideo:
         statistics_fetched_at=video.statistics_fetched_at,
         tags=video.tags,
     )
+
+
+def _cached_watch_later_to_video(cached_video: CachedWatchLaterVideo) -> YouTubeVideo:
+    published_at = cached_video.watch_later_added_at or cached_video.last_seen_at
+    return YouTubeVideo(
+        video_id=cached_video.video_id,
+        title=cached_video.title,
+        published_at=published_at,
+        liked_at=None,
+        video_published_at=cached_video.video_published_at,
+        description=cached_video.description,
+        channel_id=cached_video.channel_id,
+        channel_title=cached_video.channel_title,
+        duration_seconds=cached_video.duration_seconds,
+        category_id=cached_video.category_id,
+        default_language=cached_video.default_language,
+        default_audio_language=cached_video.default_audio_language,
+        caption_available=cached_video.caption_available,
+        privacy_status=cached_video.privacy_status,
+        licensed_content=cached_video.licensed_content,
+        made_for_kids=cached_video.made_for_kids,
+        live_broadcast_content=cached_video.live_broadcast_content,
+        definition=cached_video.definition,
+        dimension=cached_video.dimension,
+        thumbnails=dict(cached_video.thumbnails),
+        topic_categories=cached_video.topic_categories,
+        statistics_view_count=cached_video.statistics_view_count,
+        statistics_like_count=cached_video.statistics_like_count,
+        statistics_comment_count=cached_video.statistics_comment_count,
+        statistics_fetched_at=cached_video.statistics_fetched_at,
+        tags=cached_video.tags,
+    )
+
+
+def _video_to_cached_watch_later(
+    *,
+    video: YouTubeVideo,
+    existing: CachedWatchLaterVideo,
+) -> CachedWatchLaterVideo:
+    return CachedWatchLaterVideo(
+        video_id=existing.video_id,
+        title=video.title or existing.title,
+        watch_later_added_at=existing.watch_later_added_at,
+        first_seen_at=existing.first_seen_at,
+        last_seen_at=existing.last_seen_at,
+        status=existing.status,
+        removed_at=existing.removed_at,
+        snapshot_position=existing.snapshot_position,
+        video_published_at=video.video_published_at,
+        description=video.description,
+        channel_id=video.channel_id,
+        channel_title=video.channel_title,
+        duration_seconds=video.duration_seconds,
+        category_id=video.category_id,
+        default_language=video.default_language,
+        default_audio_language=video.default_audio_language,
+        caption_available=video.caption_available,
+        privacy_status=video.privacy_status,
+        licensed_content=video.licensed_content,
+        made_for_kids=video.made_for_kids,
+        live_broadcast_content=video.live_broadcast_content,
+        definition=video.definition,
+        dimension=video.dimension,
+        thumbnails=dict(video.thumbnails or {}),
+        topic_categories=video.topic_categories,
+        statistics_view_count=video.statistics_view_count,
+        statistics_like_count=video.statistics_like_count,
+        statistics_comment_count=video.statistics_comment_count,
+        statistics_fetched_at=video.statistics_fetched_at,
+        tags=video.tags,
+    )
+
+
+def _metadata_from_cached_like(video: CachedLikeVideo) -> _VideoMetadata:
+    return _VideoMetadata(
+        description=video.description,
+        channel_id=video.channel_id,
+        channel_title=video.channel_title,
+        duration_seconds=video.duration_seconds,
+        category_id=video.category_id,
+        default_language=video.default_language,
+        default_audio_language=video.default_audio_language,
+        caption_available=video.caption_available,
+        privacy_status=video.privacy_status,
+        licensed_content=video.licensed_content,
+        made_for_kids=video.made_for_kids,
+        live_broadcast_content=video.live_broadcast_content,
+        definition=video.definition,
+        dimension=video.dimension,
+        thumbnails=dict(video.thumbnails),
+        topic_categories=video.topic_categories,
+        statistics_view_count=video.statistics_view_count,
+        statistics_like_count=video.statistics_like_count,
+        statistics_comment_count=video.statistics_comment_count,
+        statistics_fetched_at=video.statistics_fetched_at,
+        tags=video.tags,
+    )
+
+
+def _metadata_from_cached_watch_later(video: CachedWatchLaterVideo) -> _VideoMetadata:
+    return _VideoMetadata(
+        description=video.description,
+        channel_id=video.channel_id,
+        channel_title=video.channel_title,
+        duration_seconds=video.duration_seconds,
+        category_id=video.category_id,
+        default_language=video.default_language,
+        default_audio_language=video.default_audio_language,
+        caption_available=video.caption_available,
+        privacy_status=video.privacy_status,
+        licensed_content=video.licensed_content,
+        made_for_kids=video.made_for_kids,
+        live_broadcast_content=video.live_broadcast_content,
+        definition=video.definition,
+        dimension=video.dimension,
+        thumbnails=dict(video.thumbnails),
+        topic_categories=video.topic_categories,
+        statistics_view_count=video.statistics_view_count,
+        statistics_like_count=video.statistics_like_count,
+        statistics_comment_count=video.statistics_comment_count,
+        statistics_fetched_at=video.statistics_fetched_at,
+        tags=video.tags,
+    )
+
+
+def _video_to_metadata(video: YouTubeVideo) -> _VideoMetadata:
+    return _VideoMetadata(
+        description=video.description,
+        channel_id=video.channel_id,
+        channel_title=video.channel_title,
+        duration_seconds=video.duration_seconds,
+        category_id=video.category_id,
+        default_language=video.default_language,
+        default_audio_language=video.default_audio_language,
+        caption_available=video.caption_available,
+        privacy_status=video.privacy_status,
+        licensed_content=video.licensed_content,
+        made_for_kids=video.made_for_kids,
+        live_broadcast_content=video.live_broadcast_content,
+        definition=video.definition,
+        dimension=video.dimension,
+        thumbnails=dict(video.thumbnails or {}),
+        topic_categories=video.topic_categories,
+        statistics_view_count=video.statistics_view_count,
+        statistics_like_count=video.statistics_like_count,
+        statistics_comment_count=video.statistics_comment_count,
+        statistics_fetched_at=video.statistics_fetched_at,
+        tags=video.tags,
+    )
+
+
+def _merge_video_metadata(
+    video: YouTubeVideo,
+    metadata: _VideoMetadata,
+    *,
+    overwrite: bool = False,
+) -> YouTubeVideo:
+    def _merged_str(current: str | None, incoming: str | None) -> str | None:
+        if incoming is None:
+            return current
+        if overwrite or not current:
+            return incoming
+        return current
+
+    def _merged_int(current: int | None, incoming: int | None) -> int | None:
+        if incoming is None:
+            return current
+        if overwrite or current is None:
+            return incoming
+        return current
+
+    def _merged_bool(current: bool | None, incoming: bool | None) -> bool | None:
+        if incoming is None:
+            return current
+        if overwrite or current is None:
+            return incoming
+        return current
+
+    def _merged_tags(current: tuple[str, ...], incoming: tuple[str, ...]) -> tuple[str, ...]:
+        if incoming and (overwrite or not current):
+            return incoming
+        return current
+
+    def _merged_thumbnails(
+        current: dict[str, str] | None,
+        incoming: dict[str, str] | None,
+    ) -> dict[str, str]:
+        current_map = dict(current or {})
+        if incoming and (overwrite or not current_map):
+            return dict(incoming)
+        return current_map
+
+    return YouTubeVideo(
+        video_id=video.video_id,
+        title=video.title,
+        published_at=video.published_at,
+        liked_at=video.liked_at,
+        video_published_at=video.video_published_at,
+        description=_merged_str(video.description, metadata.description),
+        channel_id=_merged_str(video.channel_id, metadata.channel_id),
+        channel_title=_merged_str(video.channel_title, metadata.channel_title),
+        duration_seconds=_merged_int(video.duration_seconds, metadata.duration_seconds),
+        category_id=_merged_str(video.category_id, metadata.category_id),
+        default_language=_merged_str(video.default_language, metadata.default_language),
+        default_audio_language=_merged_str(
+            video.default_audio_language, metadata.default_audio_language
+        ),
+        caption_available=_merged_bool(video.caption_available, metadata.caption_available),
+        privacy_status=_merged_str(video.privacy_status, metadata.privacy_status),
+        licensed_content=_merged_bool(video.licensed_content, metadata.licensed_content),
+        made_for_kids=_merged_bool(video.made_for_kids, metadata.made_for_kids),
+        live_broadcast_content=_merged_str(
+            video.live_broadcast_content, metadata.live_broadcast_content
+        ),
+        definition=_merged_str(video.definition, metadata.definition),
+        dimension=_merged_str(video.dimension, metadata.dimension),
+        thumbnails=_merged_thumbnails(video.thumbnails, metadata.thumbnails),
+        topic_categories=(
+            metadata.topic_categories
+            if metadata.topic_categories and (overwrite or not video.topic_categories)
+            else video.topic_categories
+        ),
+        statistics_view_count=_merged_int(
+            video.statistics_view_count, metadata.statistics_view_count
+        ),
+        statistics_like_count=_merged_int(
+            video.statistics_like_count, metadata.statistics_like_count
+        ),
+        statistics_comment_count=_merged_int(
+            video.statistics_comment_count,
+            metadata.statistics_comment_count,
+        ),
+        statistics_fetched_at=_merged_str(
+            video.statistics_fetched_at, metadata.statistics_fetched_at
+        ),
+        tags=_merged_tags(video.tags, metadata.tags),
+    )
+
+
+def _video_needs_metadata_refresh(video: YouTubeVideo) -> bool:
+    return not video.description and not video.channel_title and not video.tags
+
+
+def _watch_later_row_needs_metadata(video: CachedWatchLaterVideo) -> bool:
+    return not video.description and not video.channel_title and not video.tags
 
 
 def _clone_segments(segments: list[dict[str, object]]) -> list[dict[str, Any]]:
@@ -2941,6 +3812,24 @@ def _extract_thumbnail_urls(snippet: dict[str, Any]) -> dict[str, str]:
         url_value = payload_dict.get("url")
         if isinstance(url_value, str) and url_value.strip():
             urls[quality] = url_value
+    return urls
+
+
+def _coerce_thumbnail_map(raw_value: object) -> dict[str, str]:
+    if not isinstance(raw_value, dict):
+        return {}
+    urls: dict[str, str] = {}
+    for raw_quality, raw_payload in cast(dict[object, object], raw_value).items():
+        if not isinstance(raw_quality, str):
+            continue
+        if isinstance(raw_payload, str) and raw_payload.strip():
+            urls[raw_quality] = raw_payload
+            continue
+        if isinstance(raw_payload, dict):
+            payload_dict = cast(dict[object, object], raw_payload)
+            raw_url = payload_dict.get("url")
+            if isinstance(raw_url, str) and raw_url.strip():
+                urls[raw_quality] = raw_url
     return urls
 
 

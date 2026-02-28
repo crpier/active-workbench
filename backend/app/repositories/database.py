@@ -139,9 +139,66 @@ CREATE TABLE IF NOT EXISTS youtube_transcript_cache (
     title TEXT NOT NULL,
     transcript TEXT NOT NULL,
     source TEXT NOT NULL,
+    initial_request_source TEXT NULL,
     segments_json TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS youtube_watch_later_cache (
+    video_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    watch_later_added_at TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    removed_at TEXT NULL,
+    snapshot_position INTEGER NULL,
+    video_published_at TEXT NULL,
+    description TEXT NULL,
+    channel_id TEXT NULL,
+    channel_title TEXT NULL,
+    duration_seconds INTEGER NULL,
+    category_id TEXT NULL,
+    default_language TEXT NULL,
+    default_audio_language TEXT NULL,
+    caption_available INTEGER NULL,
+    privacy_status TEXT NULL,
+    licensed_content INTEGER NULL,
+    made_for_kids INTEGER NULL,
+    live_broadcast_content TEXT NULL,
+    definition TEXT NULL,
+    dimension TEXT NULL,
+    thumbnails_json TEXT NOT NULL,
+    topic_categories_json TEXT NOT NULL,
+    statistics_view_count INTEGER NULL,
+    statistics_like_count INTEGER NULL,
+    statistics_comment_count INTEGER NULL,
+    statistics_fetched_at TEXT NULL,
+    tags_json TEXT NOT NULL,
+    cached_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_watch_later_cache_status_position
+ON youtube_watch_later_cache(status, snapshot_position ASC);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_watch_later_cache_status_removed
+ON youtube_watch_later_cache(status, removed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_watch_later_cache_status_last_seen
+ON youtube_watch_later_cache(status, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS youtube_watch_later_push_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_hash TEXT NOT NULL,
+    video_count INTEGER NOT NULL,
+    dedupe_skipped INTEGER NOT NULL,
+    generated_at_utc TEXT NULL,
+    source_client TEXT NOT NULL,
+    received_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_youtube_watch_later_push_history_received_at
+ON youtube_watch_later_push_history(received_at DESC);
 
 CREATE TABLE IF NOT EXISTS youtube_transcript_sync_state (
     video_id TEXT PRIMARY KEY,
