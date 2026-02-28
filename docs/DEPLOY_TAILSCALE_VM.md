@@ -137,15 +137,14 @@ Expected:
 - backend `/health` returns `{"status":"ok"}`
 - OpenCode returns `200 OK` (no auth challenge in Tailscale-only mode)
 
-## 7. Expo app setup
+## 7. Mobile app setup (no bearer token)
 
-Use the backend Tailscale URL in the Expo app settings, for example:
+Use the backend Tailscale URL in the mobile app, for example:
 - `http://<tailscale-ip>:8000`
 
-Leave the mobile bearer token setting empty unless you explicitly configure per-device keys.
+Leave the mobile bearer token setting empty/disabled.
 
-Web UI URL on the VM:
-- `http://<tailscale-ip>:8000/app/articles`
+The `/mobile/v1/share/article` endpoint now relies on Tailscale network access plus rate limiting (no app-level auth).
 
 ## 8. Backups and restore
 

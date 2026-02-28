@@ -79,9 +79,6 @@ class ShareArticleResponse(BaseModel):
     status: Literal["saved", "already_exists", "needs_clarification", "failed"]
     request_id: UUID
     backend_status: str | None = None
-    article_id: str | None = None
-    article_status: Literal["captured", "processing", "readable", "failed"] | None = None
-    readable_available: bool = False
     bucket_item_id: str | None = None
     title: str | None = None
     canonical_url: str | None = None

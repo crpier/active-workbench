@@ -129,101 +129,6 @@ def test_health(client: TestClient) -> None:
     assert response.headers.get("X-Request-ID")
 
 
-def test_legacy_articles_web_redirects_to_expo_app(client: TestClient) -> None:
-    response = client.get("/articles/web?read_state=read", follow_redirects=False)
-    assert response.status_code == 308
-    assert response.headers.get("location") == "/app/articles?read_state=read"
-
-
-def test_web_app_returns_not_found_when_dist_missing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data_dir = tmp_path / "runtime-data-web-missing"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
-    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
-
-    missing_dist_dir = tmp_path / "missing-web-dist"
-
-    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-supadata-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_ENRICHMENT_ENABLED", "0")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WEB_UI_DIST_DIR", str(missing_dist_dir))
-    reset_cached_dependencies()
-
-    app = create_app()
-    with TestClient(app) as test_client:
-        response = test_client.get("/app/articles", follow_redirects=False)
-        assert response.status_code == 404
-        assert "Web UI build not found" in response.json()["detail"]
-
-    reset_cached_dependencies()
-
-
-def test_web_app_serves_index_when_dist_present(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    dist_dir = tmp_path / "web-dist"
-    assets_dir = dist_dir / "_expo" / "static"
-    image_assets_dir = dist_dir / "assets" / "node_modules" / "expo-router" / "assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    image_assets_dir.mkdir(parents=True, exist_ok=True)
-    (dist_dir / "index.html").write_text(
-        "<!doctype html><html><body>expo web app</body></html>",
-        encoding="utf-8",
-    )
-    (dist_dir / "favicon.ico").write_text("ico", encoding="utf-8")
-    (assets_dir / "app.js").write_text("console.log('ok');", encoding="utf-8")
-    (image_assets_dir / "unmatched.png").write_text("png", encoding="utf-8")
-
-    data_dir = tmp_path / "runtime-data-web-dist"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
-    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("ACTIVE_WORKBENCH_ENABLE_SCHEDULER", "0")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-supadata-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_ENRICHMENT_ENABLED", "0")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WEB_UI_DIST_DIR", str(dist_dir))
-    reset_cached_dependencies()
-
-    app = create_app()
-    with TestClient(app) as test_client:
-        index = test_client.get("/app/articles")
-        assert index.status_code == 200
-        assert "expo web app" in index.text
-        assert index.headers.get("cache-control") == "no-cache, no-store, must-revalidate"
-
-        asset = test_client.get("/_expo/static/app.js")
-        assert asset.status_code == 200
-        assert "console.log('ok');" in asset.text
-
-        scoped_asset = test_client.get("/app/_expo/static/app.js")
-        assert scoped_asset.status_code == 200
-        assert "console.log('ok');" in scoped_asset.text
-
-        image_asset = test_client.get("/assets/node_modules/expo-router/assets/unmatched.png")
-        assert image_asset.status_code == 200
-
-        scoped_image_asset = test_client.get(
-            "/app/assets/node_modules/expo-router/assets/unmatched.png"
-        )
-        assert scoped_image_asset.status_code == 200
-
-        favicon = test_client.get("/favicon.ico")
-        assert favicon.status_code == 200
-
-    reset_cached_dependencies()
-
-
 def test_mobile_share_article_saves_link(client: TestClient) -> None:
     response = client.post(
         "/mobile/v1/share/article",
@@ -237,11 +142,10 @@ def test_mobile_share_article_saves_link(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "saved"
     assert body["backend_status"] == "created"
-    assert body["article_id"].startswith("article_")
-    assert body["article_status"] == "captured"
-    assert body["readable_available"] is False
     assert body["bucket_item_id"].startswith("bucket_")
-    assert body["canonical_url"] == "https://example.com/posts/interesting-article"
+    assert (
+        body["canonical_url"] == "https://example.com/posts/interesting-article?utm_source=twitter"
+    )
 
 
 def test_mobile_share_article_duplicate_returns_already_exists(client: TestClient) -> None:
@@ -258,7 +162,6 @@ def test_mobile_share_article_duplicate_returns_already_exists(client: TestClien
     assert first_body["status"] == "saved"
     assert second_body["status"] == "already_exists"
     assert second_body["backend_status"] == "already_exists"
-    assert second_body["article_id"] == first_body["article_id"]
     assert second_body["bucket_item_id"] == first_body["bucket_item_id"]
 
 

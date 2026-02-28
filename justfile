@@ -35,21 +35,6 @@ gen-client: openapi
 ts-typecheck:
   cd tools-ts && npm run typecheck
 
-expo-install:
-  cd apps/workbench-expo && npm install
-
-expo-web:
-  cd apps/workbench-expo && npm run web
-
-expo-build-web:
-  cd apps/workbench-expo && npm run build:web
-
-expo-typecheck:
-  cd apps/workbench-expo && npm run typecheck
-
-expo-test:
-  cd apps/workbench-expo && npm run test
-
 youtube-auth:
   ACTIVE_WORKBENCH_YOUTUBE_MODE=oauth uv run python -m backend.app.scripts.youtube_oauth_setup
 

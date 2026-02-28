@@ -68,9 +68,6 @@ just setup
 just gen-client
 just run
 just check
-just expo-typecheck
-just expo-test
-just expo-build-web
 ```
 
 TypeScript client/tools:

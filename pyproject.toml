@@ -13,8 +13,6 @@ dependencies = [
   "uvicorn[standard]>=0.34.0",
   "pydantic-settings>=2.13.1",
   "structlog>=24.4.0",
-  "trafilatura>=2.0.0",
-  "python-multipart>=0.0.22",
 ]
 
 [dependency-groups]

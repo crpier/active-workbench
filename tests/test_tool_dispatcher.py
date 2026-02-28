@@ -13,7 +13,6 @@ from backend.app.repositories.database import Database
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
-from backend.app.services.article_pipeline_service import ArticleProcessingStats
 from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.tool_dispatcher import ToolDispatcher
 from backend.app.services.youtube_service import YouTubeRateLimitedError
@@ -38,20 +37,6 @@ class _RateLimitedYouTubeService:
             "YouTube Data API is currently rate-limiting recent-likes refresh requests.",
             retry_after_seconds=600,
             scope="youtube_data_api_recent_probe",
-        )
-
-
-class _ArticlePipelineServiceStub:
-    def __init__(self) -> None:
-        self.calls: list[int] = []
-
-    def process_due_jobs(self, *, limit: int) -> ArticleProcessingStats:
-        self.calls.append(limit)
-        return ArticleProcessingStats(
-            attempted=1,
-            succeeded=1,
-            retried=0,
-            failed=0,
         )
 
 
@@ -159,34 +144,6 @@ def test_bucket_annotation_poll_marks_pending_attempts(tmp_path: Path) -> None:
     item = search_response.result["items"][0]
     assert item["annotated"] is False
     assert item["annotation_last_attempt_at"] is not None
-
-
-def test_run_due_jobs_processes_article_pipeline_when_configured(tmp_path: Path) -> None:
-    database = Database(tmp_path / "state.db")
-    database.initialize()
-    article_pipeline = _ArticlePipelineServiceStub()
-    dispatcher = ToolDispatcher(
-        audit_repository=AuditRepository(database),
-        idempotency_repository=IdempotencyRepository(database),
-        memory_repository=MemoryRepository(database),
-        bucket_repository=BucketRepository(database),
-        bucket_metadata_service=BucketMetadataService(
-            enrichment_enabled=False,
-            http_timeout_seconds=0.5,
-            tmdb_api_key=None,
-        ),
-        youtube_quota_repository=YouTubeQuotaRepository(database),
-        youtube_service=cast(Any, _RateLimitedYouTubeService()),
-        default_timezone="Europe/Bucharest",
-        youtube_daily_quota_limit=10_000,
-        youtube_quota_warning_percent=0.8,
-        article_pipeline_service=cast(Any, article_pipeline),
-        article_pipeline_max_jobs_per_tick=7,
-    )
-
-    dispatcher.run_due_jobs()
-
-    assert article_pipeline.calls == [7]
 
 
 def test_bucket_item_add_returns_clarification_for_ambiguous_tmdb_match(

@@ -21,7 +21,6 @@ from backend.app.repositories.bucket_repository import BucketItem, BucketReposit
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
-from backend.app.services.article_pipeline_service import ArticlePipelineService
 from backend.app.services.bucket_metadata_service import (
     BucketAddResolution,
     BucketEnrichment,
@@ -103,8 +102,6 @@ class ToolDispatcher:
         youtube_daily_quota_limit: int,
         youtube_quota_warning_percent: float,
         telemetry: TelemetryClient | None = None,
-        article_pipeline_service: ArticlePipelineService | None = None,
-        article_pipeline_max_jobs_per_tick: int = 5,
     ) -> None:
         self._audit_repository = audit_repository
         self._idempotency_repository = idempotency_repository
@@ -120,8 +117,6 @@ class ToolDispatcher:
         self._youtube_quota_warning_threshold = int(
             self._youtube_daily_quota_limit * bounded_warning_percent
         )
-        self._article_pipeline_service = article_pipeline_service
-        self._article_pipeline_max_jobs_per_tick = max(1, article_pipeline_max_jobs_per_tick)
 
     def list_tools(self) -> list[ToolCatalogEntry]:
         return [
@@ -144,19 +139,8 @@ class ToolDispatcher:
         return self._youtube_service
 
     def run_due_jobs(self) -> None:
-        if self._article_pipeline_service is None:
-            return
-        stats = self._article_pipeline_service.process_due_jobs(
-            limit=self._article_pipeline_max_jobs_per_tick
-        )
-        if stats.attempted > 0:
-            self._telemetry.emit(
-                "article.jobs.processed",
-                attempted=stats.attempted,
-                succeeded=stats.succeeded,
-                retried=stats.retried,
-                failed=stats.failed,
-            )
+        # Non-ready scheduler job tools were removed from the runtime surface.
+        return
 
     def run_bucket_annotation_poll(self, *, limit: int = 20) -> dict[str, int]:
         candidates = self._bucket_repository.list_unannotated_active_items(limit=max(1, limit))
@@ -998,43 +982,6 @@ class ToolDispatcher:
         if refreshed_item is None:
             refreshed_item = item
 
-        article_capture_payload: dict[str, Any] | None = None
-        if (
-            self._article_pipeline_service is not None
-            and media_domain == "article"
-            and refreshed_item.external_url is not None
-        ):
-            try:
-                article_capture = self._article_pipeline_service.capture_article(
-                    url=refreshed_item.external_url,
-                    bucket_item_id=refreshed_item.item_id,
-                    source="bucket_tool",
-                    shared_text=notes,
-                )
-            except ValueError as exc:
-                self._telemetry.emit(
-                    "article.capture.invalid_input",
-                    request_id=str(request.request_id),
-                    reason=str(exc),
-                )
-            except Exception as exc:
-                self._telemetry.emit(
-                    "article.capture.error",
-                    request_id=str(request.request_id),
-                    error_type=type(exc).__name__,
-                )
-            else:
-                refreshed_after_capture = self._bucket_repository.get_item(refreshed_item.item_id)
-                if refreshed_after_capture is not None:
-                    refreshed_item = refreshed_after_capture
-                article_capture_payload = {
-                    "article_id": article_capture.article.article_id,
-                    "article_status": article_capture.article.status,
-                    "readable_available": article_capture.article.status == "readable",
-                    "job_status": article_capture.job_status,
-                    "deduped": article_capture.deduped,
-                }
-
         result: dict[str, Any] = {
             "tool": request.tool,
             "status": action,
@@ -1050,8 +997,6 @@ class ToolDispatcher:
                 else None
             ),
         }
-        if article_capture_payload is not None:
-            result["article"] = article_capture_payload
 
         provenance = [ProvenanceRef(type="bucket_item", id=refreshed_item.item_id)]
         provenance.extend(_source_ref_provenance(refreshed_item.source_refs))

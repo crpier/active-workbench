@@ -7,7 +7,6 @@ For a simpler single-user setup on your own devices, use `docs/DEPLOY_TAILSCALE_
 
 This runbook deploys:
 - Active Workbench backend on `127.0.0.1:8000`
-- Expo web UI served by backend under `/app/*`
 - OpenCode serve on `127.0.0.1:4096`
 - Nginx TLS reverse proxy on `443`
 - Daily SQLite/log backups via `systemd` timer
@@ -148,7 +147,6 @@ sudo systemctl reload nginx
 
 ```bash
 curl -sS https://api.example.com/health
-curl -sS -I https://api.example.com/app/articles | head -n 5
 curl -sS -I https://chat.example.com/ | head -n 5
 ```
 
