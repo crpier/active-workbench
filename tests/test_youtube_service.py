@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+import backend.app.services.youtube_service as youtube_service_module
 from backend.app.repositories.database import Database
 from backend.app.repositories.youtube_cache_repository import (
     CachedLikeVideo,
@@ -23,7 +24,6 @@ from backend.app.services.youtube_service import (
     YouTubeTranscript,
     YouTubeTranscriptResult,
     YouTubeVideo,
-    _extract_request_id_from_headers,
     resolve_oauth_paths,
 )
 
@@ -148,7 +148,9 @@ def test_cached_likes_support_cursor_pagination(tmp_path: Path) -> None:
     assert first_page.total_matches == 3
     assert first_page.applied_limit == 2
 
-    second_page = service.list_recent_cached_only_with_metadata(limit=2, cursor=first_page.next_cursor or 0)
+    second_page = service.list_recent_cached_only_with_metadata(
+        limit=2, cursor=first_page.next_cursor or 0
+    )
     assert len(second_page.videos) == 1
     assert second_page.cursor == 2
     assert second_page.next_cursor is None
@@ -645,18 +647,19 @@ def test_oauth_search_recent_content_matches_transcript(tmp_path: Path) -> None:
     db = Database(tmp_path / "state.db")
     db.initialize()
     cache_repo = YouTubeCacheRepository(db)
+    now_utc = datetime.now(timezone.utc)  # noqa: UP017
     cache_repo.upsert_likes(
         videos=[
             CachedLikeVideo(
                 video_id="match_1",
                 title="Console teardown",
-                liked_at="2026-02-15T12:00:00+00:00",
+                liked_at=(now_utc - timedelta(hours=1)).isoformat(),
                 description="hardware video",
             ),
             CachedLikeVideo(
                 video_id="other_1",
                 title="Gardening tips",
-                liked_at="2026-02-15T11:00:00+00:00",
+                liked_at=(now_utc - timedelta(hours=2)).isoformat(),
                 description="plants",
             ),
         ],
@@ -952,6 +955,7 @@ def test_oauth_transcript_unavailable_includes_supadata_request_id(
         }
 
     monkeypatch.setattr("backend.app.services.youtube_service._fetch_supadata_json", _fake_supadata)
+
     def _noop_sleep(_seconds: float) -> None:
         return None
 
@@ -1209,18 +1213,23 @@ def test_oauth_transcript_age_restricted_youtube_api_fallback_is_throttled(
         _fake_youtube_captions,
     )
 
-    first_transcript, _first_request_id = service._fetch_transcript_with_supadata("age_one")
+    fetch_transcript_with_supadata = cast(Any, service)._fetch_transcript_with_supadata
+
+    first_transcript, _first_request_id = fetch_transcript_with_supadata("age_one")
     assert first_transcript is not None
     assert first_transcript.transcript == "captions-age_one"
     assert youtube_calls["count"] == 1
 
     with pytest.raises(SupadataTranscriptError, match="locally throttled"):
-        service._fetch_transcript_with_supadata("age_two")
+        fetch_transcript_with_supadata("age_two")
     assert youtube_calls["count"] == 1
 
 
 def test_extract_request_id_from_headers_supports_supadata_variants() -> None:
-    request_id = _extract_request_id_from_headers(
+    extract_request_id_from_headers = cast(
+        Any, youtube_service_module
+    )._extract_request_id_from_headers
+    request_id = extract_request_id_from_headers(
         {
             "id": "e8f86227-087f-488c-ae20-7dc1d99ec54e",
             "content-type": "application/json",
@@ -1583,7 +1592,9 @@ def test_oauth_background_transcript_sync_success(
     assert cached is not None
     assert cached.transcript == "hello from background sync"
     assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_1") == 1
-    assert any("youtube transcript background_sync start" in msg for msg in captured_logger.messages)
+    assert any(
+        "youtube transcript background_sync start" in msg for msg in captured_logger.messages
+    )
     assert any("provider=youtube" in msg for msg in captured_logger.messages)
 
 
@@ -1638,7 +1649,9 @@ def test_oauth_background_transcript_sync_start_log_includes_supadata_provider(
 
     service.run_background_transcript_sync()
 
-    assert any("youtube transcript background_sync start" in msg for msg in captured_logger.messages)
+    assert any(
+        "youtube transcript background_sync start" in msg for msg in captured_logger.messages
+    )
     assert any("provider=supadata" in msg for msg in captured_logger.messages)
 
 
@@ -1679,7 +1692,9 @@ def test_oauth_background_transcript_sync_failure_backoff(
     service.run_background_transcript_sync()
 
     assert cache_repo.get_transcript_sync_attempts(video_id="vid_t_fail") == 1
-    assert any("youtube transcript background_sync failed" in msg for msg in captured_logger.messages)
+    assert any(
+        "youtube transcript background_sync failed" in msg for msg in captured_logger.messages
+    )
     assert any("provider=youtube" in msg for msg in captured_logger.messages)
     assert any("error_type=YouTubeServiceError" in msg for msg in captured_logger.messages)
     assert any("error=forced transcript failure" in msg for msg in captured_logger.messages)
@@ -1722,7 +1737,9 @@ def test_oauth_background_transcript_sync_excludes_members_only_video(
     assert cache_repo.get_transcript_sync_attempts(video_id="vid_members_only") == 0
     status_counts = cache_repo.count_transcript_sync_state_by_status()
     assert status_counts.get("retry_wait", 0) == 0
-    assert any("youtube transcript background_sync exclude" in msg for msg in captured_logger.messages)
+    assert any(
+        "youtube transcript background_sync exclude" in msg for msg in captured_logger.messages
+    )
     assert any("reason=members_only" in msg for msg in captured_logger.messages)
 
 

@@ -226,7 +226,7 @@ class YouTubeCacheRepository:
                 (_datetime_to_utc_iso(cutoff_liked_at),),
             )
             deleted = cursor.rowcount
-        return max(0, deleted if isinstance(deleted, int) else 0)
+        return max(0, deleted)
 
     def purge_transcript_rows_not_in_likes(self) -> tuple[int, int]:
         with self._db.connection() as conn:
@@ -244,10 +244,7 @@ class YouTubeCacheRepository:
             )
             transcript_deleted = transcript_cursor.rowcount
             sync_deleted = sync_cursor.rowcount
-        return (
-            max(0, transcript_deleted if isinstance(transcript_deleted, int) else 0),
-            max(0, sync_deleted if isinstance(sync_deleted, int) else 0),
-        )
+        return (max(0, transcript_deleted), max(0, sync_deleted))
 
     def get_cache_state_value(self, key: str) -> str | None:
         with self._db.connection() as conn:

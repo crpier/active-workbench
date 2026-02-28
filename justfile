@@ -15,11 +15,14 @@ lint:
 format:
   uv run ruff format .
 
+fix-linting:
+  uv run ruff check --fix --unsafe-fixes .
+
 typecheck:
   uv run pyright
 
 test:
-  uv run pytest --cov=backend --cov-report=term-missing
+  PYTHONPATH=. uv run pytest --cov=backend --cov-report=term-missing
 
 check: lint typecheck test
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
@@ -82,16 +83,15 @@ class SchedulerService:
             return True
 
         lock_path = self._lock_path
+        lock_file: Any | None = None
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             lock_file = lock_path.open("a+", encoding="utf-8")
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            if "lock_file" in locals():
-                try:
+            if lock_file is not None:
+                with contextlib.suppress(OSError):
                     lock_file.close()
-                except OSError:
-                    pass
             if exc.errno in (errno.EACCES, errno.EAGAIN):
                 LOGGER.info(
                     "scheduler start skipped; lock held by another process path=%s",
@@ -111,7 +111,9 @@ class SchedulerService:
             lock_file.write(f"{os.getpid()}\n")
             lock_file.flush()
         except OSError:
-            LOGGER.debug("scheduler lock file metadata write failed path=%s", lock_path, exc_info=True)
+            LOGGER.debug(
+                "scheduler lock file metadata write failed path=%s", lock_path, exc_info=True
+            )
 
         self._lock_file = lock_file
         self._lock_acquired = True
@@ -129,10 +131,8 @@ class SchedulerService:
         except OSError:
             LOGGER.debug("scheduler lock release failed path=%s", self._lock_path, exc_info=True)
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 lock_file.close()
-            except OSError:
-                pass
             self._lock_file = None
             self._lock_acquired = False
 
