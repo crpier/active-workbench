@@ -262,12 +262,12 @@ export const youtube_watch_later_recommend = backendTool(
 
 export const bucket_item_add = backendTool(
   TOOL_NAMES.bucket_item_add,
-  "Add or merge a structured bucket item. Domain is required. For movie/tv/book/music/article, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or creator clues in normal chat (not by raw provider id), then call again with the matching provider id field. Do not call a question tool.",
+  "Add or merge a structured bucket item. Domain is required. For movie/tv/book/music, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or creator clues in normal chat (not by raw provider id), then call again with the matching provider id field. Do not call a question tool.",
   {
     extraArgs: {
-      title: tool.schema.string().optional().describe("Item title. Optional for article URL adds."),
-      domain: tool.schema.string().describe("Required domain (for example movie, tv, book, music, article, game, place, travel)."),
-      url: tool.schema.string().optional().describe("Optional URL. Recommended and usually required for article adds."),
+      title: tool.schema.string().optional().describe("Item title."),
+      domain: tool.schema.string().describe("Required domain (for example movie, tv, book, music, game, place, travel)."),
+      url: tool.schema.string().optional().describe("Optional URL."),
       artist: tool.schema
         .string()
         .optional()

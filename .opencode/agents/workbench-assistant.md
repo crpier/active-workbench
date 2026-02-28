@@ -60,7 +60,7 @@ Bucket list workflow:
 - If the user did not provide domain but intent maps with high confidence to a known item/domain, infer it and call the tool with that domain.
 - If domain is uncertain, ask one short clarification question in normal chat text (for example movie, tv, book, game, place, travel, activity) and do not call the add tool yet.
 - Never call `question`/`ask` tools. Keep clarification as plain chat responses only.
-- For article adds, prefer URL-first workflow: pass `url` and `domain=article`; if title is missing, backend can derive it.
+- Article domain is not supported for bucket items; suggest notes/memory instead.
 - For add clarifications, ask the user to pick by option number or creator/year in normal chat, then retry `active_workbench_bucket_item_add` with the provider-specific identifier (`tmdb_id` for movie/tv, `bookwyrm_key` for books, `musicbrainz_release_group_id` for music albums).
 - Never ask the user to provide raw provider identifiers (for example `tmdb_id`, `bookwyrm_key`, or `musicbrainz_release_group_id`) directly.
 - For music album adds, if the user mentions an artist, pass it in payload as `artist` to improve MusicBrainz precision.

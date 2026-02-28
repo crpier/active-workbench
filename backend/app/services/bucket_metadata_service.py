@@ -4,11 +4,9 @@ import json
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from html import unescape
-from html.parser import HTMLParser
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
@@ -40,13 +38,13 @@ class BucketEnrichment:
 @dataclass(frozen=True)
 class BucketResolveCandidate:
     canonical_id: str
-    provider: Literal["tmdb", "bookwyrm", "musicbrainz", "web"]
+    provider: Literal["tmdb", "bookwyrm", "musicbrainz"]
     title: str
     year: int | None
     confidence: float
     external_url: str
     tmdb_id: int | None = None
-    media_type: Literal["movie", "tv", "book", "music", "article"] | None = None
+    media_type: Literal["movie", "tv", "book", "music"] | None = None
     popularity: float | None = None
     vote_count: int | None = None
     bookwyrm_key: str | None = None
@@ -91,17 +89,6 @@ class _MusicbrainzRequest:
     payload: dict[str, Any] | None
     rate_limited: bool
     retry_after_seconds: float | None
-
-
-@dataclass(frozen=True)
-class _ArticlePageMetadata:
-    canonical_url: str | None
-    source_url: str
-    title: str | None
-    description: str | None
-    author: str | None
-    site_name: str | None
-    published_at: str | None
 
 
 class BucketMetadataService:
@@ -158,7 +145,6 @@ class BucketMetadataService:
         title: str,
         domain: str,
         year: int | None,
-        article_url: str | None = None,
         artist_hint: str | None = None,
         tmdb_id: int | None = None,
         bookwyrm_key: str | None = None,
@@ -181,12 +167,6 @@ class BucketMetadataService:
                 year=year,
                 bookwyrm_key=bookwyrm_key,
                 max_candidates=max_candidates,
-            )
-        if normalized_domain == "article":
-            return self._resolve_article_for_bucket_add(
-                title=title,
-                article_url=article_url,
-                year=year,
             )
         if normalized_domain == "music":
             return self._resolve_musicbrainz_for_bucket_add(
@@ -221,19 +201,9 @@ class BucketMetadataService:
         title: str,
         domain: str,
         year: int | None,
-        article_url: str | None = None,
     ) -> BucketEnrichment:
         normalized_domain = domain.strip().lower()
         if not self._enrichment_enabled:
-            return _empty_enrichment()
-        if normalized_domain == "article":
-            enriched_article = self._enrich_with_article_url(
-                title=title,
-                article_url=article_url,
-                year=year,
-            )
-            if enriched_article is not None:
-                return enriched_article
             return _empty_enrichment()
         if normalized_domain == "book":
             enriched_book = self._enrich_with_bookwyrm(title=title, year=year)
@@ -278,79 +248,6 @@ class BucketMetadataService:
             year=year,
             tmdb_id=None,
             max_candidates=5,
-        )
-        if resolution.status != "resolved" or resolution.enrichment is None:
-            return None
-        return resolution.enrichment
-
-    def _resolve_article_for_bucket_add(
-        self,
-        *,
-        title: str,
-        article_url: str | None,
-        year: int | None,
-    ) -> BucketAddResolution:
-        normalized_url = _normalize_article_url(article_url)
-        if normalized_url is None:
-            return BucketAddResolution(
-                status="no_match",
-                reason="article_url_required",
-                selected_candidate=None,
-                candidates=[],
-                enrichment=None,
-                retry_after_seconds=None,
-            )
-
-        page_metadata = _fetch_article_page_metadata(
-            normalized_url,
-            timeout_seconds=self._http_timeout_seconds,
-        )
-        if page_metadata is None:
-            return BucketAddResolution(
-                status="no_match",
-                reason="article_fetch_unavailable",
-                selected_candidate=None,
-                candidates=[],
-                enrichment=None,
-                retry_after_seconds=None,
-            )
-
-        enrichment = _enrichment_from_article_metadata(
-            page_metadata,
-            requested_title=title,
-            requested_year=year,
-        )
-        selected_candidate = BucketResolveCandidate(
-            canonical_id=enrichment.canonical_id or f"article:url:{page_metadata.source_url}",
-            provider="web",
-            title=_title_from_article_metadata(page_metadata, fallback=title),
-            year=enrichment.year,
-            confidence=enrichment.confidence or 0.7,
-            external_url=enrichment.external_url or page_metadata.source_url,
-            media_type="article",
-        )
-        return BucketAddResolution(
-            status="resolved",
-            reason="resolved_from_article_url",
-            selected_candidate=selected_candidate,
-            candidates=[],
-            enrichment=enrichment,
-            retry_after_seconds=None,
-        )
-
-    def _enrich_with_article_url(
-        self,
-        *,
-        title: str,
-        article_url: str | None,
-        year: int | None,
-    ) -> BucketEnrichment | None:
-        resolution = self.resolve_for_bucket_add(
-            title=title,
-            domain="article",
-            year=year,
-            article_url=article_url,
-            max_candidates=1,
         )
         if resolution.status != "resolved" or resolution.enrichment is None:
             return None
@@ -1084,28 +981,6 @@ class BucketMetadataService:
         )
 
 
-_ARTICLE_USER_AGENT = "active-workbench/0.1 (+https://github.com/crpier/active-workbench)"
-_TRACKING_QUERY_PARAMS: frozenset[str] = frozenset(
-    {
-        "fbclid",
-        "gclid",
-        "igshid",
-        "mc_cid",
-        "mc_eid",
-        "mkt_tok",
-        "ref_src",
-        "spm",
-        "utm_campaign",
-        "utm_content",
-        "utm_id",
-        "utm_medium",
-        "utm_name",
-        "utm_source",
-        "utm_term",
-    }
-)
-
-
 def _empty_enrichment() -> BucketEnrichment:
     return BucketEnrichment(
         canonical_id=None,
@@ -1122,274 +997,6 @@ def _empty_enrichment() -> BucketEnrichment:
         source_refs=[],
         provider=None,
     )
-
-
-def _normalize_article_url(value: str | None) -> str | None:
-    normalized = _normalize_optional_text(value)
-    if normalized is None:
-        return None
-    parsed = urlparse(normalized)
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"}:
-        return None
-    host = (parsed.hostname or "").lower().strip()
-    if not host:
-        return None
-
-    port = parsed.port
-    netloc = host
-    is_default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
-    if port is not None and not is_default_port:
-        netloc = f"{host}:{port}"
-
-    path = parsed.path or "/"
-    path = re.sub(r"/{2,}", "/", path)
-    if path != "/":
-        path = path.rstrip("/")
-    if not path:
-        path = "/"
-
-    kept_query: list[tuple[str, str]] = []
-    for key, query_value in parse_qsl(parsed.query, keep_blank_values=False):
-        normalized_key = key.lower().strip()
-        if not normalized_key:
-            continue
-        if normalized_key.startswith("utm_") or normalized_key in _TRACKING_QUERY_PARAMS:
-            continue
-        kept_query.append((key.strip(), query_value.strip()))
-    kept_query.sort(key=lambda item: (item[0].lower(), item[1]))
-    query = urlencode(kept_query, doseq=True)
-
-    return urlunparse((scheme, netloc, path, "", query, ""))
-
-
-def _fetch_article_page_metadata(
-    source_url: str,
-    *,
-    timeout_seconds: float,
-) -> _ArticlePageMetadata | None:
-    html = _fetch_text(
-        source_url,
-        timeout_seconds=timeout_seconds,
-        headers={
-            "Accept": "text/html,application/xhtml+xml",
-            "User-Agent": _ARTICLE_USER_AGENT,
-        },
-    )
-    if html is None:
-        return None
-
-    parser = _ArticleMetadataParser()
-    parser.feed(html)
-    parser.close()
-
-    canonical_candidate = parser.canonical_url or parser.meta_value("og:url")
-    canonical_url = _normalize_article_url(urljoin(source_url, canonical_candidate or ""))
-    source_url = _normalize_article_url(source_url) or source_url
-    if canonical_url is None:
-        canonical_url = source_url
-
-    title = (
-        parser.meta_value("og:title")
-        or parser.meta_value("twitter:title")
-        or parser.meta_value("title")
-        or parser.title_text
-    )
-    description = (
-        parser.meta_value("og:description")
-        or parser.meta_value("description")
-        or parser.meta_value("twitter:description")
-    )
-    author = (
-        parser.meta_value("article:author")
-        or parser.meta_value("author")
-        or parser.meta_value("parsely-author")
-        or parser.meta_value("dc.creator")
-        or _normalize_optional_text(_strip_twitter_handle(parser.meta_value("twitter:creator")))
-    )
-    site_name = (
-        parser.meta_value("og:site_name")
-        or parser.meta_value("application-name")
-        or parser.meta_value("publisher")
-    )
-    published_at = (
-        parser.meta_value("article:published_time")
-        or parser.meta_value("og:published_time")
-        or parser.meta_value("publish_date")
-        or parser.meta_value("pubdate")
-        or parser.meta_value("date")
-        or parser.meta_value("parsely-pub-date")
-    )
-
-    return _ArticlePageMetadata(
-        canonical_url=canonical_url,
-        source_url=source_url,
-        title=_normalize_optional_text(title),
-        description=_normalize_optional_text(description),
-        author=_normalize_optional_text(author),
-        site_name=_normalize_optional_text(site_name),
-        published_at=_normalize_optional_text(published_at),
-    )
-
-
-class _ArticleMetadataParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._meta: dict[str, str] = {}
-        self._title_parts: list[str] = []
-        self._capture_title = False
-        self.canonical_url: str | None = None
-
-    @property
-    def title_text(self) -> str | None:
-        if not self._title_parts:
-            return None
-        return _normalize_optional_text("".join(self._title_parts))
-
-    def meta_value(self, key: str) -> str | None:
-        return _normalize_optional_text(self._meta.get(key.lower()))
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_map = {name.lower(): (value or "").strip() for name, value in attrs}
-        if tag.lower() == "title":
-            self._capture_title = True
-            return
-        if tag.lower() == "link":
-            rel = attrs_map.get("rel", "").lower()
-            href = attrs_map.get("href")
-            if "canonical" in rel and href:
-                self.canonical_url = href
-            return
-        if tag.lower() != "meta":
-            return
-
-        key = (
-            attrs_map.get("property")
-            or attrs_map.get("name")
-            or attrs_map.get("itemprop")
-            or attrs_map.get("http-equiv")
-        )
-        value = attrs_map.get("content")
-        if not key or value is None:
-            return
-        normalized_key = key.lower().strip()
-        normalized_value = _normalize_optional_text(unescape(value))
-        if normalized_key and normalized_value is not None and normalized_key not in self._meta:
-            self._meta[normalized_key] = normalized_value
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
-            self._capture_title = False
-
-    def handle_data(self, data: str) -> None:
-        if self._capture_title:
-            self._title_parts.append(unescape(data))
-
-
-def _enrichment_from_article_metadata(
-    page: _ArticlePageMetadata,
-    *,
-    requested_title: str,
-    requested_year: int | None,
-) -> BucketEnrichment:
-    canonical_url = page.canonical_url or page.source_url
-    title = _title_from_article_metadata(page, fallback=requested_title)
-    published_year = _parse_year(page.published_at)
-    resolved_year = requested_year if requested_year is not None else published_year
-    confidence = _article_title_confidence(requested_title, page.title)
-    canonical_id = f"article:url:{canonical_url}"
-    site_host = _site_host_from_url(canonical_url)
-
-    metadata: dict[str, Any] = {
-        "title": title,
-        "article_title": page.title,
-        "description": page.description,
-        "author": page.author,
-        "site_name": page.site_name,
-        "published_at": page.published_at,
-        "external_url": canonical_url,
-        "source_url": canonical_url,
-        "canonical_url": canonical_url,
-    }
-    if site_host is not None:
-        metadata["site_host"] = site_host
-
-    providers = [site_host] if site_host is not None else []
-    source_refs = [{"type": "external_api", "id": canonical_id}]
-
-    return BucketEnrichment(
-        canonical_id=canonical_id,
-        year=resolved_year,
-        duration_minutes=None,
-        rating=None,
-        popularity=None,
-        genres=[],
-        tags=[],
-        providers=providers,
-        external_url=canonical_url,
-        confidence=round(confidence, 4),
-        metadata=metadata,
-        source_refs=source_refs,
-        provider="web",
-    )
-
-
-def _title_from_article_metadata(page: _ArticlePageMetadata, *, fallback: str) -> str:
-    title = _normalize_optional_text(page.title)
-    if title is not None:
-        return title
-    fallback_title = _normalize_optional_text(fallback)
-    if fallback_title is not None:
-        return fallback_title
-    return _article_title_from_url(page.canonical_url or page.source_url)
-
-
-def _article_title_confidence(requested_title: str, page_title: str | None) -> float:
-    normalized_requested = _normalize_optional_text(requested_title)
-    normalized_page = _normalize_optional_text(page_title)
-    if normalized_page is None:
-        return 0.65
-    if normalized_requested is None:
-        return 0.9
-    return max(0.65, _title_similarity(normalized_requested, normalized_page))
-
-
-def _site_host_from_url(value: str | None) -> str | None:
-    normalized = _normalize_article_url(value)
-    if normalized is None:
-        return None
-    host = (urlparse(normalized).hostname or "").lower().strip()
-    if not host:
-        return None
-    return host
-
-
-def _strip_twitter_handle(value: str | None) -> str | None:
-    normalized = _normalize_optional_text(value)
-    if normalized is None:
-        return None
-    if normalized.startswith("@"):
-        return normalized[1:]
-    return normalized
-
-
-def _article_title_from_url(value: str | None) -> str:
-    normalized = _normalize_article_url(value)
-    if normalized is None:
-        return "Untitled article"
-    parsed = urlparse(normalized)
-    slug = parsed.path.rsplit("/", 1)[-1].strip()
-    if not slug:
-        host = parsed.hostname or "article"
-        return f"Article from {host}"
-    slug = re.sub(r"\.[a-z0-9]{2,4}$", "", slug, flags=re.IGNORECASE)
-    words = re.split(r"[-_]+", slug)
-    cleaned = " ".join(word for word in words if word)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
-        host = parsed.hostname or "article"
-        return f"Article from {host}"
-    return cleaned.title()
 
 
 def _fetch_json(

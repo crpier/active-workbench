@@ -168,7 +168,6 @@ class ToolDispatcher:
                 title=item.title,
                 domain=item.domain,
                 year=item.year,
-                article_url=item.external_url,
             )
 
             metadata_updates: dict[str, Any] = {
@@ -1159,7 +1158,6 @@ class ToolDispatcher:
                 title=title,
                 domain=domain,
                 year=year,
-                article_url=external_url,
                 artist_hint=music_artist_hint,
                 tmdb_id=tmdb_id,
                 bookwyrm_key=bookwyrm_key,
@@ -1224,14 +1222,12 @@ class ToolDispatcher:
                     title=title,
                     domain=domain,
                     year=year,
-                    article_url=external_url,
                 )
         elif auto_enrich:
             enrichment = self._bucket_metadata_service.enrich(
                 title=title,
                 domain=domain,
                 year=year,
-                article_url=external_url,
             )
 
         if enrichment is not None:
