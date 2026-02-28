@@ -117,6 +117,7 @@ Get transcript for https://www.youtube.com/watch?v=<video_id>
 4. Manage bucket list items:
 ```text
 Add "Watch Andor" to my bucket list.
+Save "How to evaluate personal knowledge systems" as a research idea in my bucket list.
 Recommend what I should watch next under 45 minutes.
 Mark item <id> as completed.
 ```

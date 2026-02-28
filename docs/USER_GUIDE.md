@@ -73,7 +73,7 @@ What it does:
 - Keeps items as structured records in SQLite.
 - Supports filtering, recommendations, and health diagnostics.
 - Duplicate add requests for an already-active item return `status=already_exists` (no write).
-- Requires explicit domain on add (for example movie, tv, book, music, game, place, travel).
+- Requires explicit domain on add (for example research, movie, tv, book, music, game, place, travel).
 - For `movie`/`tv`, add requests run TMDb resolution before write.
   - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
   - Confirm by retrying `bucket.item.add` with `tmdb_id` (chat follow-up, no question tool needed).
@@ -133,6 +133,7 @@ In OpenCode, these are exposed as:
 - "Search recent liked videos for material on microservices trade-offs."
 - "Get transcript for https://www.youtube.com/watch?v=<video_id>."
 - "Add 'Watch Andor' to my bucket list."
+- "Save 'Ways to evaluate note-taking methods' as a research idea in my bucket list."
 - "Recommend one bucket item I can do in under 45 minutes."
 - "Mark item <id> as completed."
 

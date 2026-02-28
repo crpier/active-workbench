@@ -486,6 +486,51 @@ def test_structured_bucket_search_includes_unannotated_items(client: TestClient)
     assert result["items"][0]["annotation_status"] in {"pending", "failed"}
 
 
+def test_structured_bucket_supports_research_domain_search_and_recommend(
+    client: TestClient,
+) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "Compare methods for weekly review",
+                "domain": "research",
+                "notes": "Evaluate tradeoffs in effort and retention.",
+                "auto_enrich": False,
+            },
+        ),
+    )
+    assert add_response.status_code == 200
+    assert add_response.json()["result"]["bucket_item"]["annotated"] is True
+
+    search_response = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={"domain": "research", "query": "weekly review"},
+        ),
+    )
+    assert search_response.status_code == 200
+    search_result = search_response.json()["result"]
+    assert search_result["count"] == 1
+    assert search_result["annotated_count"] == 1
+    assert search_result["unannotated_count"] == 0
+
+    recommend_response = client.post(
+        "/tools/bucket.item.recommend",
+        json=_request_body(
+            "bucket.item.recommend",
+            payload={"domain": "research", "query": "review", "limit": 3},
+        ),
+    )
+    assert recommend_response.status_code == 200
+    recommend_result = recommend_response.json()["result"]
+    assert recommend_result["count"] >= 1
+    titles = [entry["bucket_item"]["title"] for entry in recommend_result["recommendations"]]
+    assert "Compare methods for weekly review" in titles
+
+
 def test_structured_bucket_recommend_excludes_unannotated_items(client: TestClient) -> None:
     annotated = client.post(
         "/tools/bucket.item.add",

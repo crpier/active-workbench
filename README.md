@@ -36,6 +36,8 @@ Bucket list:
 - `bucket.item.recommend`
 - `bucket.health.report`
 
+Bucket domains can include practical media/tasks plus research ideas (for example `domain=research`).
+
 Memory:
 - `memory.create`
 - `memory.list`

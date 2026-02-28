@@ -266,7 +266,7 @@ export const bucket_item_add = backendTool(
   {
     extraArgs: {
       title: tool.schema.string().optional().describe("Item title."),
-      domain: tool.schema.string().describe("Required domain (for example movie, tv, book, music, game, place, travel)."),
+      domain: tool.schema.string().describe("Required domain (for example research, movie, tv, book, music, game, place, travel)."),
       url: tool.schema.string().optional().describe("Optional URL."),
       artist: tool.schema
         .string()
@@ -377,7 +377,7 @@ export const bucket_item_search = backendTool(
   {
     extraArgs: {
       query: tool.schema.string().optional().describe("Free-text query against title/notes."),
-      domain: tool.schema.string().optional().describe("Domain filter (movie, tv, book, etc.)."),
+      domain: tool.schema.string().optional().describe("Domain filter (research, movie, tv, book, etc.)."),
       include_completed: tool.schema
         .boolean()
         .optional()

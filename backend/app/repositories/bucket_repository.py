@@ -75,7 +75,11 @@ class BucketItem:
 
     @property
     def annotation_status(self) -> str:
-        return _annotation_status(self.metadata, canonical_id=self.canonical_id)
+        return _annotation_status(
+            self.metadata,
+            canonical_id=self.canonical_id,
+            domain=self.domain,
+        )
 
     @property
     def is_annotated(self) -> bool:
@@ -134,6 +138,7 @@ class BucketRepository:
         incoming_metadata = _normalize_annotation_metadata(
             incoming_metadata,
             canonical_id=normalized_canonical_id,
+            domain=normalized_domain,
         )
         incoming_source_refs = _normalize_source_refs(source_refs)
 
@@ -196,6 +201,7 @@ class BucketRepository:
             merged_metadata = _normalize_annotation_metadata(
                 merged_metadata,
                 canonical_id=merged_canonical_id,
+                domain=normalized_domain,
             )
             merged_source_refs = _merge_source_refs(existing.source_refs, incoming_source_refs)
             merged_title = title.strip() or existing.title
@@ -293,6 +299,7 @@ class BucketRepository:
         updated_metadata = _normalize_annotation_metadata(
             updated_metadata,
             canonical_id=updated_canonical_id,
+            domain=updated_domain,
         )
 
         with self._db.connection() as conn:
@@ -753,9 +760,14 @@ def _normalize_annotation_metadata(
     metadata: dict[str, Any],
     *,
     canonical_id: str | None,
+    domain: str,
 ) -> dict[str, Any]:
     normalized = dict(metadata)
-    normalized["annotation_status"] = _annotation_status(normalized, canonical_id=canonical_id)
+    normalized["annotation_status"] = _annotation_status(
+        normalized,
+        canonical_id=canonical_id,
+        domain=domain,
+    )
     return normalized
 
 
@@ -763,12 +775,16 @@ def _annotation_status(
     metadata: dict[str, Any],
     *,
     canonical_id: str | None,
+    domain: str | None = None,
 ) -> str:
     raw_status = metadata.get("annotation_status")
     if isinstance(raw_status, str):
         normalized_status = raw_status.strip().lower()
         if normalized_status in {"pending", "annotated", "failed"}:
             return normalized_status
+
+    if _is_self_annotated_domain(domain):
+        return "annotated"
 
     if canonical_id is not None:
         return "annotated"
@@ -784,6 +800,13 @@ def _annotation_status(
         )
     )
     return "annotated" if has_structured_signal else "pending"
+
+
+def _is_self_annotated_domain(domain: str | None) -> bool:
+    if domain is None:
+        return False
+    normalized_domain = domain.strip().lower()
+    return normalized_domain in {"research"}
 
 
 def _genres_overlap(item_genres: list[str], target_genres: list[str]) -> bool:

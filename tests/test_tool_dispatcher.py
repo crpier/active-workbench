@@ -957,6 +957,121 @@ def test_bucket_item_add_rejects_article_domain(tmp_path: Path) -> None:
     assert "no longer supported" in add_response.error.message
 
 
+def test_bucket_item_add_research_is_annotated_by_default(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "How to compare note-taking systems",
+                "domain": "research",
+                "notes": "Look at retrieval quality, friction, and recall speed.",
+                "auto_enrich": False,
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    bucket_item = add_response.result["bucket_item"]
+    assert bucket_item["domain"] == "research"
+    assert bucket_item["annotated"] is True
+    assert bucket_item["annotation_status"] == "annotated"
+
+
+def test_bucket_item_recommend_includes_research_without_external_enrichment(
+    tmp_path: Path,
+) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    research_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Knowledge capture review methods",
+                "domain": "research",
+                "notes": "Research spaced recall options.",
+                "auto_enrich": False,
+            },
+        ),
+    )
+    assert research_add.ok is True
+
+    non_research_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Unknown Action Thing",
+                "domain": "movie",
+                "auto_enrich": False,
+            },
+        ),
+    )
+    assert non_research_add.ok is True
+
+    recommend = dispatcher.execute(
+        "bucket.item.recommend",
+        ToolRequest(
+            tool="bucket.item.recommend",
+            request_id=uuid4(),
+            payload={"domain": "research", "query": "knowledge", "limit": 3},
+        ),
+    )
+
+    assert recommend.ok is True
+    assert recommend.result["count"] >= 1
+    titles = [
+        entry["bucket_item"]["title"]
+        for entry in recommend.result["recommendations"]
+    ]
+    assert "Knowledge capture review methods" in titles
+
+
+def test_bucket_item_add_topic_domain_is_not_canonicalized_to_research(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Queue theory basics", "domain": "topic", "auto_enrich": False},
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    assert add_response.result["bucket_item"]["domain"] == "topic"
+
+
 def test_bucket_item_complete_accepts_bucket_item_id_alias(tmp_path: Path) -> None:
     dispatcher = _build_dispatcher(
         tmp_path,

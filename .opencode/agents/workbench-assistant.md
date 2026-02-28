@@ -58,6 +58,7 @@ Transcript workflow:
 Bucket list workflow:
 - Backend requires explicit domain for `active_workbench_bucket_item_add`.
 - If the user did not provide domain but intent maps with high confidence to a known item/domain, infer it and call the tool with that domain.
+- If intent clearly indicates research capture (for example "save this research idea/topic" or "add this to things to research"), infer `domain=research` and call add directly.
 - If domain is uncertain, ask one short clarification question in normal chat text (for example movie, tv, book, game, place, travel, activity) and do not call the add tool yet.
 - Never call `question`/`ask` tools. Keep clarification as plain chat responses only.
 - Article domain is not supported for bucket items; suggest notes/memory instead.
