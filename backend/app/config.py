@@ -26,7 +26,6 @@ _BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
     "youtube_transcript_background_sync_enabled",
     "bucket_enrichment_enabled",
     "telemetry_enabled",
-    "wallabag_enabled",
 )
 
 
@@ -365,54 +364,6 @@ class AppSettings(BaseSettings):
         le=1000,
         description="Maximum mobile share requests allowed per client in each window.",
     )
-    wallabag_enabled: bool = Field(
-        default=True,
-        description="Wallabag sync is mandatory for article workflows and must remain enabled.",
-    )
-    wallabag_base_url: str | None = Field(
-        default=None,
-        description="Wallabag base URL, e.g. https://wallabag.example.com.",
-    )
-    wallabag_client_id: str | None = Field(
-        default=None,
-        description="Wallabag OAuth client id.",
-    )
-    wallabag_client_secret: str | None = Field(
-        default=None,
-        description="Wallabag OAuth client secret.",
-    )
-    wallabag_username: str | None = Field(
-        default=None,
-        description="Wallabag account username.",
-    )
-    wallabag_password: str | None = Field(
-        default=None,
-        description="Wallabag account password.",
-    )
-    wallabag_http_timeout_seconds: float = Field(
-        default=15.0,
-        ge=1.0,
-        le=120.0,
-        description="HTTP timeout in seconds for Wallabag API calls.",
-    )
-    wallabag_job_batch_size: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="Maximum Wallabag sync jobs processed per scheduler tick.",
-    )
-    wallabag_retry_base_seconds: int = Field(
-        default=30,
-        ge=1,
-        le=3600,
-        description="Base retry backoff in seconds for failed Wallabag sync jobs.",
-    )
-    wallabag_retry_max_seconds: int = Field(
-        default=1800,
-        ge=1,
-        le=86_400,
-        description="Maximum retry backoff in seconds for failed Wallabag sync jobs.",
-    )
 
     @field_validator("youtube_mode", mode="before")
     @classmethod
@@ -476,14 +427,6 @@ class AppSettings(BaseSettings):
             raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_USER_AGENT must not be empty.")
         return normalized
 
-    @field_validator("wallabag_base_url", mode="before")
-    @classmethod
-    def _normalize_wallabag_base_url(cls, value: Any) -> str | None:
-        normalized = _normalize_optional_text(value)
-        if normalized is None:
-            return None
-        return normalized.rstrip("/")
-
     @field_validator(*_PATH_FIELDS, mode="before")
     @classmethod
     def _normalize_paths(cls, value: Any) -> Any:
@@ -500,17 +443,7 @@ class AppSettings(BaseSettings):
         assert isinstance(default_value, bool)
         return _parse_bool_with_default(value, default=default_value)
 
-    @field_validator(
-        "supadata_api_key",
-        "bucket_tmdb_api_key",
-        "mobile_api_key",
-        "wallabag_base_url",
-        "wallabag_client_id",
-        "wallabag_client_secret",
-        "wallabag_username",
-        "wallabag_password",
-        mode="before",
-    )
+    @field_validator("supadata_api_key", "bucket_tmdb_api_key", "mobile_api_key", mode="before")
     @classmethod
     def _normalize_optional_strings(cls, value: Any) -> str | None:
         return _normalize_optional_text(value)
@@ -560,32 +493,6 @@ def _resolve_path_fields(settings: AppSettings) -> AppSettings:
     return settings.model_copy(update=resolved_updates)
 
 
-def _validate_wallabag_configuration(settings: AppSettings) -> None:
-    if not settings.wallabag_enabled:
-        raise ValueError(
-            "Invalid Wallabag configuration. ACTIVE_WORKBENCH_WALLABAG_ENABLED must be true."
-        )
-
-    missing: list[str] = []
-    if settings.wallabag_base_url is None:
-        missing.append("ACTIVE_WORKBENCH_WALLABAG_BASE_URL")
-    if settings.wallabag_client_id is None:
-        missing.append("ACTIVE_WORKBENCH_WALLABAG_CLIENT_ID")
-    if settings.wallabag_client_secret is None:
-        missing.append("ACTIVE_WORKBENCH_WALLABAG_CLIENT_SECRET")
-    if settings.wallabag_username is None:
-        missing.append("ACTIVE_WORKBENCH_WALLABAG_USERNAME")
-    if settings.wallabag_password is None:
-        missing.append("ACTIVE_WORKBENCH_WALLABAG_PASSWORD")
-
-    if missing:
-        fields = ", ".join(missing)
-        raise ValueError(
-            "Invalid Wallabag configuration. Missing required env vars: "
-            f"{fields}"
-        )
-
-
 def load_settings(*, validate_oauth_secrets: bool = True) -> AppSettings:
     settings = AppSettings()
     settings = _apply_path_defaults(settings)
@@ -598,6 +505,5 @@ def load_settings(*, validate_oauth_secrets: bool = True) -> AppSettings:
             supadata_api_key=settings.supadata_api_key,
             bucket_tmdb_api_key=settings.bucket_tmdb_api_key,
         )
-    _validate_wallabag_configuration(settings)
 
     return settings

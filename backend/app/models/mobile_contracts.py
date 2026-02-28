@@ -82,11 +82,6 @@ class ShareArticleResponse(BaseModel):
     bucket_item_id: str | None = None
     title: str | None = None
     canonical_url: str | None = None
-    wallabag_sync_status: Literal["pending", "synced", "failed"] | None = None
-    wallabag_entry_id: int | None = None
-    wallabag_entry_url: str | None = None
-    read_state: Literal["unread", "read"] | None = None
-    wallabag_sync_error: str | None = None
     message: str | None = None
     candidates: list[dict[str, object]] = Field(default_factory=lambda: [])
     error: ToolError | None = None

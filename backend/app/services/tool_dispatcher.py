@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
@@ -33,9 +33,6 @@ from backend.app.services.youtube_service import (
     YouTubeServiceError,
 )
 from backend.app.telemetry import TelemetryClient
-
-if TYPE_CHECKING:
-    from backend.app.services.wallabag_service import WallabagService
 
 TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "youtube.likes.list_recent": (
@@ -105,7 +102,6 @@ class ToolDispatcher:
         youtube_daily_quota_limit: int,
         youtube_quota_warning_percent: float,
         telemetry: TelemetryClient | None = None,
-        wallabag_service: WallabagService | None = None,
     ) -> None:
         self._audit_repository = audit_repository
         self._idempotency_repository = idempotency_repository
@@ -115,7 +111,6 @@ class ToolDispatcher:
         self._youtube_quota_repository = youtube_quota_repository
         self._youtube_service = youtube_service
         self._telemetry = telemetry if telemetry is not None else TelemetryClient.disabled()
-        self._wallabag_service = wallabag_service
         self._default_timezone = default_timezone
         self._youtube_daily_quota_limit = max(0, youtube_daily_quota_limit)
         bounded_warning_percent = min(1.0, max(0.0, youtube_quota_warning_percent))
@@ -144,16 +139,8 @@ class ToolDispatcher:
         return self._youtube_service
 
     def run_due_jobs(self) -> None:
-        if self._wallabag_service is None:
-            return
-        stats = self._wallabag_service.process_due_jobs()
-        self._telemetry.emit(
-            "wallabag.sync.scheduler_tick",
-            processed=stats.processed,
-            succeeded=stats.succeeded,
-            failed=stats.failed,
-            retried=stats.retried,
-        )
+        # Non-ready scheduler job tools were removed from the runtime surface.
+        return
 
     def run_bucket_annotation_poll(self, *, limit: int = 20) -> dict[str, int]:
         candidates = self._bucket_repository.list_unannotated_active_items(limit=max(1, limit))

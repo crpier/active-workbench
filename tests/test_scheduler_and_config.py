@@ -266,52 +266,6 @@ def test_load_settings_oauth_mode_succeeds_with_required_secrets(
     assert settings.bucket_tmdb_api_key == "test-tmdb-key"
 
 
-def test_load_settings_wallabag_enabled_requires_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True)
-    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
-    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_ENABLED", "true")
-    monkeypatch.delenv("ACTIVE_WORKBENCH_WALLABAG_BASE_URL", raising=False)
-    monkeypatch.delenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_ID", raising=False)
-    monkeypatch.delenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("ACTIVE_WORKBENCH_WALLABAG_USERNAME", raising=False)
-    monkeypatch.delenv("ACTIVE_WORKBENCH_WALLABAG_PASSWORD", raising=False)
-
-    with pytest.raises(ValueError, match="Invalid Wallabag configuration"):
-        load_settings()
-
-
-def test_load_settings_rejects_wallabag_disabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True)
-    (data_dir / "youtube-token.json").write_text("{}", encoding="utf-8")
-    (data_dir / "youtube-client-secret.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setenv("ACTIVE_WORKBENCH_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("ACTIVE_WORKBENCH_YOUTUBE_MODE", "oauth")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_SUPADATA_API_KEY", "test-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY", "test-tmdb-key")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_ENABLED", "false")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_BASE_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_ID", "test-client-id")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_SECRET", "test-client-secret")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_USERNAME", "test-user")
-    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_PASSWORD", "test-password")
-
-    with pytest.raises(ValueError, match="must be true"):
-        load_settings()
-
-
 def test_load_settings_reads_dotenv_for_oauth_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

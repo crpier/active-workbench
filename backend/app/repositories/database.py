@@ -185,51 +185,6 @@ CREATE TABLE IF NOT EXISTS mobile_api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_mobile_api_keys_active
 ON mobile_api_keys(revoked_at, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS article_wallabag_state (
-    bucket_item_id TEXT PRIMARY KEY,
-    source_url TEXT NOT NULL,
-    canonical_url TEXT NULL,
-    sync_status TEXT NOT NULL,
-    wallabag_entry_id INTEGER NULL,
-    wallabag_entry_url TEXT NULL,
-    read_state TEXT NOT NULL,
-    read_at TEXT NULL,
-    sync_error TEXT NULL,
-    last_push_attempt_at TEXT NULL,
-    last_pull_attempt_at TEXT NULL,
-    synced_at TEXT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(bucket_item_id) REFERENCES bucket_items(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_article_wallabag_status_updated
-ON article_wallabag_state(sync_status, updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS wallabag_sync_jobs (
-    job_key TEXT PRIMARY KEY,
-    bucket_item_id TEXT NOT NULL,
-    job_type TEXT NOT NULL,
-    run_after TEXT NOT NULL,
-    attempt_count INTEGER NOT NULL,
-    last_error TEXT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(bucket_item_id) REFERENCES bucket_items(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_wallabag_sync_jobs_run_after
-ON wallabag_sync_jobs(run_after, job_type);
-
-CREATE TABLE IF NOT EXISTS wallabag_auth_state (
-    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
-    access_token TEXT NOT NULL,
-    refresh_token TEXT NULL,
-    token_type TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 """
 
 

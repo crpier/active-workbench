@@ -146,8 +146,6 @@ def test_mobile_share_article_saves_link(client: TestClient) -> None:
     assert (
         body["canonical_url"] == "https://example.com/posts/interesting-article?utm_source=twitter"
     )
-    assert body["wallabag_sync_status"] == "failed"
-    assert body["read_state"] == "unread"
 
 
 def test_mobile_share_article_duplicate_returns_already_exists(client: TestClient) -> None:
@@ -165,72 +163,6 @@ def test_mobile_share_article_duplicate_returns_already_exists(client: TestClien
     assert second_body["status"] == "already_exists"
     assert second_body["backend_status"] == "already_exists"
     assert second_body["bucket_item_id"] == first_body["bucket_item_id"]
-    assert second_body["wallabag_sync_status"] == "failed"
-
-
-def test_articles_capture_and_sync_status(client: TestClient) -> None:
-    capture = client.post(
-        "/articles/capture",
-        json={
-            "url": "https://example.com/articles/capture-test",
-            "source": "web-ui",
-            "notes": "from web capture",
-        },
-    )
-    assert capture.status_code == 200
-    payload = capture.json()
-    bucket_item_id = payload["bucket_item_id"]
-    assert payload["status"] == "saved"
-    assert payload["wallabag_sync_status"] == "failed"
-    assert isinstance(bucket_item_id, str)
-
-    sync_status = client.get(f"/articles/{bucket_item_id}/sync-status")
-    assert sync_status.status_code == 200
-    status_payload = sync_status.json()
-    assert status_payload["bucket_item_id"] == bucket_item_id
-    assert status_payload["sync_status"] == "failed"
-    assert status_payload["read_state"] == "unread"
-
-
-def test_articles_read_state_updates_locally_when_wallabag_disabled(client: TestClient) -> None:
-    capture = client.post(
-        "/articles/capture",
-        json={"url": "https://example.com/articles/read-state"},
-    )
-    assert capture.status_code == 200
-    bucket_item_id = capture.json()["bucket_item_id"]
-    assert isinstance(bucket_item_id, str)
-
-    mark_read = client.patch(
-        f"/articles/{bucket_item_id}/read-state",
-        json={"read": True},
-    )
-    assert mark_read.status_code == 200
-    read_payload = mark_read.json()
-    assert read_payload["sync_status"] == "pending"
-    assert read_payload["read_state"] == "read"
-
-    refresh = client.post(f"/articles/{bucket_item_id}/refresh")
-    assert refresh.status_code == 200
-    refresh_payload = refresh.json()
-    assert refresh_payload["sync_status"] == "failed"
-    assert refresh_payload["read_state"] == "read"
-
-
-def test_article_sync_status_rejects_non_article_bucket_item(client: TestClient) -> None:
-    create_movie = client.post(
-        "/tools/bucket.item.add",
-        json=_request_body(
-            "bucket.item.add",
-            payload={"domain": "movie", "title": "Not an article"},
-        ),
-    )
-    assert create_movie.status_code == 200
-    item_id = create_movie.json()["result"]["bucket_item"]["item_id"]
-
-    response = client.get(f"/articles/{item_id}/sync-status")
-    assert response.status_code == 400
-    assert "not an article" in response.json()["detail"].lower()
 
 
 def test_mobile_share_article_rejects_invalid_url(client: TestClient) -> None:
