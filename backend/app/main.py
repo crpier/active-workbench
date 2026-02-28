@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from backend.app.api.routes import router
@@ -48,6 +51,7 @@ async def app_lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Active Workbench API", version="0.1.0", lifespan=app_lifespan)
+    settings = get_settings()
 
     async def request_context_middleware(
         request: Request,
@@ -100,6 +104,7 @@ def create_app() -> FastAPI:
 
     app.middleware("http")(request_context_middleware)
     app.include_router(router)
+    _mount_web_ui(app=app, web_dist_dir=settings.web_ui_dist_dir)
     app.add_api_route(
         "/health",
         health_check,
@@ -109,6 +114,72 @@ def create_app() -> FastAPI:
     )
 
     return app
+
+
+def _mount_web_ui(*, app: FastAPI, web_dist_dir: Path) -> None:
+    index_path = web_dist_dir / "index.html"
+    expo_assets_path = web_dist_dir / "_expo"
+    static_assets_path = web_dist_dir / "assets"
+    favicon_path = web_dist_dir / "favicon.ico"
+
+    if expo_assets_path.is_dir():
+        app.mount("/_expo", StaticFiles(directory=expo_assets_path), name="expo_web_assets")
+        app.mount("/app/_expo", StaticFiles(directory=expo_assets_path), name="expo_web_assets_scoped")
+
+    if static_assets_path.is_dir():
+        app.mount("/assets", StaticFiles(directory=static_assets_path), name="expo_web_static_assets")
+        app.mount(
+            "/app/assets",
+            StaticFiles(directory=static_assets_path),
+            name="expo_web_static_assets_scoped",
+        )
+
+    def _serve_index() -> Response:
+        if index_path.is_file():
+            return FileResponse(
+                index_path,
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": (
+                    "Web UI build not found. Build Expo web output and point "
+                    "ACTIVE_WORKBENCH_WEB_UI_DIST_DIR to it."
+                )
+            },
+        )
+
+    def _web_ui_entry() -> Response:
+        return _serve_index()
+
+    def _web_ui_subpath(path: str) -> Response:
+        _ = path
+        return _serve_index()
+
+    app.add_api_route(
+        "/app",
+        _web_ui_entry,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    app.add_api_route(
+        "/app/{path:path}",
+        _web_ui_subpath,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
+    if favicon_path.is_file():
+        def _favicon() -> Response:
+            return FileResponse(favicon_path)
+
+        app.add_api_route(
+            "/favicon.ico",
+            _favicon,
+            methods=["GET"],
+            include_in_schema=False,
+        )
 
 
 app = create_app()

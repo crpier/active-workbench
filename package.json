@@ -1,0 +1,15 @@
+{
+  "name": "active-workbench",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "tools-ts"
+  ],
+  "scripts": {
+    "expo:start": "npm --prefix apps/workbench-expo run start",
+    "expo:web": "npm --prefix apps/workbench-expo run web",
+    "expo:build:web": "npm --prefix apps/workbench-expo run build:web",
+    "expo:typecheck": "npm --prefix apps/workbench-expo run typecheck",
+    "expo:test": "npm --prefix apps/workbench-expo run test"
+  }
+}

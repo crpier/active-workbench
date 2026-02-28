@@ -18,6 +18,7 @@ _DATA_DIR_RELATIVE_DEFAULTS: tuple[tuple[str, Path], ...] = (
 )
 _PATH_FIELDS: tuple[str, ...] = (
     "data_dir",
+    "web_ui_dist_dir",
     *(field_name for field_name, _ in _DATA_DIR_RELATIVE_DEFAULTS),
 )
 _BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
@@ -25,6 +26,9 @@ _BOOLEAN_COERCION_FIELDS: tuple[str, ...] = (
     "youtube_background_sync_enabled",
     "youtube_transcript_background_sync_enabled",
     "bucket_enrichment_enabled",
+    "article_pipeline_enabled",
+    "article_supadata_fallback_enabled",
+    "article_llm_polish_enabled",
     "telemetry_enabled",
 )
 
@@ -104,6 +108,10 @@ class AppSettings(BaseSettings):
     db_path: Path = Field(
         default=_default_in_data_dir(Path("state.db")),
         description=f"SQLite database path. {_data_dir_default_note(Path('state.db'))}",
+    )
+    web_ui_dist_dir: Path = Field(
+        default=Path("apps/workbench-expo/dist"),
+        description="Filesystem path of built Expo web assets served under `/app`.",
     )
     default_timezone: str = Field(
         default="Europe/Bucharest",
@@ -314,6 +322,60 @@ class AppSettings(BaseSettings):
         description="Minimum interval between MusicBrainz enrichment calls to prevent bursts.",
     )
 
+    # Article capture, extraction, and readable pipeline.
+    article_pipeline_enabled: bool = Field(
+        default=True,
+        description="Enable article ingestion/extraction background pipeline.",
+    )
+    article_pipeline_max_jobs_per_tick: int = Field(
+        default=5,
+        ge=1,
+        le=200,
+        description="Maximum queued article jobs processed in each scheduler poll tick.",
+    )
+    article_fetch_http_timeout_seconds: float = Field(
+        default=12.0,
+        ge=1.0,
+        le=120.0,
+        description="HTTP timeout for article HTML fetch requests.",
+    )
+    article_user_agent: str = Field(
+        default="active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+        description="User-Agent used for article fetch requests.",
+    )
+    article_quality_min_markdown_chars: int = Field(
+        default=900,
+        ge=150,
+        le=20_000,
+        description="Minimum cleaned markdown length before fallback extraction is attempted.",
+    )
+    article_supadata_fallback_enabled: bool = Field(
+        default=True,
+        description="Enable Supadata scrape fallback when local extraction quality is low.",
+    )
+    article_llm_polish_enabled: bool = Field(
+        default=True,
+        description="Enable post-extraction markdown polishing in article pipeline.",
+    )
+    article_supadata_http_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=180.0,
+        description="HTTP timeout for Supadata article fallback/polish requests.",
+    )
+    article_domain_backoff_base_seconds: int = Field(
+        default=120,
+        ge=10,
+        le=86_400,
+        description="Base domain-level backoff when providers/sites throttle article fetches.",
+    )
+    article_domain_backoff_max_seconds: int = Field(
+        default=3600,
+        ge=10,
+        le=604_800,
+        description="Maximum domain-level backoff for throttled article fetches.",
+    )
+
     # Logging.
     log_dir: Path = Field(
         default=_default_in_data_dir(Path("logs")),
@@ -425,6 +487,16 @@ class AppSettings(BaseSettings):
         normalized = value.strip()
         if not normalized:
             raise ValueError("ACTIVE_WORKBENCH_BUCKET_MUSICBRAINZ_USER_AGENT must not be empty.")
+        return normalized
+
+    @field_validator("article_user_agent", mode="before")
+    @classmethod
+    def _normalize_article_user_agent(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("ACTIVE_WORKBENCH_ARTICLE_USER_AGENT must be a string.")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("ACTIVE_WORKBENCH_ARTICLE_USER_AGENT must not be empty.")
         return normalized
 
     @field_validator(*_PATH_FIELDS, mode="before")

@@ -1,6 +1,6 @@
 # Active Workbench - Production Mode
 
-**Updated:** 2026-02-22
+**Updated:** 2026-02-28
 
 Production mode means:
 - real YouTube OAuth
@@ -67,9 +67,18 @@ You can override paths with:
 
 ## 3. Run Backend (No Fixtures)
 
+Build Expo web assets (once per deploy/update):
+
+```bash
+just expo-build-web
+```
+
 ```bash
 uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
+
+Web UI is served by backend at:
+- `/app/articles`
 
 ## 4. Fail-Fast Behavior
 

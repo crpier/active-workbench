@@ -1,6 +1,6 @@
 # Active Workbench - Quick Start
 
-**Updated:** 2026-02-20
+**Updated:** 2026-02-28
 
 ## What This Runs
 
@@ -8,6 +8,7 @@ Local-first assistant backend + OpenCode tools:
 - FastAPI backend (`backend/`)
 - SQLite state database (`.active-workbench/state.db`)
 - OpenCode custom tools (`.opencode/tools/active_workbench.ts`)
+- Expo web/mobile app (`apps/workbench-expo/`)
 
 ## Prerequisites
 
@@ -29,6 +30,8 @@ Optional verification:
 ```bash
 just check
 just ts-typecheck
+just expo-typecheck
+just expo-test
 ```
 
 ## Run Backend + OpenCode
@@ -45,6 +48,30 @@ Terminal B:
 ```bash
 cd /home/crpier/Projects/active-workbench
 opencode .
+```
+
+## Build and Serve the Web UI
+
+Build the Expo web bundle:
+
+```bash
+just expo-build-web
+```
+
+Run backend:
+
+```bash
+just run
+```
+
+Open:
+- `http://127.0.0.1:8000/app/articles`
+
+## Run Expo Mobile App
+
+```bash
+cd apps/workbench-expo
+npm run android
 ```
 
 ## Run With YouTube OAuth
@@ -169,6 +196,7 @@ source ~/.config/active-workbench/secrets.env
 - `ACTIVE_WORKBENCH_YOUTUBE_BACKGROUND_MIN_INTERVAL_SECONDS` (default `180`)
 - `ACTIVE_WORKBENCH_YOUTUBE_TRANSCRIPT_BACKGROUND_MIN_INTERVAL_SECONDS` (default `20`)
 - `ACTIVE_WORKBENCH_API_BASE_URL` (default `http://127.0.0.1:8000`)
+- `ACTIVE_WORKBENCH_WEB_UI_DIST_DIR` (default `apps/workbench-expo/dist`)
 - `ACTIVE_WORKBENCH_LOG_DIR` (default `.active-workbench/logs`)
 - `ACTIVE_WORKBENCH_TELEMETRY_ENABLED` (default `true`; set `false` to disable telemetry events)
 - `ACTIVE_WORKBENCH_TELEMETRY_SINK` (default `log`; set `none` to suppress sink output)

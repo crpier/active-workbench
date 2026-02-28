@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from backend.app.config import AppSettings, load_settings
+from backend.app.repositories.article_repository import ArticleRepository
 from backend.app.repositories.audit_repository import AuditRepository
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
     BucketBookwyrmQuotaRepository,
@@ -18,6 +19,7 @@ from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.mobile_api_key_repository import MobileApiKeyRepository
 from backend.app.repositories.youtube_cache_repository import YouTubeCacheRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
+from backend.app.services.article_pipeline_service import ArticlePipelineService
 from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.rate_limiter import SlidingWindowRateLimiter
 from backend.app.services.tool_dispatcher import ToolDispatcher
@@ -113,6 +115,8 @@ def get_dispatcher() -> ToolDispatcher:
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,
         youtube_quota_warning_percent=settings.youtube_quota_warning_percent,
         telemetry=get_telemetry(),
+        article_pipeline_service=get_article_pipeline_service(),
+        article_pipeline_max_jobs_per_tick=settings.article_pipeline_max_jobs_per_tick,
     )
 
 
@@ -139,10 +143,33 @@ def get_mobile_share_rate_limiter() -> SlidingWindowRateLimiter:
     )
 
 
+@lru_cache(maxsize=1)
+def get_article_pipeline_service() -> ArticlePipelineService:
+    settings = get_settings()
+    database = get_database()
+    return ArticlePipelineService(
+        article_repository=ArticleRepository(database),
+        bucket_repository=BucketRepository(database),
+        telemetry=get_telemetry(),
+        enabled=settings.article_pipeline_enabled,
+        fetch_timeout_seconds=settings.article_fetch_http_timeout_seconds,
+        user_agent=settings.article_user_agent,
+        quality_min_chars=settings.article_quality_min_markdown_chars,
+        supadata_api_key=settings.supadata_api_key,
+        supadata_base_url=settings.supadata_base_url,
+        supadata_timeout_seconds=settings.article_supadata_http_timeout_seconds,
+        supadata_fallback_enabled=settings.article_supadata_fallback_enabled,
+        llm_polish_enabled=settings.article_llm_polish_enabled,
+        domain_backoff_base_seconds=settings.article_domain_backoff_base_seconds,
+        domain_backoff_max_seconds=settings.article_domain_backoff_max_seconds,
+    )
+
+
 def reset_cached_dependencies() -> None:
     get_mobile_api_key_repository.cache_clear()
     get_dispatcher.cache_clear()
     get_database.cache_clear()
     get_telemetry.cache_clear()
     get_mobile_share_rate_limiter.cache_clear()
+    get_article_pipeline_service.cache_clear()
     get_settings.cache_clear()

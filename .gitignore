@@ -6,6 +6,9 @@ __pycache__/
 .coverage
 
 # Node / TypeScript
+node_modules/
+apps/*/node_modules/
+apps/*/dist/
 tools-ts/node_modules/
 tools-ts/dist/
 

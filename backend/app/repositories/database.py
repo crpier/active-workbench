@@ -30,6 +30,79 @@ CREATE INDEX IF NOT EXISTS idx_bucket_items_status_added
 ON bucket_items(status, added_at DESC);
 """
 
+ARTICLE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS articles (
+    id TEXT PRIMARY KEY,
+    bucket_item_id TEXT NOT NULL UNIQUE,
+    source_url TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    title TEXT NULL,
+    author TEXT NULL,
+    site_name TEXT NULL,
+    published_at TEXT NULL,
+    captured_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    read_state TEXT NOT NULL,
+    estimated_read_minutes INTEGER NULL,
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    last_error_code TEXT NULL,
+    last_error_message TEXT NULL,
+    last_error_at TEXT NULL,
+    extraction_method TEXT NULL,
+    llm_polished INTEGER NOT NULL DEFAULT 0,
+    provenance_json TEXT NOT NULL,
+    deleted_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(bucket_item_id) REFERENCES bucket_items(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_articles_status_read_state
+ON articles(status, read_state, captured_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_articles_canonical_url
+ON articles(canonical_url);
+
+CREATE TABLE IF NOT EXISTS article_snapshots (
+    id TEXT PRIMARY KEY,
+    article_id TEXT NOT NULL,
+    snapshot_type TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    extractor TEXT NOT NULL,
+    extractor_version TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(article_id) REFERENCES articles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_snapshots_article_type
+ON article_snapshots(article_id, snapshot_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS article_jobs (
+    id TEXT PRIMARY KEY,
+    article_id TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_run_at TEXT NOT NULL,
+    last_error TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(article_id) REFERENCES articles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_article_jobs_due
+ON article_jobs(status, next_run_at, created_at);
+
+CREATE TABLE IF NOT EXISTS article_domain_throttle (
+    domain TEXT PRIMARY KEY,
+    next_allowed_at TEXT NOT NULL,
+    backoff_level INTEGER NOT NULL,
+    last_http_status INTEGER NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,
@@ -209,6 +282,7 @@ class Database:
             conn.executescript(SCHEMA_SQL)
             _maybe_migrate_bucket_items_schema(conn)
             conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+            conn.executescript(ARTICLE_SCHEMA_SQL)
 
 
 def _maybe_migrate_bucket_items_schema(conn: sqlite3.Connection) -> None:
