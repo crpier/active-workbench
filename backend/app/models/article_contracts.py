@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Literal
 from urllib.parse import urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from backend.app.models.tool_contracts import ToolError
 
 
 def _normalize_optional_text(value: object) -> str | None:
@@ -20,12 +19,12 @@ def _normalize_optional_text(value: object) -> str | None:
     return normalized
 
 
-class ShareArticleRequest(BaseModel):
+class ArticleCaptureRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str = Field(max_length=2048)
-    shared_text: str | None = Field(default=None, max_length=4000)
-    source_app: str | None = Field(default=None, max_length=255)
+    notes: str | None = Field(default=None, max_length=4000)
+    source: str | None = Field(default=None, max_length=255)
     idempotency_key: UUID | None = None
     timezone: str = Field(default="Europe/Bucharest", max_length=120)
     session_id: str | None = Field(default=None, max_length=120)
@@ -43,12 +42,12 @@ class ShareArticleRequest(BaseModel):
             raise ValueError("url must not contain credentials")
         return normalized
 
-    @field_validator("shared_text", "source_app", "session_id", mode="before")
+    @field_validator("notes", "source", "session_id", mode="before")
     @classmethod
     def _normalize_optional_fields(cls, value: object) -> str | None:
         return _normalize_optional_text(value)
 
-    @field_validator("source_app", "session_id")
+    @field_validator("source", "session_id")
     @classmethod
     def _validate_safe_identifiers(cls, value: str | None) -> str | None:
         if value is None:
@@ -73,20 +72,22 @@ class ShareArticleRequest(BaseModel):
         return value
 
 
-class ShareArticleResponse(BaseModel):
+class ArticleReadStateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["saved", "already_exists", "needs_clarification", "failed"]
-    request_id: UUID
-    backend_status: str | None = None
-    bucket_item_id: str | None = None
-    title: str | None = None
-    canonical_url: str | None = None
-    wallabag_sync_status: Literal["pending", "synced", "failed"] | None = None
+    read: bool
+
+
+class ArticleSyncStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bucket_item_id: str
+    sync_status: Literal["pending", "synced", "failed", "missing"]
+    read_state: Literal["unread", "read"] | None = None
     wallabag_entry_id: int | None = None
     wallabag_entry_url: str | None = None
-    read_state: Literal["unread", "read"] | None = None
-    wallabag_sync_error: str | None = None
-    message: str | None = None
-    candidates: list[dict[str, object]] = Field(default_factory=lambda: [])
-    error: ToolError | None = None
+    sync_error: str | None = None
+    synced_at: datetime | None = None
+    last_push_attempt_at: datetime | None = None
+    last_pull_attempt_at: datetime | None = None
+    updated_at: datetime | None = None

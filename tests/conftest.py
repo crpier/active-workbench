@@ -16,6 +16,16 @@ from backend.app.repositories.youtube_cache_repository import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _wallabag_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_ENABLED", "1")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_BASE_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_USERNAME", "test-user")
+    monkeypatch.setenv("ACTIVE_WORKBENCH_WALLABAG_PASSWORD", "test-password")
+
+
 def _seed_cached_youtube_data(data_dir: Path) -> None:
     now = datetime.now(UTC)
 

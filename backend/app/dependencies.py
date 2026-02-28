@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from backend.app.config import AppSettings, load_settings
+from backend.app.repositories.article_wallabag_repository import ArticleWallabagRepository
 from backend.app.repositories.audit_repository import AuditRepository
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
     BucketBookwyrmQuotaRepository,
@@ -21,6 +22,7 @@ from backend.app.repositories.youtube_quota_repository import YouTubeQuotaReposi
 from backend.app.services.bucket_metadata_service import BucketMetadataService
 from backend.app.services.rate_limiter import SlidingWindowRateLimiter
 from backend.app.services.tool_dispatcher import ToolDispatcher
+from backend.app.services.wallabag_service import WallabagService
 from backend.app.services.youtube_service import YouTubeService
 from backend.app.telemetry import TelemetryClient, build_telemetry_client
 
@@ -39,6 +41,36 @@ def get_database() -> Database:
 
 
 @lru_cache(maxsize=1)
+def get_bucket_repository() -> BucketRepository:
+    return BucketRepository(get_database())
+
+
+@lru_cache(maxsize=1)
+def get_article_wallabag_repository() -> ArticleWallabagRepository:
+    return ArticleWallabagRepository(get_database())
+
+
+@lru_cache(maxsize=1)
+def get_wallabag_service() -> WallabagService:
+    settings = get_settings()
+    return WallabagService(
+        enabled=settings.wallabag_enabled,
+        base_url=settings.wallabag_base_url,
+        client_id=settings.wallabag_client_id,
+        client_secret=settings.wallabag_client_secret,
+        username=settings.wallabag_username,
+        password=settings.wallabag_password,
+        http_timeout_seconds=settings.wallabag_http_timeout_seconds,
+        job_batch_size=settings.wallabag_job_batch_size,
+        retry_base_seconds=settings.wallabag_retry_base_seconds,
+        retry_max_seconds=settings.wallabag_retry_max_seconds,
+        article_repository=get_article_wallabag_repository(),
+        bucket_repository=get_bucket_repository(),
+        telemetry=get_telemetry(),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_dispatcher() -> ToolDispatcher:
     settings = get_settings()
     database = get_database()
@@ -47,7 +79,7 @@ def get_dispatcher() -> ToolDispatcher:
         audit_repository=AuditRepository(database),
         idempotency_repository=IdempotencyRepository(database),
         memory_repository=MemoryRepository(database),
-        bucket_repository=BucketRepository(database),
+        bucket_repository=get_bucket_repository(),
         bucket_metadata_service=BucketMetadataService(
             enrichment_enabled=settings.bucket_enrichment_enabled,
             http_timeout_seconds=settings.bucket_enrichment_http_timeout_seconds,
@@ -113,6 +145,7 @@ def get_dispatcher() -> ToolDispatcher:
         youtube_daily_quota_limit=settings.youtube_daily_quota_limit,
         youtube_quota_warning_percent=settings.youtube_quota_warning_percent,
         telemetry=get_telemetry(),
+        wallabag_service=get_wallabag_service(),
     )
 
 
@@ -141,8 +174,11 @@ def get_mobile_share_rate_limiter() -> SlidingWindowRateLimiter:
 
 def reset_cached_dependencies() -> None:
     get_mobile_api_key_repository.cache_clear()
+    get_article_wallabag_repository.cache_clear()
+    get_bucket_repository.cache_clear()
     get_dispatcher.cache_clear()
     get_database.cache_clear()
     get_telemetry.cache_clear()
     get_mobile_share_rate_limiter.cache_clear()
+    get_wallabag_service.cache_clear()
     get_settings.cache_clear()

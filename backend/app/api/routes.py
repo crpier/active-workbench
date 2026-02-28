@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from backend.app.dependencies import (
+    get_bucket_repository,
     get_dispatcher,
     get_mobile_share_rate_limiter,
+    get_wallabag_service,
+)
+from backend.app.models.article_contracts import (
+    ArticleCaptureRequest,
+    ArticleReadStateRequest,
+    ArticleSyncStatusResponse,
 )
 from backend.app.models.mobile_contracts import ShareArticleRequest, ShareArticleResponse
 from backend.app.models.tool_contracts import (
@@ -18,8 +25,11 @@ from backend.app.models.tool_contracts import (
     ToolRequest,
     ToolResponse,
 )
+from backend.app.repositories.article_wallabag_repository import ArticleWallabagState
+from backend.app.repositories.bucket_repository import BucketRepository
 from backend.app.services.rate_limiter import SlidingWindowRateLimiter
 from backend.app.services.tool_dispatcher import ToolDispatcher
+from backend.app.services.wallabag_service import WallabagService
 
 router = APIRouter()
 
@@ -254,6 +264,7 @@ def mobile_share_article(
     http_response: Response,
     dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
     rate_limiter: Annotated[SlidingWindowRateLimiter, Depends(get_mobile_share_rate_limiter)],
+    wallabag_service: Annotated[WallabagService, Depends(get_wallabag_service)],
 ) -> ShareArticleResponse:
     client_ip = _resolve_client_ip(http_request)
     client_key = client_ip
@@ -273,31 +284,164 @@ def mobile_share_article(
     for header_name, header_value in rate_limit_headers.items():
         http_response.headers[header_name] = header_value
 
+    return _capture_article(
+        dispatcher=dispatcher,
+        wallabag_service=wallabag_service,
+        url=request.url,
+        notes=request.shared_text,
+        source_ref_type="mobile_share_app",
+        source_ref_value=request.source_app,
+        idempotency_key=request.idempotency_key,
+        timezone=request.timezone,
+        session_id=request.session_id,
+    )
+
+
+@router.post(
+    "/articles/capture",
+    response_model=ShareArticleResponse,
+    tags=["articles"],
+    operation_id="article_capture",
+)
+def capture_article(
+    request: ArticleCaptureRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+    wallabag_service: Annotated[WallabagService, Depends(get_wallabag_service)],
+) -> ShareArticleResponse:
+    return _capture_article(
+        dispatcher=dispatcher,
+        wallabag_service=wallabag_service,
+        url=request.url,
+        notes=request.notes,
+        source_ref_type="web_capture",
+        source_ref_value=request.source,
+        idempotency_key=request.idempotency_key,
+        timezone=request.timezone,
+        session_id=request.session_id,
+    )
+
+
+@router.get(
+    "/articles/{bucket_item_id}/sync-status",
+    response_model=ArticleSyncStatusResponse,
+    tags=["articles"],
+    operation_id="article_sync_status",
+)
+def article_sync_status(
+    bucket_item_id: str,
+    wallabag_service: Annotated[WallabagService, Depends(get_wallabag_service)],
+    bucket_repository: Annotated[BucketRepository, Depends(get_bucket_repository)],
+) -> ArticleSyncStatusResponse:
+    state = wallabag_service.get_sync_status(bucket_item_id=bucket_item_id)
+    if state is None:
+        bucket_item = bucket_repository.get_item(bucket_item_id)
+        if bucket_item is None:
+            raise HTTPException(status_code=404, detail="Article not found.")
+        if bucket_item.domain != "article":
+            raise HTTPException(status_code=400, detail="Bucket item is not an article.")
+        return ArticleSyncStatusResponse(
+            bucket_item_id=bucket_item_id,
+            sync_status="missing",
+        )
+    return _to_sync_status_response(state)
+
+
+@router.post(
+    "/articles/{bucket_item_id}/refresh",
+    response_model=ArticleSyncStatusResponse,
+    tags=["articles"],
+    operation_id="article_refresh_sync",
+)
+def article_refresh_sync(
+    bucket_item_id: str,
+    wallabag_service: Annotated[WallabagService, Depends(get_wallabag_service)],
+) -> ArticleSyncStatusResponse:
+    state = wallabag_service.refresh_article(bucket_item_id=bucket_item_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    return _to_sync_status_response(state)
+
+
+@router.patch(
+    "/articles/{bucket_item_id}/read-state",
+    response_model=ArticleSyncStatusResponse,
+    tags=["articles"],
+    operation_id="article_update_read_state",
+)
+def article_update_read_state(
+    bucket_item_id: str,
+    request: ArticleReadStateRequest,
+    wallabag_service: Annotated[WallabagService, Depends(get_wallabag_service)],
+) -> ArticleSyncStatusResponse:
+    state = wallabag_service.set_read_state(bucket_item_id=bucket_item_id, read=request.read)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    return _to_sync_status_response(state)
+
+
+def _capture_article(
+    *,
+    dispatcher: ToolDispatcher,
+    wallabag_service: WallabagService,
+    url: str,
+    notes: str | None,
+    source_ref_type: str,
+    source_ref_value: str | None,
+    idempotency_key: UUID | None,
+    timezone: str,
+    session_id: str | None,
+) -> ShareArticleResponse:
     payload: dict[str, object] = {
         "domain": "article",
-        "url": request.url,
+        "url": url,
         "allow_unresolved": True,
     }
-    if request.shared_text is not None:
-        payload["notes"] = request.shared_text
-    if request.source_app is not None:
-        payload["source_refs"] = [{"type": "mobile_share_app", "id": request.source_app}]
+    if notes is not None:
+        payload["notes"] = notes
+    if source_ref_value is not None:
+        payload["source_refs"] = [{"type": source_ref_type, "id": source_ref_value}]
 
     tool_response = _handle_tool(
         "bucket.item.add",
         ToolRequest(
             tool="bucket.item.add",
             request_id=uuid4(),
-            idempotency_key=request.idempotency_key,
+            idempotency_key=idempotency_key,
             payload=payload,
             context=ToolContext(
-                timezone=request.timezone,
-                session_id=request.session_id,
+                timezone=timezone,
+                session_id=session_id,
             ),
         ),
         dispatcher,
     )
 
+    response = _parse_share_tool_response(tool_response)
+    if response.status in {"saved", "already_exists"}:
+        bucket_item_id = response.bucket_item_id
+        canonical_url = response.canonical_url
+        source_url = canonical_url or url
+        if bucket_item_id is not None:
+            wallabag_state = wallabag_service.track_article_capture(
+                bucket_item_id=bucket_item_id,
+                source_url=source_url,
+                canonical_url=canonical_url,
+                eager_sync=True,
+            )
+            response = response.model_copy(
+                update={
+                    "wallabag_sync_status": wallabag_state.sync_status,
+                    "wallabag_entry_id": wallabag_state.wallabag_entry_id,
+                    "wallabag_entry_url": wallabag_state.wallabag_entry_url,
+                    "read_state": wallabag_state.read_state,
+                    "wallabag_sync_error": wallabag_state.sync_error,
+                }
+            )
+
+    return response
+
+
+def _parse_share_tool_response(tool_response: ToolResponse) -> ShareArticleResponse:
     if not tool_response.ok:
         return ShareArticleResponse(
             status="failed",
@@ -358,6 +502,28 @@ def mobile_share_article(
         message=message,
         candidates=candidates,
         error=None if response_status != "failed" else tool_response.error,
+    )
+
+
+def _to_sync_status_response(state: ArticleWallabagState) -> ArticleSyncStatusResponse:
+    if state.sync_status not in {"pending", "synced", "failed"}:
+        status_value: Literal["pending", "synced", "failed", "missing"] = "failed"
+    else:
+        status_value = cast(
+            Literal["pending", "synced", "failed", "missing"],
+            state.sync_status,
+        )
+    return ArticleSyncStatusResponse(
+        bucket_item_id=state.bucket_item_id,
+        sync_status=status_value,
+        read_state=cast(Literal["unread", "read"] | None, state.read_state),
+        wallabag_entry_id=state.wallabag_entry_id,
+        wallabag_entry_url=state.wallabag_entry_url,
+        sync_error=state.sync_error,
+        synced_at=state.synced_at,
+        last_push_attempt_at=state.last_push_attempt_at,
+        last_pull_attempt_at=state.last_pull_attempt_at,
+        updated_at=state.updated_at,
     )
 
 
