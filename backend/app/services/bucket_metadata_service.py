@@ -1054,22 +1054,6 @@ def _fetch_json_value(
     return parsed
 
 
-def _fetch_text(
-    url: str,
-    *,
-    timeout_seconds: float,
-    headers: dict[str, str] | None = None,
-) -> str | None:
-    request = Request(url, headers=headers or {}, method="GET")
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            content_type = response.headers.get_content_charset() or "utf-8"
-            raw = response.read().decode(content_type, errors="replace")
-    except (HTTPError, URLError, TimeoutError, OSError, UnicodeDecodeError):
-        return None
-    return _normalize_optional_text(raw)
-
-
 def _pick_best_itunes_match(title: str, candidates: list[object]) -> dict[str, Any] | None:
     best_match: dict[str, Any] | None = None
     best_score = -1.0

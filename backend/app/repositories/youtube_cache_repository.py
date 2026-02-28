@@ -1051,7 +1051,7 @@ def _unique_ids(video_ids: list[str]) -> list[str]:
     unique_ids: list[str] = []
     seen: set[str] = set()
     for raw_video_id in video_ids:
-        normalized = raw_video_id.strip() if isinstance(raw_video_id, str) else ""
+        normalized = raw_video_id.strip()
         if not normalized:
             continue
         if normalized in seen:

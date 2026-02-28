@@ -6,6 +6,7 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 - Treat the codebase as work-in-progress; broad changes are acceptable when they improve outcomes.
 - Do not bias toward "safe/minimal" edits by default.
 - Run targeted checks for touched code before finishing.
+- After large changes or before committing, run `just check`.
 - Do not change unrelated files.
 
 ## Code

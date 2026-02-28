@@ -43,6 +43,11 @@ This is the staging space for features we plan to ship later.
   - Goal: define the long-term security posture before broader use/exposure (network, app authn/authz, secrets handling, logging/telemetry exposure, backup access, device loss scenarios).
   - Deliverables: lightweight threat model, prioritized risks, and a staged hardening plan (quick wins vs later architecture changes).
   - Status: explicitly deferred for post-bootstrap hardening work.
+- `Pre-commit quality gate with prek` (planned)
+  - Context: `prek` is the open-source pre-commit hook tool planned for this repo.
+  - Goal: set up `prek` so commits run `just check` and block unsound changes from landing.
+  - Scope: enforce locally before commit; optionally mirror in CI later for consistency.
+  - Status: captured for future setup and rollout.
 
 ## Intent
 
