@@ -163,19 +163,7 @@ curl -sS -u 'opencode:YOUR_PASSWORD' -I https://chat.example.com/ | head -n 5
 Expected with valid credentials:
 - `200 OK`
 
-## 9. Mobile app auth setup
-
-Create per-device key:
-
-```bash
-cd /opt/active-workbench
-sudo -u active-workbench uv run python -m backend.app.scripts.mobile_api_keys create --device-name "pixel-test"
-sudo -u active-workbench uv run python -m backend.app.scripts.mobile_api_keys list
-```
-
-Paste generated token (`mkey_xxx.secret`) in Android app settings as `Mobile API key (Bearer)`.
-
-## 10. Backups and restore
+## 9. Backups and restore
 
 Manual backup:
 
@@ -189,7 +177,7 @@ Restore example:
 2. Decompress backup DB into `${ACTIVE_WORKBENCH_DATA_DIR}/state.db`.
 3. Start backend service.
 
-## 11. Updates (rolling)
+## 10. Updates (rolling)
 
 ```bash
 cd /opt/active-workbench
@@ -199,14 +187,14 @@ sudo systemctl restart active-workbench-backend.service
 sudo systemctl restart opencode-serve.service
 ```
 
-## 12. Observability (recommended for early-stage ops)
+## 11. Observability (recommended for early-stage ops)
 
 This setup gives you:
 - phone-friendly VM/service checks (`Cockpit`)
 - private admin access without public exposure (`Tailscale`)
 - searchable logs + alerts (`Vector` -> Better Stack)
 
-### 12.1 Tailscale (private access for ops UIs)
+### 11.1 Tailscale (private access for ops UIs)
 
 Install Tailscale using the official instructions for your distro, then:
 
@@ -217,7 +205,7 @@ tailscale ip -4
 
 Use the Tailscale IP for private admin access (for example Cockpit at `https://<tailscale-ip>:9090`).
 
-### 12.2 Cockpit (systemd + VM health UI)
+### 11.2 Cockpit (systemd + VM health UI)
 
 ```bash
 sudo apt-get install -y cockpit
@@ -233,7 +221,7 @@ Recommended access pattern:
 - expose Cockpit only over Tailscale/private network
 - do not open `9090/tcp` publicly
 
-### 12.3 Better Stack + Vector (searchable logs and alerts)
+### 11.3 Better Stack + Vector (searchable logs and alerts)
 
 Create a Better Stack Logs source first and note:
 - **Source token**
@@ -287,7 +275,7 @@ Notes:
 - Backend app logs are shipped from files (not backend `journald`) to avoid duplicates.
 - The Nginx template forwards `X-Request-ID` to upstreams so backend request/telemetry IDs can be correlated with edge requests.
 
-### 12.4 Suggested monitors and alerts
+### 11.4 Suggested monitors and alerts
 
 Uptime checks:
 - `https://api.example.com/health` expecting `200`
@@ -295,12 +283,10 @@ Uptime checks:
 
 Log alerts (high signal):
 - backend `level=error` spike
-- mobile share `401` spike
-- mobile share `429` spike
 - `opencode-serve.service` crash/restart patterns
 - nginx `5xx` spike
 
-### 12.5 Optional next step: Better Stack Error Tracking
+### 11.5 Optional next step: Better Stack Error Tracking
 
 If you want Sentry-style exception tracking later:
 - add Better Stack Error Tracking (Sentry SDK-compatible) for backend exceptions

@@ -344,27 +344,6 @@ class AppSettings(BaseSettings):
             "`none` disables sink output."
         ),
     )
-    mobile_api_key: str | None = Field(
-        default=None,
-        description=(
-            "Deprecated legacy global bearer token for `/mobile/v1/share/article` "
-            "(currently ignored by the mobile share endpoint). "
-            "Kept only for compatibility with older deployments/config files."
-        ),
-    )
-    mobile_share_rate_limit_window_seconds: int = Field(
-        default=60,
-        ge=1,
-        le=3600,
-        description="Mobile share rate-limit window size in seconds.",
-    )
-    mobile_share_rate_limit_max_requests: int = Field(
-        default=30,
-        ge=1,
-        le=1000,
-        description="Maximum mobile share requests allowed per client in each window.",
-    )
-
     @field_validator("youtube_mode", mode="before")
     @classmethod
     def _normalize_mode(cls, value: Any) -> str:
@@ -443,7 +422,7 @@ class AppSettings(BaseSettings):
         assert isinstance(default_value, bool)
         return _parse_bool_with_default(value, default=default_value)
 
-    @field_validator("supadata_api_key", "bucket_tmdb_api_key", "mobile_api_key", mode="before")
+    @field_validator("supadata_api_key", "bucket_tmdb_api_key", mode="before")
     @classmethod
     def _normalize_optional_strings(cls, value: Any) -> str | None:
         return _normalize_optional_text(value)

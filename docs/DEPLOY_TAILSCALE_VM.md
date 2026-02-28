@@ -73,7 +73,6 @@ Defaults in the env examples are already set for Tailscale-only access:
 - `ACTIVE_WORKBENCH_BIND_HOST=0.0.0.0`
 - `OPENCODE_SERVER_HOSTNAME=0.0.0.0`
 - no OpenCode username/password
-- no mobile share bearer token required
 
 Install Python deps:
 
@@ -141,10 +140,6 @@ Expected:
 
 Use the backend Tailscale URL in the mobile app, for example:
 - `http://<tailscale-ip>:8000`
-
-Leave the mobile bearer token setting empty/disabled.
-
-The `/mobile/v1/share/article` endpoint now relies on Tailscale network access plus rate limiting (no app-level auth).
 
 ## 8. Backups and restore
 

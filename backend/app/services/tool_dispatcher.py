@@ -23,7 +23,6 @@ from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
 from backend.app.services.bucket_metadata_service import (
     BucketAddResolution,
-    BucketEnrichment,
     BucketMetadataService,
     BucketResolveCandidate,
 )
@@ -48,7 +47,7 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     "bucket.item.add": (
         "Add or merge a structured bucket item. "
         "payload.domain (or payload.kind) is required. "
-        "Movie/TV/Book/Music/Article add requests may return "
+        "Movie/TV/Book/Music add requests may return "
         "a clarification response before write; "
         "handle clarifications in normal chat and retry with provider confirmation fields."
     ),
@@ -761,6 +760,13 @@ class ToolDispatcher:
                 code="invalid_input",
                 message="payload.domain (or payload.kind) is required",
             )
+        if domain.strip().lower() == "article":
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="Article domain is no longer supported. Use notes/memory instead.",
+            )
         external_url = _payload_str(request.payload, "external_url") or _payload_str(
             request.payload, "url"
         )
@@ -770,9 +776,6 @@ class ToolDispatcher:
             or _payload_str(request.payload, "name")
             or _payload_str(request.payload, "item")
         )
-        title_provided = title is not None
-        if title is None and media_domain == "article":
-            title = _article_title_from_url(external_url)
         if title is None:
             return _tool_error_response(
                 request_id=request.request_id,
@@ -878,7 +881,6 @@ class ToolDispatcher:
                 bookwyrm_key=bookwyrm_key,
                 musicbrainz_release_group_id=musicbrainz_release_group_id,
                 music_artist_hint=music_artist_hint,
-                article_url_provided=external_url is not None,
             )
             if (
                 add_resolution.status in {"ambiguous", "no_match", "rate_limited"}
@@ -921,8 +923,6 @@ class ToolDispatcher:
                     canonical_id = canonical_id or add_resolution.selected_candidate.canonical_id
                     if year is None:
                         year = add_resolution.selected_candidate.year
-                if not title_provided and enrichment is not None:
-                    title = _title_from_article_enrichment(enrichment, fallback=title)
             elif auto_enrich:
                 enrichment = self._bucket_metadata_service.enrich(
                     title=title,
@@ -952,10 +952,7 @@ class ToolDispatcher:
             if not providers:
                 providers = list(enrichment.providers)
             canonical_id = canonical_id or enrichment.canonical_id
-            if media_domain == "article" and enrichment.external_url is not None:
-                external_url = enrichment.external_url
-            else:
-                external_url = external_url or enrichment.external_url
+            external_url = external_url or enrichment.external_url
             confidence = confidence if confidence is not None else enrichment.confidence
             metadata = _merge_dicts(metadata, enrichment.metadata)
             source_refs = _merge_source_refs(source_refs, enrichment.source_refs)
@@ -1027,10 +1024,20 @@ class ToolDispatcher:
         source_refs = (
             _extract_source_refs(request.payload) if "source_refs" in request.payload else None
         )
+        requested_domain = _payload_str(request.payload, "domain") or _payload_str(
+            request.payload, "kind"
+        )
+        if requested_domain is not None and requested_domain.strip().lower() == "article":
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="Article domain is no longer supported. Use notes/memory instead.",
+            )
         updated = self._bucket_repository.update_item(
             item_id=item_id,
             title=_payload_str(request.payload, "title"),
-            domain=_payload_str(request.payload, "domain") or _payload_str(request.payload, "kind"),
+            domain=requested_domain,
             notes=_payload_str(request.payload, "notes")
             or _payload_str(request.payload, "body")
             or _payload_str(request.payload, "description"),
@@ -1566,8 +1573,6 @@ def _normalize_bucket_media_domain(domain: str) -> str | None:
         return "book"
     if normalized in {"music", "album"}:
         return "music"
-    if normalized == "article":
-        return "article"
     return None
 
 
@@ -1575,32 +1580,6 @@ def _extract_music_artist_hint(*, title: str, notes: str, domain: str) -> str | 
     if _normalize_bucket_media_domain(domain) != "music":
         return None
     return _extract_artist_name(notes) or _extract_artist_name(title)
-
-
-def _article_title_from_url(value: str | None) -> str | None:
-    if value is None:
-        return None
-    parsed = urlparse(value.strip())
-    path = parsed.path.rstrip("/")
-    slug = path.rsplit("/", 1)[-1].strip()
-    if not slug:
-        host = (parsed.hostname or "").strip()
-        if not host:
-            return None
-        return f"Article from {host}"
-    slug = re.sub(r"\.[a-z0-9]{2,4}$", "", slug, flags=re.IGNORECASE)
-    words = [word for word in re.split(r"[-_]+", slug) if word]
-    if not words:
-        return None
-    return " ".join(words).title()
-
-
-def _title_from_article_enrichment(enrichment: BucketEnrichment, *, fallback: str) -> str:
-    metadata = enrichment.metadata
-    enriched_title = _payload_str(metadata, "title") or _payload_str(metadata, "article_title")
-    if enriched_title is not None:
-        return enriched_title
-    return fallback
 
 
 def _extract_artist_name(value: str) -> str | None:
@@ -1721,8 +1700,6 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
         provider = "bookwyrm"
     elif isinstance(resolution.reason, str) and resolution.reason.startswith("musicbrainz_"):
         provider = "musicbrainz"
-    elif isinstance(resolution.reason, str) and resolution.reason.startswith("article_"):
-        provider = "article"
     if resolution.status == "ambiguous":
         if provider == "bookwyrm":
             return (
@@ -1750,15 +1727,6 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
                 "No confident MusicBrainz album match was found. "
                 "Please provide a more specific title, artist name, or release year."
             )
-        if provider == "article":
-            if resolution.reason == "article_url_required":
-                return "Article URL is required for article adds. Please provide the article link."
-            if resolution.reason == "article_fetch_unavailable":
-                return (
-                    "Couldn't fetch article metadata from that URL right now. "
-                    "Please retry or provide a different link."
-                )
-            return "No article metadata could be resolved from that URL."
         return (
             "No confident TMDb match was found. "
             "Please provide a more specific title or release year."
@@ -1773,11 +1741,6 @@ def _bucket_add_resolution_message(resolution: BucketAddResolution) -> str:
 
 
 def _bucket_add_follow_up_instruction(resolution: BucketAddResolution) -> str:
-    if resolution.reason == "article_url_required":
-        return (
-            "Ask the user for the article URL in normal chat, then retry bucket.item.add "
-            "with payload.url."
-        )
     return (
         "Ask the user to choose the intended candidate by option number "
         "or by creator clues in normal chat, then retry with the matching "

@@ -173,18 +173,6 @@ CREATE TABLE IF NOT EXISTS bucket_musicbrainz_quota_daily (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS mobile_api_keys (
-    key_id TEXT PRIMARY KEY,
-    device_name TEXT NOT NULL,
-    secret_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    revoked_at TEXT NULL,
-    last_used_at TEXT NULL,
-    last_seen_ip TEXT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_mobile_api_keys_active
-ON mobile_api_keys(revoked_at, created_at DESC);
 """
 
 
@@ -209,6 +197,8 @@ class Database:
             conn.executescript(SCHEMA_SQL)
             _maybe_migrate_bucket_items_schema(conn)
             conn.executescript(BUCKET_ITEMS_SCHEMA_SQL)
+            _drop_legacy_mobile_api_keys(conn)
+            _purge_legacy_article_rows(conn)
 
 
 def _maybe_migrate_bucket_items_schema(conn: sqlite3.Connection) -> None:
@@ -320,6 +310,19 @@ def _maybe_migrate_bucket_items_schema(conn: sqlite3.Connection) -> None:
             )
 
         conn.execute("DROP TABLE bucket_items_with_legacy_path")
+
+
+def _purge_legacy_article_rows(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        DELETE FROM bucket_items
+        WHERE domain = 'article'
+        """
+    )
+
+
+def _drop_legacy_mobile_api_keys(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS mobile_api_keys")
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:

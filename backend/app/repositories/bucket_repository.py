@@ -857,6 +857,7 @@ def _normalize_domain(value: str) -> str:
         "tv_show": "tv",
         "show": "tv",
         "series": "tv",
+        "article": "general",
         "book": "book",
         "place": "place",
         "trip": "travel",

@@ -932,78 +932,7 @@ def test_bucket_item_add_music_uses_artist_hint_from_notes(
     )
 
 
-def test_bucket_item_add_article_url_only_enriches_and_derives_title(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fake_fetch_text(
-        url: str,
-        *,
-        timeout_seconds: float,
-        headers: dict[str, str] | None = None,
-    ) -> str | None:
-        _ = timeout_seconds
-        assert headers is not None
-        assert "User-Agent" in headers
-        assert "example.com" in url
-        return """
-        <html>
-          <head>
-            <title>Fallback Title</title>
-            <link rel="canonical" href="https://example.com/posts/the-best-article/">
-            <meta property="og:title" content="The Best Article">
-            <meta name="author" content="Jane Doe">
-            <meta property="og:site_name" content="Example Blog">
-            <meta property="article:published_time" content="2024-11-03T12:00:00Z">
-            <meta name="description" content="Deep dive">
-          </head>
-        </html>
-        """
-
-    monkeypatch.setattr(
-        "backend.app.services.bucket_metadata_service._fetch_text",
-        _fake_fetch_text,
-    )
-    dispatcher = _build_dispatcher(
-        tmp_path,
-        metadata_service=BucketMetadataService(
-            enrichment_enabled=True,
-            http_timeout_seconds=0.5,
-            tmdb_api_key="test-key",
-            tmdb_daily_soft_limit=50,
-            tmdb_min_interval_seconds=0,
-        ),
-    )
-
-    add_response = dispatcher.execute(
-        "bucket.item.add",
-        ToolRequest(
-            tool="bucket.item.add",
-            request_id=uuid4(),
-            payload={
-                "domain": "article",
-                "url": "https://example.com/posts/the-best-article/?utm_source=twitter",
-            },
-        ),
-    )
-
-    assert add_response.ok is True
-    assert add_response.result["status"] == "created"
-    assert add_response.result["resolution_status"] == "resolved"
-    assert add_response.result["enrichment_provider"] == "web"
-    assert add_response.result["bucket_item"]["title"] == "The Best Article"
-    assert add_response.result["bucket_item"]["year"] == 2024
-    assert (
-        add_response.result["bucket_item"]["canonical_id"]
-        == "article:url:https://example.com/posts/the-best-article"
-    )
-    assert (
-        add_response.result["bucket_item"]["external_url"]
-        == "https://example.com/posts/the-best-article"
-    )
-
-
-def test_bucket_item_add_article_without_url_requests_clarification(tmp_path: Path) -> None:
+def test_bucket_item_add_rejects_article_domain(tmp_path: Path) -> None:
     dispatcher = _build_dispatcher(
         tmp_path,
         metadata_service=BucketMetadataService(
@@ -1018,95 +947,14 @@ def test_bucket_item_add_article_without_url_requests_clarification(tmp_path: Pa
         ToolRequest(
             tool="bucket.item.add",
             request_id=uuid4(),
-            payload={"title": "Great article", "domain": "article"},
+            payload={"title": "Great article", "domain": "article", "url": "https://example.com/x"},
         ),
     )
 
-    assert add_response.ok is True
-    assert add_response.result["status"] == "needs_clarification"
-    assert add_response.result["write_performed"] is False
-    assert add_response.result["resolution_status"] == "no_match"
-    assert add_response.result["resolution_reason"] == "article_url_required"
-
-    search_response = dispatcher.execute(
-        "bucket.item.search",
-        ToolRequest(
-            tool="bucket.item.search",
-            request_id=uuid4(),
-            payload={"query": "Great article", "domain": "article"},
-        ),
-    )
-    assert search_response.ok is True
-    assert search_response.result["count"] == 0
-
-
-def test_bucket_item_add_article_dedupes_by_canonical_url(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fake_fetch_text(
-        url: str,
-        *,
-        timeout_seconds: float,
-        headers: dict[str, str] | None = None,
-    ) -> str | None:
-        _ = (timeout_seconds, headers, url)
-        return """
-        <html>
-          <head>
-            <link rel="canonical" href="https://example.com/articles/canonical-piece">
-            <meta property="og:title" content="Canonical Piece">
-            <meta property="article:published_time" content="2023-02-01">
-          </head>
-        </html>
-        """
-
-    monkeypatch.setattr(
-        "backend.app.services.bucket_metadata_service._fetch_text",
-        _fake_fetch_text,
-    )
-    dispatcher = _build_dispatcher(
-        tmp_path,
-        metadata_service=BucketMetadataService(
-            enrichment_enabled=True,
-            http_timeout_seconds=0.5,
-            tmdb_api_key="test-key",
-        ),
-    )
-
-    first_add = dispatcher.execute(
-        "bucket.item.add",
-        ToolRequest(
-            tool="bucket.item.add",
-            request_id=uuid4(),
-            payload={
-                "domain": "article",
-                "url": "https://example.com/read/a?utm_source=x",
-            },
-        ),
-    )
-    assert first_add.ok is True
-    assert first_add.result["status"] == "created"
-
-    second_add = dispatcher.execute(
-        "bucket.item.add",
-        ToolRequest(
-            tool="bucket.item.add",
-            request_id=uuid4(),
-            payload={
-                "domain": "article",
-                "url": "https://example.com/read/b?utm_medium=y",
-            },
-        ),
-    )
-
-    assert second_add.ok is True
-    assert second_add.result["status"] == "already_exists"
-    assert second_add.result["bucket_item"]["item_id"] == first_add.result["bucket_item"]["item_id"]
-    assert (
-        second_add.result["bucket_item"]["canonical_id"]
-        == "article:url:https://example.com/articles/canonical-piece"
-    )
+    assert add_response.ok is False
+    assert add_response.error is not None
+    assert add_response.error.code == "invalid_input"
+    assert "no longer supported" in add_response.error.message
 
 
 def test_bucket_item_complete_accepts_bucket_item_id_alias(tmp_path: Path) -> None:
