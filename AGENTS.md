@@ -19,6 +19,10 @@ This file is intentionally slim. Add rules here as recurring issues appear.
 - Default to behavior/outcome summaries; do not include file-by-file or code-location details unless the user asks.
 - Keep architecture boundaries in mind internally; mention them in user-facing responses only when directly relevant or explicitly requested.
 
+## Linting
+- When `ruff` says says issues are fixable, use `just fix-linting`.
+- Fix formatting by running `just format`.
+
 ## Updates
 - When a new issue repeats, add one concise rule here.
 - For workbench-assistant YouTube "analyze all likes" tasks, avoid plan/subagent exploration loops and return one final answer after direct pagination.

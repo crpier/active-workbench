@@ -371,6 +371,7 @@ def _normalize_object_dict(value: object) -> dict[str, object] | None:
             normalized[key] = item_value
     return normalized
 
+
 def _resolve_client_ip(http_request: Request) -> str:
     forwarded_for = http_request.headers.get("X-Forwarded-For", "")
     if forwarded_for:

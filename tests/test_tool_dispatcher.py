@@ -422,7 +422,9 @@ def test_bucket_item_add_returns_clarification_for_ambiguous_bookwyrm_match(
     assert add_response.result["resolution_status"] == "ambiguous"
     assert add_response.result["write_performed"] is False
     assert add_response.result["candidates"][0]["provider"] == "bookwyrm"
-    assert add_response.result["candidates"][0]["bookwyrm_key"] == "https://bookwyrm.social/book/111"
+    assert (
+        add_response.result["candidates"][0]["bookwyrm_key"] == "https://bookwyrm.social/book/111"
+    )
 
 
 def test_bucket_item_add_collapses_duplicate_bookwyrm_editions_for_ddia(
@@ -562,10 +564,7 @@ def test_bucket_item_add_returns_already_exists_for_duplicate_active_item(
     assert second_add.ok is True
     assert second_add.result["status"] == "already_exists"
     assert second_add.result["write_performed"] is False
-    assert (
-        second_add.result["bucket_item"]["item_id"]
-        == first_add.result["bucket_item"]["item_id"]
-    )
+    assert second_add.result["bucket_item"]["item_id"] == first_add.result["bucket_item"]["item_id"]
     assert (
         second_add.result["bucket_item"]["updated_at"]
         == first_add.result["bucket_item"]["updated_at"]
@@ -634,8 +633,14 @@ def test_bucket_item_add_uses_bookwyrm_key_confirmation_to_write_item(
     assert add_response.result["resolution_status"] == "resolved"
     assert add_response.result["enriched"] is True
     assert add_response.result["enrichment_provider"] == "bookwyrm"
-    assert add_response.result["bucket_item"]["canonical_id"] == "bookwyrm:https://bookwyrm.social/book/111"
-    assert add_response.result["selected_candidate"]["bookwyrm_key"] == "https://bookwyrm.social/book/111"
+    assert (
+        add_response.result["bucket_item"]["canonical_id"]
+        == "bookwyrm:https://bookwyrm.social/book/111"
+    )
+    assert (
+        add_response.result["selected_candidate"]["bookwyrm_key"]
+        == "https://bookwyrm.social/book/111"
+    )
     assert (
         add_response.result["bucket_item"]["metadata"]["bookwyrm_key"]
         == "https://bookwyrm.social/book/111"
@@ -1097,10 +1102,7 @@ def test_bucket_item_add_article_dedupes_by_canonical_url(
 
     assert second_add.ok is True
     assert second_add.result["status"] == "already_exists"
-    assert (
-        second_add.result["bucket_item"]["item_id"]
-        == first_add.result["bucket_item"]["item_id"]
-    )
+    assert second_add.result["bucket_item"]["item_id"] == first_add.result["bucket_item"]["item_id"]
     assert (
         second_add.result["bucket_item"]["canonical_id"]
         == "article:url:https://example.com/articles/canonical-piece"

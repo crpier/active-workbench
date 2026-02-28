@@ -1250,10 +1250,7 @@ class _ArticleMetadataParser(HTMLParser):
         return _normalize_optional_text(self._meta.get(key.lower()))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_map = {
-            name.lower(): (value or "").strip()
-            for name, value in attrs
-        }
+        attrs_map = {name.lower(): (value or "").strip() for name, value in attrs}
         if tag.lower() == "title":
             self._capture_title = True
             return
@@ -1546,7 +1543,7 @@ def _tmdb_search_candidates(
         ),
         reverse=True,
     )
-    return matches[:max(1, max_candidates)]
+    return matches[: max(1, max_candidates)]
 
 
 def _candidate_from_tmdb_detail(
@@ -1608,9 +1605,7 @@ def _enrichment_from_tmdb_payload(
         return None
     tmdb_year = _parse_year(
         _as_str(
-            payload.get("release_date")
-            if media_type == "movie"
-            else payload.get("first_air_date")
+            payload.get("release_date") if media_type == "movie" else payload.get("first_air_date")
         )
     )
     rating = _as_float(payload.get("vote_average"))
@@ -1758,10 +1753,7 @@ def _collapse_duplicate_bookwyrm_candidates(
 
     collapsed: list[BucketResolveCandidate] = []
     for (normalized_title, normalized_author, year_key), group in grouped.items():
-        if (
-            year_key == "-"
-            and (normalized_title, normalized_author) in by_title_author_known_year
-        ):
+        if year_key == "-" and (normalized_title, normalized_author) in by_title_author_known_year:
             # Prefer dated entries when the same title/author exists with known year.
             continue
         collapsed.append(_best_bookwyrm_candidate(group))
@@ -2011,10 +2003,7 @@ def _collapse_duplicate_musicbrainz_candidates(
 
     collapsed: list[BucketResolveCandidate] = []
     for (normalized_title, normalized_artist, year_key), group in grouped.items():
-        if (
-            year_key == "-"
-            and (normalized_title, normalized_artist) in by_title_artist_known_year
-        ):
+        if year_key == "-" and (normalized_title, normalized_artist) in by_title_artist_known_year:
             continue
         collapsed.append(_best_musicbrainz_candidate(group))
     return collapsed
@@ -2541,10 +2530,13 @@ def _normalize_musicbrainz_release_group_id(value: str | None) -> str | None:
         candidate = match.group(1)
 
     lowered = candidate.strip().lower()
-    if re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        lowered,
-    ) is None:
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lowered,
+        )
+        is None
+    ):
         return None
     return lowered
 

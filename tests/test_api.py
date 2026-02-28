@@ -143,7 +143,9 @@ def test_mobile_share_article_saves_link(client: TestClient) -> None:
     assert body["status"] == "saved"
     assert body["backend_status"] == "created"
     assert body["bucket_item_id"].startswith("bucket_")
-    assert body["canonical_url"] == "https://example.com/posts/interesting-article?utm_source=twitter"
+    assert (
+        body["canonical_url"] == "https://example.com/posts/interesting-article?utm_source=twitter"
+    )
 
 
 def test_mobile_share_article_duplicate_returns_already_exists(client: TestClient) -> None:
@@ -401,13 +403,13 @@ def test_youtube_likes_cache_miss_policy_explicit_probe(client: TestClient) -> N
     response = client.post(
         "/tools/youtube.likes.list_recent",
         json=_request_body(
-                "youtube.likes.list_recent",
-                payload={
-                    "query": "soup",
-                    "time_scope": "recent",
-                    "cache_miss_policy": "probe_recent",
-                    "recent_probe_pages": 2,
-                },
+            "youtube.likes.list_recent",
+            payload={
+                "query": "soup",
+                "time_scope": "recent",
+                "cache_miss_policy": "probe_recent",
+                "recent_probe_pages": 2,
+            },
         ),
     )
     assert response.status_code == 200

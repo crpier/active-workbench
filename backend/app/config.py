@@ -219,8 +219,7 @@ class AppSettings(BaseSettings):
     youtube_token_path: Path = Field(
         default=_default_in_data_dir(Path("youtube-token.json")),
         description=(
-            "OAuth token JSON path. "
-            f"{_data_dir_default_note(Path('youtube-token.json'))}"
+            f"OAuth token JSON path. {_data_dir_default_note(Path('youtube-token.json'))}"
         ),
     )
     youtube_client_secret_path: Path = Field(
@@ -460,13 +459,9 @@ def _validate_oauth_configuration(
     errors: list[str] = []
 
     if supadata_api_key is None:
-        errors.append(
-            "ACTIVE_WORKBENCH_SUPADATA_API_KEY is required for OAuth runtime mode."
-        )
+        errors.append("ACTIVE_WORKBENCH_SUPADATA_API_KEY is required for OAuth runtime mode.")
     if bucket_tmdb_api_key is None:
-        errors.append(
-            "ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY is required for bucket enrichment."
-        )
+        errors.append("ACTIVE_WORKBENCH_BUCKET_TMDB_API_KEY is required for bucket enrichment.")
     if not youtube_client_secret_path.is_file():
         errors.append(f"Missing OAuth client secret JSON: {youtube_client_secret_path}")
     if not youtube_token_path.is_file():
@@ -477,10 +472,7 @@ def _validate_oauth_configuration(
 
     if errors:
         bullets = "\n".join(f"- {message}" for message in errors)
-        raise ValueError(
-            "Invalid production configuration for OAuth runtime mode:\n"
-            f"{bullets}"
-        )
+        raise ValueError(f"Invalid production configuration for OAuth runtime mode:\n{bullets}")
 
 
 def _apply_path_defaults(settings: AppSettings) -> AppSettings:
@@ -496,8 +488,7 @@ def _apply_path_defaults(settings: AppSettings) -> AppSettings:
 
 def _resolve_path_fields(settings: AppSettings) -> AppSettings:
     resolved_updates = {
-        field_name: _resolve_path(getattr(settings, field_name))
-        for field_name in _PATH_FIELDS
+        field_name: _resolve_path(getattr(settings, field_name)) for field_name in _PATH_FIELDS
     }
     return settings.model_copy(update=resolved_updates)
 

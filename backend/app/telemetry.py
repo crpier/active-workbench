@@ -25,8 +25,7 @@ _MAX_STRING_LENGTH = 160
 
 
 class TelemetrySink(Protocol):
-    def emit(self, *, event_name: str, attributes: Mapping[str, Any]) -> None:
-        ...
+    def emit(self, *, event_name: str, attributes: Mapping[str, Any]) -> None: ...
 
 
 class NoOpTelemetrySink:

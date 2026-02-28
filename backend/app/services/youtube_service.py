@@ -438,7 +438,9 @@ class YouTubeService:
         purged_likes = self._cache_repository.purge_likes_before(
             cutoff_liked_at=self._likes_cutoff_datetime
         )
-        purged_transcripts, purged_sync_rows = self._cache_repository.purge_transcript_rows_not_in_likes()
+        purged_transcripts, purged_sync_rows = (
+            self._cache_repository.purge_transcript_rows_not_in_likes()
+        )
         if purged_likes or purged_transcripts or purged_sync_rows:
             LOGGER.info(
                 (
@@ -753,7 +755,9 @@ class YouTubeService:
                 )
                 estimated_units += page_fetch.estimated_api_units
                 pages_used += 1
-                scoped_videos, reached_cutoff = self._filter_likes_videos_by_cutoff(page_fetch.videos)
+                scoped_videos, reached_cutoff = self._filter_likes_videos_by_cutoff(
+                    page_fetch.videos
+                )
                 fetched_videos.extend(scoped_videos)
                 next_page_token = page_fetch.next_page_token
                 if next_page_token is None or reached_cutoff:
@@ -1071,9 +1075,7 @@ class YouTubeService:
         recent_probe_pages: int,
     ) -> YouTubeRecentContentSearchResult:
         normalized_limit = max(1, min(25, limit))
-        normalized_window_days = (
-            None if window_days is None else max(1, min(30, window_days))
-        )
+        normalized_window_days = None if window_days is None else max(1, min(30, window_days))
         normalized_query = query.strip()
         if not normalized_query:
             raise YouTubeServiceError("payload.query is required")
@@ -1568,7 +1570,9 @@ class YouTubeService:
                 status_code=status_code,
             )
             is_unavailable = _is_supadata_transcript_unavailable(payload)
-            has_generate_fallback = mode_index < len(modes_to_try) - 1 and modes_to_try[mode_index + 1] == "generate"
+            has_generate_fallback = (
+                mode_index < len(modes_to_try) - 1 and modes_to_try[mode_index + 1] == "generate"
+            )
             if is_unavailable and has_generate_fallback:
                 previous_unavailable_message = unavailable_message
                 LOGGER.warning(
@@ -1589,10 +1593,14 @@ class YouTubeService:
                 unavailable_message = (
                     f"{unavailable_message}; previous_attempt={previous_unavailable_message}"
                 )
-            raise SupadataTranscriptError(_with_provider_request_id(unavailable_message, request_id))
+            raise SupadataTranscriptError(
+                _with_provider_request_id(unavailable_message, request_id)
+            )
 
         raise SupadataTranscriptError(
-            _with_provider_request_id("Supadata transcript unavailable after generate fallback.", last_request_id)
+            _with_provider_request_id(
+                "Supadata transcript unavailable after generate fallback.", last_request_id
+            )
         )
 
     def _fetch_transcript_with_youtube_api_fallback(
@@ -1713,7 +1721,11 @@ class YouTubeService:
             mode,
             job_id,
             request_id,
-            int(poll_interval_seconds if poll_interval_seconds is not None else self._supadata_poll_interval_seconds),
+            int(
+                poll_interval_seconds
+                if poll_interval_seconds is not None
+                else self._supadata_poll_interval_seconds
+            ),
         )
         poll_status_code, payload, poll_request_id = self._poll_supadata_transcript_job(
             job_id,
@@ -1780,6 +1792,7 @@ class YouTubeService:
                 request_id,
             )
         )
+
 
 def _search_recent_content_matches(
     *,
@@ -1922,6 +1935,7 @@ def _video_liked_datetime(video: YouTubeVideo) -> datetime:
     if parsed is not None:
         return parsed
     return datetime.fromtimestamp(0, tz=UTC)
+
 
 def _filter_videos_by_query(videos: list[YouTubeVideo], query: str) -> list[YouTubeVideo]:
     normalized_query = query.lower().strip()
@@ -2173,7 +2187,9 @@ def _extract_request_id_from_headers(headers: Any) -> str | None:
             if ("request" in key or "correlation" in key or "trace" in key) and "id" in key:
                 return value
         for key, value in normalized_items:
-            if key in {"id", "x-id", "response-id", "x-response-id"} and _looks_like_request_id(value):
+            if key in {"id", "x-id", "response-id", "x-response-id"} and _looks_like_request_id(
+                value
+            ):
                 return value
     return None
 
@@ -2217,7 +2233,9 @@ def _extract_response_id_like_headers(headers: Any) -> dict[str, str]:
         value = _coerce_nonempty_string(raw_value)
         if value is None:
             continue
-        if ("id" in key and ("request" in key or "trace" in key or "correlation" in key)) or key in {
+        if (
+            "id" in key and ("request" in key or "trace" in key or "correlation" in key)
+        ) or key in {
             "id",
             "x-id",
             "response-id",
@@ -2384,7 +2402,9 @@ def _looks_like_request_id(value: str) -> bool:
     normalized = value.strip()
     if not normalized:
         return False
-    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", normalized):
+    if re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", normalized
+    ):
         return True
     if len(normalized) < 16:
         return False
@@ -3179,7 +3199,9 @@ def _parse_srt_transcript(srt_text: str) -> tuple[str, list[dict[str, Any]]]:
         lines_for_fallback.extend(text_lines)
 
     if segments:
-        transcript_text = "\n".join(segment["text"] for segment in segments if isinstance(segment.get("text"), str))
+        transcript_text = "\n".join(
+            segment["text"] for segment in segments if isinstance(segment.get("text"), str)
+        )
         return transcript_text, segments
 
     transcript_text = "\n".join(line for line in lines_for_fallback if line).strip()

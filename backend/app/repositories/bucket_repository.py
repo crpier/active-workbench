@@ -402,9 +402,7 @@ class BucketRepository:
             return candidates[0]
 
         known_canonical_ids = {
-            candidate.canonical_id
-            for candidate in candidates
-            if candidate.canonical_id
+            candidate.canonical_id for candidate in candidates if candidate.canonical_id
         }
         if len(known_canonical_ids) == 1:
             return candidates[0]
@@ -622,6 +620,7 @@ class BucketRepository:
             "suggestions": suggestions,
         }
 
+
 def _find_existing_item_row(
     conn: Connection,
     *,
@@ -691,6 +690,7 @@ def _get_item_with_conn(conn: Connection, item_id: str) -> BucketItem | None:
     if row is None:
         return None
     return _row_to_item(row)
+
 
 def _merge_item_metadata(
     *,

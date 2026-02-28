@@ -269,9 +269,7 @@ def test_configure_application_logging_creates_file(tmp_path: Path) -> None:
         handler.flush()
 
     assert log_file.exists()
-    log_lines = [
-        line for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
+    log_lines = [line for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert log_lines
 
     parsed_events = [json.loads(line) for line in log_lines]

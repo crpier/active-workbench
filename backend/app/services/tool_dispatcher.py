@@ -907,9 +907,7 @@ class ToolDispatcher:
                 }
                 provenance: list[ProvenanceRef] = []
                 for candidate in add_resolution.candidates[:5]:
-                    provenance.append(
-                        ProvenanceRef(type="external_api", id=candidate.canonical_id)
-                    )
+                    provenance.append(ProvenanceRef(type="external_api", id=candidate.canonical_id))
                 return ToolResponse(
                     ok=True,
                     request_id=request.request_id,
@@ -1423,6 +1421,7 @@ class ToolDispatcher:
             error=None,
         )
 
+
 def _tool_error_response(
     *,
     request_id: UUID,
@@ -1682,10 +1681,13 @@ def _normalize_musicbrainz_release_group_id(value: str | None) -> str | None:
         candidate = match.group(1)
 
     lowered = candidate.strip().lower()
-    if re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        lowered,
-    ) is None:
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            lowered,
+        )
+        is None
+    ):
         return None
     return lowered
 

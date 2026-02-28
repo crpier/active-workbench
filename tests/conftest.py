@@ -61,8 +61,7 @@ def _seed_cached_youtube_data(data_dir: Path) -> None:
         video_id="test_cooking_001",
         title="How To Cook Leek And Potato Soup",
         transcript=(
-            "Today we're cooking a leek and potato soup. "
-            "Chop the leeks and potatoes and simmer."
+            "Today we're cooking a leek and potato soup. Chop the leeks and potatoes and simmer."
         ),
         source="supadata_captions",
         segments=[],
