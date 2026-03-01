@@ -15,6 +15,10 @@ ACTIVE_STATUS = "active"
 COMPLETED_STATUS = "completed"
 
 
+class BucketIntentContextLockedError(RuntimeError):
+    """Raised when a write attempts to modify immutable bucket intent context."""
+
+
 @dataclass(frozen=True)
 class BucketItem:
     item_id: str
@@ -93,6 +97,14 @@ class BucketItem:
     def annotation_last_attempt_at(self) -> str | None:
         return _text_or_none(self.metadata.get("annotation_last_attempt_at"))
 
+    @property
+    def intent_context(self) -> dict[str, str | None] | None:
+        return _intent_context_from_metadata(self.metadata)
+
+    @property
+    def intent_context_locked(self) -> bool:
+        return _intent_context_locked(self.metadata)
+
 
 class BucketRepository:
     def __init__(self, db: Database) -> None:
@@ -116,6 +128,8 @@ class BucketRepository:
         canonical_id: str | None,
         external_url: str | None,
         confidence: float | None,
+        intent_context: dict[str, str | None] | None = None,
+        intent_context_provided: bool = False,
     ) -> tuple[BucketItem, str]:
         normalized_domain = _normalize_domain(domain)
         normalized_title = _normalize_title(title)
@@ -155,6 +169,12 @@ class BucketRepository:
                 year=_int_from_metadata(incoming_metadata.get("year")),
             )
             if existing_row is None:
+                if intent_context_provided and intent_context is not None:
+                    incoming_metadata = _set_intent_context_metadata(
+                        incoming_metadata,
+                        intent_context=intent_context,
+                        captured_at=updated_timestamp,
+                    )
                 item_id = f"bucket_{uuid4().hex}"
                 conn.execute(
                     """
@@ -203,6 +223,15 @@ class BucketRepository:
                 canonical_id=merged_canonical_id,
                 domain=normalized_domain,
             )
+            if intent_context_provided:
+                if existing.intent_context_locked:
+                    raise BucketIntentContextLockedError("Bucket item intent_context is immutable")
+                if intent_context is not None:
+                    merged_metadata = _set_intent_context_metadata(
+                        merged_metadata,
+                        intent_context=intent_context,
+                        captured_at=updated_timestamp,
+                    )
             merged_source_refs = _merge_source_refs(existing.source_refs, incoming_source_refs)
             merged_title = title.strip() or existing.title
             merged_normalized_title = _normalize_title(merged_title)
@@ -271,6 +300,8 @@ class BucketRepository:
         canonical_id: str | None = None,
         external_url: str | None = None,
         confidence: float | None = None,
+        intent_context: dict[str, str | None] | None = None,
+        intent_context_provided: bool = False,
     ) -> BucketItem | None:
         existing = self.get_item(item_id)
         if existing is None:
@@ -301,6 +332,15 @@ class BucketRepository:
             canonical_id=updated_canonical_id,
             domain=updated_domain,
         )
+        if intent_context_provided:
+            if existing.intent_context_locked:
+                raise BucketIntentContextLockedError("Bucket item intent_context is immutable")
+            if intent_context is not None:
+                updated_metadata = _set_intent_context_metadata(
+                    updated_metadata,
+                    intent_context=intent_context,
+                    captured_at=utc_now_iso(),
+                )
 
         with self._db.connection() as conn:
             conn.execute(
@@ -1026,6 +1066,54 @@ def _load_source_refs(raw: object) -> list[dict[str, str]]:
         if isinstance(ref_type, str) and isinstance(ref_id, str):
             refs.append({"type": ref_type, "id": ref_id})
     return _normalize_source_refs(refs)
+
+
+def _intent_context_from_metadata(metadata: dict[str, Any]) -> dict[str, str | None] | None:
+    raw = metadata.get("intent_context")
+    if not isinstance(raw, dict):
+        return None
+    raw_dict = cast(dict[object, object], raw)
+
+    why_raw = raw_dict.get("why")
+    captured_at_raw = raw_dict.get("captured_at")
+    if not isinstance(why_raw, str) or not why_raw.strip():
+        return None
+    if not isinstance(captured_at_raw, str) or not captured_at_raw.strip():
+        return None
+
+    where_from_raw = raw_dict.get("where_from")
+    where_from: str | None = None
+    if isinstance(where_from_raw, str):
+        where_from = where_from_raw.strip() or None
+
+    return {
+        "why": why_raw.strip(),
+        "where_from": where_from,
+        "captured_at": captured_at_raw.strip(),
+    }
+
+
+def _intent_context_locked(metadata: dict[str, Any]) -> bool:
+    raw_locked = metadata.get("intent_context_locked")
+    if isinstance(raw_locked, bool):
+        return raw_locked
+    return _intent_context_from_metadata(metadata) is not None
+
+
+def _set_intent_context_metadata(
+    metadata: dict[str, Any],
+    *,
+    intent_context: dict[str, str | None],
+    captured_at: str,
+) -> dict[str, Any]:
+    updated = dict(metadata)
+    updated["intent_context"] = {
+        "why": str(intent_context.get("why") or "").strip(),
+        "where_from": _normalize_optional_text(intent_context.get("where_from")),
+        "captured_at": captured_at.strip(),
+    }
+    updated["intent_context_locked"] = True
+    return updated
 
 
 def _dump_json(value: object) -> str:

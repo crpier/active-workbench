@@ -73,6 +73,11 @@ What it does:
 - Keeps items as structured records in SQLite.
 - Supports filtering, recommendations, and health diagnostics.
 - Duplicate add requests for an already-active item return `status=already_exists` (no write).
+- Optional `payload.intent_context` captures explicit save context:
+  - Accepted forms: string (treated as `why`) or object `{why, where_from?}`.
+  - Returned on `bucket_item` as `intent_context` + `intent_context_locked`.
+  - Context is immutable once set; rewrite attempts return `invalid_input`.
+  - Items created without context can receive it once later via `bucket.item.update`.
 - Requires explicit domain on add (for example research, movie, tv, book, music, game, place, travel).
 - For `movie`/`tv`, add requests run TMDb resolution before write.
   - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
@@ -134,6 +139,7 @@ In OpenCode, these are exposed as:
 - "Get transcript for https://www.youtube.com/watch?v=<video_id>."
 - "Add 'Watch Andor' to my bucket list."
 - "Save 'Ways to evaluate note-taking methods' as a research idea in my bucket list."
+- "Add 'The Quick and the Dead' with intent context: why='recommended by Alex', where_from='chat'."
 - "Add https://github.com/run-llama/llama_index as a research item."
 - "Recommend one bucket item I can do in under 45 minutes."
 - "Mark item <id> as completed."

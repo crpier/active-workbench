@@ -532,6 +532,66 @@ def test_structured_bucket_supports_research_domain_search_and_recommend(
     assert "Compare methods for weekly review" in titles
 
 
+def test_structured_bucket_intent_context_round_trip_and_immutability(client: TestClient) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by my brother for western movie night.",
+                    "where_from": "family_chat",
+                },
+            },
+        ),
+    )
+    assert add_response.status_code == 200
+    add_body = add_response.json()
+    assert add_body["ok"] is True
+    bucket_item = add_body["result"]["bucket_item"]
+    item_id = bucket_item["item_id"]
+    assert bucket_item["intent_context_locked"] is True
+    assert bucket_item["intent_context"]["why"] == "Recommended by my brother for western movie night."
+    assert bucket_item["intent_context"]["where_from"] == "family_chat"
+    assert isinstance(bucket_item["intent_context"]["captured_at"], str)
+
+    search_response = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={"domain": "movie", "query": "Quick and the Dead"},
+        ),
+    )
+    assert search_response.status_code == 200
+    search_body = search_response.json()
+    assert search_body["result"]["count"] == 1
+    searched_item = search_body["result"]["items"][0]
+    assert searched_item["item_id"] == item_id
+    assert searched_item["intent_context"]["why"] == (
+        "Recommended by my brother for western movie night."
+    )
+    assert searched_item["intent_context_locked"] is True
+
+    update_response = client.post(
+        "/tools/bucket.item.update",
+        json=_request_body(
+            "bucket.item.update",
+            payload={
+                "item_id": item_id,
+                "intent_context": {"why": "Trying to replace locked context."},
+            },
+        ),
+    )
+    assert update_response.status_code == 200
+    update_body = update_response.json()
+    assert update_body["ok"] is False
+    assert update_body["error"]["code"] == "invalid_input"
+    assert "immutable" in update_body["error"]["message"]
+
+
 def test_structured_bucket_add_research_url_only_normalizes_title(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

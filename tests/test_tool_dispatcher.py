@@ -1112,6 +1112,215 @@ def test_bucket_item_add_research_url_uses_fallback_title_when_fetch_fails(
     assert "Top 10" in bucket_item["title"]
 
 
+def test_bucket_item_add_persists_explicit_intent_context(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by a friend for western week.",
+                    "where_from": "chat_with_alex_2026_03_01",
+                },
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    bucket_item = add_response.result["bucket_item"]
+    assert bucket_item["intent_context_locked"] is True
+    assert bucket_item["intent_context"]["why"] == "Recommended by a friend for western week."
+    assert bucket_item["intent_context"]["where_from"] == "chat_with_alex_2026_03_01"
+    assert isinstance(bucket_item["intent_context"]["captured_at"], str)
+
+
+def test_bucket_item_update_allows_one_time_intent_context_set_then_locks(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Invisible Cities", "domain": "book", "auto_enrich": False},
+        ),
+    )
+    assert add_response.ok is True
+    item_id = add_response.result["bucket_item"]["item_id"]
+    assert add_response.result["bucket_item"]["intent_context"] is None
+    assert add_response.result["bucket_item"]["intent_context_locked"] is False
+
+    first_update = dispatcher.execute(
+        "bucket.item.update",
+        ToolRequest(
+            tool="bucket.item.update",
+            request_id=uuid4(),
+            payload={"item_id": item_id, "intent_context": "Gift recommendation from Mira."},
+        ),
+    )
+    assert first_update.ok is True
+    assert first_update.result["bucket_item"]["intent_context_locked"] is True
+    assert first_update.result["bucket_item"]["intent_context"]["why"] == (
+        "Gift recommendation from Mira."
+    )
+
+    second_update = dispatcher.execute(
+        "bucket.item.update",
+        ToolRequest(
+            tool="bucket.item.update",
+            request_id=uuid4(),
+            payload={
+                "item_id": item_id,
+                "intent_context": {"why": "Trying to replace prior context."},
+            },
+        ),
+    )
+    assert second_update.ok is False
+    assert second_update.error is not None
+    assert second_update.error.code == "invalid_input"
+    assert "immutable" in second_update.error.message
+
+
+def test_bucket_item_add_duplicate_with_locked_context_rejects_rewrite(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    first_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "The Left Hand of Darkness",
+                "domain": "book",
+                "auto_enrich": False,
+                "intent_context": "Suggested in the winter reading thread.",
+            },
+        ),
+    )
+    assert first_add.ok is True
+
+    second_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "The Left Hand of Darkness",
+                "domain": "book",
+                "auto_enrich": False,
+                "intent_context": "Trying to overwrite prior context.",
+            },
+        ),
+    )
+
+    assert second_add.ok is False
+    assert second_add.error is not None
+    assert second_add.error.code == "invalid_input"
+    assert "immutable" in second_add.error.message
+
+
+def test_bucket_item_add_duplicate_without_context_allows_one_time_context_set(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    first_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Andor", "domain": "tv", "auto_enrich": False},
+        ),
+    )
+    assert first_add.ok is True
+    first_item_id = first_add.result["bucket_item"]["item_id"]
+
+    second_add = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Andor",
+                "domain": "tv",
+                "auto_enrich": False,
+                "intent_context": {"why": "Saving for sci-fi catch-up month."},
+            },
+        ),
+    )
+
+    assert second_add.ok is True
+    assert second_add.result["status"] == "merged"
+    assert second_add.result["write_performed"] is True
+    assert second_add.result["bucket_item"]["item_id"] == first_item_id
+    assert second_add.result["bucket_item"]["intent_context_locked"] is True
+    assert second_add.result["bucket_item"]["intent_context"]["why"] == (
+        "Saving for sci-fi catch-up month."
+    )
+
+
+def test_bucket_item_add_rejects_invalid_intent_context_payload(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "Roadside Picnic",
+                "domain": "book",
+                "auto_enrich": False,
+                "intent_context": {"where_from": "missing-why-field"},
+            },
+        ),
+    )
+
+    assert add_response.ok is False
+    assert add_response.error is not None
+    assert add_response.error.code == "invalid_input"
+    assert "intent_context.why" in add_response.error.message
+
+
 def test_bucket_item_recommend_includes_research_without_external_enrichment(
     tmp_path: Path,
 ) -> None:

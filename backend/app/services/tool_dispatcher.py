@@ -17,7 +17,11 @@ from backend.app.models.tool_contracts import (
     ToolResponse,
 )
 from backend.app.repositories.audit_repository import AuditRepository
-from backend.app.repositories.bucket_repository import BucketItem, BucketRepository
+from backend.app.repositories.bucket_repository import (
+    BucketIntentContextLockedError,
+    BucketItem,
+    BucketRepository,
+)
 from backend.app.repositories.idempotency_repository import IdempotencyRepository
 from backend.app.repositories.memory_repository import MemoryRepository
 from backend.app.repositories.youtube_quota_repository import YouTubeQuotaRepository
@@ -97,6 +101,9 @@ READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
         "memory.undo",
     }
 )
+
+INTENT_CONTEXT_WHY_MAX_LEN = 2000
+INTENT_CONTEXT_WHERE_FROM_MAX_LEN = 500
 
 
 class ToolDispatcher:
@@ -1115,6 +1122,16 @@ class ToolDispatcher:
         confidence = _optional_float(request.payload.get("confidence"))
         metadata = _payload_dict(request.payload.get("metadata"))
         source_refs = _extract_source_refs(request.payload)
+        intent_context_provided, intent_context, intent_context_error = _extract_intent_context(
+            request.payload
+        )
+        if intent_context_error is not None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=intent_context_error,
+            )
         auto_enrich = _bool_or_default(request.payload.get("auto_enrich"), default=False)
         allow_unresolved = _bool_or_default(request.payload.get("allow_unresolved"), default=False)
 
@@ -1125,11 +1142,35 @@ class ToolDispatcher:
             canonical_id=canonical_id,
         )
         if local_match is not None:
+            if intent_context_provided:
+                if local_match.intent_context_locked:
+                    return _tool_error_response(
+                        request_id=request.request_id,
+                        tool=request.tool,
+                        code="invalid_input",
+                        message=(
+                            "payload.intent_context is immutable for this bucket item and cannot "
+                            "be changed once set"
+                        ),
+                    )
+                updated_local_match = self._bucket_repository.update_item(
+                    item_id=local_match.item_id,
+                    intent_context=intent_context,
+                    intent_context_provided=True,
+                )
+                if updated_local_match is None:
+                    return _tool_error_response(
+                        request_id=request.request_id,
+                        tool=request.tool,
+                        code="not_found",
+                        message=f"Bucket item was not found: {local_match.item_id}",
+                    )
+                local_match = updated_local_match
             result: dict[str, Any] = {
                 "tool": request.tool,
-                "status": "already_exists",
+                "status": "merged" if intent_context_provided else "already_exists",
                 "bucket_item": _bucket_item_payload(local_match),
-                "write_performed": False,
+                "write_performed": intent_context_provided,
                 "enriched": False,
                 "enrichment_provider": None,
                 "resolution_status": "local_duplicate",
@@ -1262,23 +1303,36 @@ class ToolDispatcher:
             metadata = _merge_dicts(metadata, enrichment.metadata)
             source_refs = _merge_source_refs(source_refs, enrichment.source_refs)
 
-        item, action = self._bucket_repository.create_or_merge_item(
-            title=title,
-            domain=domain,
-            notes=notes,
-            year=year,
-            duration_minutes=duration_minutes,
-            rating=rating,
-            popularity=popularity,
-            genres=genres,
-            tags=tags,
-            providers=providers,
-            metadata=metadata,
-            source_refs=source_refs,
-            canonical_id=canonical_id,
-            external_url=external_url,
-            confidence=confidence,
-        )
+        try:
+            item, action = self._bucket_repository.create_or_merge_item(
+                title=title,
+                domain=domain,
+                notes=notes,
+                year=year,
+                duration_minutes=duration_minutes,
+                rating=rating,
+                popularity=popularity,
+                genres=genres,
+                tags=tags,
+                providers=providers,
+                metadata=metadata,
+                source_refs=source_refs,
+                canonical_id=canonical_id,
+                external_url=external_url,
+                confidence=confidence,
+                intent_context=intent_context,
+                intent_context_provided=intent_context_provided,
+            )
+        except BucketIntentContextLockedError:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=(
+                    "payload.intent_context is immutable for this bucket item and cannot "
+                    "be changed once set"
+                ),
+            )
 
         refreshed_item = self._bucket_repository.get_item(item.item_id)
         if refreshed_item is None:
@@ -1329,6 +1383,16 @@ class ToolDispatcher:
         source_refs = (
             _extract_source_refs(request.payload) if "source_refs" in request.payload else None
         )
+        intent_context_provided, intent_context, intent_context_error = _extract_intent_context(
+            request.payload
+        )
+        if intent_context_error is not None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=intent_context_error,
+            )
         requested_domain = _payload_str(request.payload, "domain") or _payload_str(
             request.payload, "kind"
         )
@@ -1339,37 +1403,50 @@ class ToolDispatcher:
                 code="invalid_input",
                 message="Article domain is no longer supported. Use notes/memory instead.",
             )
-        updated = self._bucket_repository.update_item(
-            item_id=item_id,
-            title=_payload_str(request.payload, "title"),
-            domain=requested_domain,
-            notes=_payload_str(request.payload, "notes")
-            or _payload_str(request.payload, "body")
-            or _payload_str(request.payload, "description"),
-            year=_optional_int(request.payload.get("year")),
-            duration_minutes=_optional_int(
-                request.payload.get("duration_minutes") or request.payload.get("duration")
-            ),
-            rating=_optional_float(request.payload.get("rating") or request.payload.get("score")),
-            popularity=_optional_float(request.payload.get("popularity")),
-            genres=_payload_optional_str_list(
-                request.payload.get("genres") or request.payload.get("genre")
-            ),
-            tags=_payload_optional_str_list(
-                request.payload.get("tags") or request.payload.get("tag")
-            ),
-            providers=_payload_optional_str_list(
-                request.payload.get("providers")
-                or request.payload.get("provider")
-                or request.payload.get("platforms")
-            ),
-            metadata=metadata,
-            source_refs=source_refs,
-            canonical_id=_payload_str(request.payload, "canonical_id"),
-            external_url=_payload_str(request.payload, "external_url")
-            or _payload_str(request.payload, "url"),
-            confidence=_optional_float(request.payload.get("confidence")),
-        )
+        try:
+            updated = self._bucket_repository.update_item(
+                item_id=item_id,
+                title=_payload_str(request.payload, "title"),
+                domain=requested_domain,
+                notes=_payload_str(request.payload, "notes")
+                or _payload_str(request.payload, "body")
+                or _payload_str(request.payload, "description"),
+                year=_optional_int(request.payload.get("year")),
+                duration_minutes=_optional_int(
+                    request.payload.get("duration_minutes") or request.payload.get("duration")
+                ),
+                rating=_optional_float(request.payload.get("rating") or request.payload.get("score")),
+                popularity=_optional_float(request.payload.get("popularity")),
+                genres=_payload_optional_str_list(
+                    request.payload.get("genres") or request.payload.get("genre")
+                ),
+                tags=_payload_optional_str_list(
+                    request.payload.get("tags") or request.payload.get("tag")
+                ),
+                providers=_payload_optional_str_list(
+                    request.payload.get("providers")
+                    or request.payload.get("provider")
+                    or request.payload.get("platforms")
+                ),
+                metadata=metadata,
+                source_refs=source_refs,
+                canonical_id=_payload_str(request.payload, "canonical_id"),
+                external_url=_payload_str(request.payload, "external_url")
+                or _payload_str(request.payload, "url"),
+                confidence=_optional_float(request.payload.get("confidence")),
+                intent_context=intent_context,
+                intent_context_provided=intent_context_provided,
+            )
+        except BucketIntentContextLockedError:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message=(
+                    "payload.intent_context is immutable for this bucket item and cannot "
+                    "be changed once set"
+                ),
+            )
         if updated is None:
             return _tool_error_response(
                 request_id=request.request_id,
@@ -2124,6 +2201,8 @@ def _bucket_item_payload(item: BucketItem) -> dict[str, Any]:
         "confidence": item.confidence,
         "metadata": item.metadata,
         "source_refs": item.source_refs,
+        "intent_context": item.intent_context,
+        "intent_context_locked": item.intent_context_locked,
         "annotation_status": item.annotation_status,
         "annotated": item.is_annotated,
         "annotation_provider": item.annotation_provider,
@@ -2393,6 +2472,73 @@ def _extract_source_refs(payload: dict[str, Any]) -> list[dict[str, str]]:
         if isinstance(ref_type, str) and isinstance(ref_id, str):
             refs.append({"type": ref_type, "id": ref_id})
     return refs
+
+
+def _extract_intent_context(
+    payload: dict[str, Any],
+) -> tuple[bool, dict[str, str | None] | None, str | None]:
+    if "intent_context" not in payload:
+        return False, None, None
+
+    raw_context = payload.get("intent_context")
+    if isinstance(raw_context, str):
+        why = raw_context.strip()
+        if not why:
+            return (
+                True,
+                None,
+                "payload.intent_context must be a non-empty string or object with non-empty why",
+            )
+        if len(why) > INTENT_CONTEXT_WHY_MAX_LEN:
+            return (
+                True,
+                None,
+                f"payload.intent_context why exceeds max length {INTENT_CONTEXT_WHY_MAX_LEN}",
+            )
+        return True, {"why": why, "where_from": None}, None
+
+    if not isinstance(raw_context, dict):
+        return (
+            True,
+            None,
+            "payload.intent_context must be a non-empty string or object with non-empty why",
+        )
+
+    raw_context_dict = cast(dict[object, object], raw_context)
+    why_raw = raw_context_dict.get("why")
+    if not isinstance(why_raw, str) or not why_raw.strip():
+        return (
+            True,
+            None,
+            "payload.intent_context.why is required and must be a non-empty string",
+        )
+    why = why_raw.strip()
+    if len(why) > INTENT_CONTEXT_WHY_MAX_LEN:
+        return (
+            True,
+            None,
+            f"payload.intent_context.why exceeds max length {INTENT_CONTEXT_WHY_MAX_LEN}",
+        )
+
+    where_from_raw = raw_context_dict.get("where_from")
+    where_from: str | None = None
+    if where_from_raw is not None:
+        if not isinstance(where_from_raw, str):
+            return (
+                True,
+                None,
+                "payload.intent_context.where_from must be a string when provided",
+            )
+        where_from = where_from_raw.strip() or None
+        if where_from is not None and len(where_from) > INTENT_CONTEXT_WHERE_FROM_MAX_LEN:
+            return (
+                True,
+                None,
+                "payload.intent_context.where_from exceeds max length "
+                f"{INTENT_CONTEXT_WHERE_FROM_MAX_LEN}",
+            )
+
+    return True, {"why": why, "where_from": where_from}, None
 
 
 def _int_or_default(value: object, default: int) -> int:
