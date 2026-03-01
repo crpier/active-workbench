@@ -23,6 +23,17 @@ This is the staging space for features we plan to ship later.
   - Goal: offer a lightweight post-completion review flow (prompting, structure, draft iteration, optional publish-target formatting).
   - Integration direction: keep bucket completion intact and add a dedicated review workflow linked to completed book items.
   - Status: captured for future design; implementation deferred.
+- `Bucket review workflow` (planned)
+  - User story: user accumulates many bucket items (starting with research ideas) and needs periodic triage to decide what to do next.
+  - Goal: provide a review mode that surfaces stale/high-value items, missing metadata, duplicates, and a short next-action shortlist.
+  - Integration direction: start with `research` domain heuristics, then generalize the same review workflow to all bucket domains.
+  - Status: captured for future design; implementation deferred.
+- `Research tagging strategy + tag-based retrieval` (planned)
+  - User story: user wants research items to be reliably discoverable by topic tags, not only free-text matching.
+  - Problem: one-time backfill or search-only tag filters are incomplete without consistent tag creation for future items.
+  - Goal: design an end-to-end tagging system covering capture-time tagging, optional auto-tagging heuristics, user edit/override flow, and tag-based search/review.
+  - Scope notes: include taxonomy decisions (free tags vs controlled vocabulary), confidence/quality guardrails, and migration/backfill strategy for existing items.
+  - Status: explicitly deferred for deeper design before implementation.
 - `Project rename to match expanded scope` (deferred)
   - Goal: rename the project once scope and positioning are stable so
     the name reflects current capabilities.

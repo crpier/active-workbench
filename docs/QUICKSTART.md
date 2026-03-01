@@ -118,6 +118,7 @@ Get transcript for https://www.youtube.com/watch?v=<video_id>
 ```text
 Add "Watch Andor" to my bucket list.
 Save "How to evaluate personal knowledge systems" as a research idea in my bucket list.
+Add https://github.com/run-llama/llama_index as a research item.
 Recommend what I should watch next under 45 minutes.
 Mark item <id> as completed.
 ```

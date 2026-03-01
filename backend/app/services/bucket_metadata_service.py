@@ -4,9 +4,10 @@ import json
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from html import unescape
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from backend.app.repositories.bucket_bookwyrm_quota_repository import (
@@ -232,6 +233,18 @@ class BucketMetadataService:
             return enriched_itunes
 
         return _empty_enrichment()
+
+    def resolve_research_url_title(self, *, url: str) -> tuple[str | None, str | None]:
+        normalized_url = _normalize_http_url(url)
+        if normalized_url is None:
+            return None, None
+        page_title = _fetch_html_title(
+            normalized_url,
+            timeout_seconds=self._http_timeout_seconds,
+        )
+        if page_title is not None:
+            return normalized_url, page_title
+        return normalized_url, _fallback_title_from_url(normalized_url)
 
     def _enrich_with_tmdb(
         self,
@@ -2307,3 +2320,123 @@ def _normalize_optional_text(value: str | None) -> str | None:
 def _normalize_base_url(value: str, *, fallback: str) -> str:
     normalized = _normalize_optional_text(value) or fallback
     return normalized.rstrip("/")
+
+
+def _normalize_http_url(value: str | None) -> str | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    parsed = urlparse(normalized)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    path = parsed.path
+    if path and path != "/":
+        path = path.rstrip("/")
+    rebuilt = parsed._replace(path=path, fragment="")
+    return rebuilt.geturl()
+
+
+def _fetch_html_title(
+    url: str,
+    *,
+    timeout_seconds: float,
+) -> str | None:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "active-workbench/0.1 (+https://github.com/crpier/active-workbench)",
+            "Accept": "text/html,application/xhtml+xml",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            raw = response.read(262_144)
+    except (HTTPError, URLError, TimeoutError, OSError):
+        return None
+
+    text = _decode_html_bytes(raw, content_type=content_type)
+    if text is None:
+        return None
+
+    og_title = _extract_og_title(text)
+    if og_title is not None:
+        return og_title
+    return _extract_html_title(text)
+
+
+def _decode_html_bytes(raw: bytes, *, content_type: str) -> str | None:
+    if not raw:
+        return None
+    charset_match = re.search(r"charset=([A-Za-z0-9._-]+)", content_type)
+    candidates: list[str] = []
+    if charset_match is not None:
+        candidates.append(charset_match.group(1))
+    candidates.extend(["utf-8", "latin-1"])
+    for encoding in candidates:
+        try:
+            return raw.decode(encoding, errors="replace")
+        except LookupError:
+            continue
+    return None
+
+
+def _extract_og_title(html: str) -> str | None:
+    for meta_tag in re.finditer(r"<meta\s+[^>]*>", html, flags=re.IGNORECASE):
+        tag = meta_tag.group(0)
+        if (
+            re.search(r"(?:property|name)\s*=\s*['\"]og:title['\"]", tag, flags=re.IGNORECASE)
+            is None
+        ):
+            continue
+        content_match = re.search(r"content\s*=\s*['\"]([^'\"]+)['\"]", tag, flags=re.IGNORECASE)
+        if content_match is None:
+            continue
+        normalized = _sanitize_page_title(content_match.group(1))
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _extract_html_title(html: str) -> str | None:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return None
+    return _sanitize_page_title(match.group(1))
+
+
+def _sanitize_page_title(value: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", unescape(value)).strip()
+    if not cleaned:
+        return None
+    if cleaned.lower().startswith(("http://", "https://")):
+        return None
+    return cleaned[:240]
+
+
+def _fallback_title_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    query_terms = parse_qs(parsed.query).get("q")
+    candidate = ""
+    if query_terms:
+        candidate = query_terms[0].strip()
+    if not candidate:
+        segments = [segment for segment in parsed.path.split("/") if segment.strip()]
+        if segments:
+            last_segment = unquote(segments[-1]).strip()
+            candidate = re.sub(r"\.(html?|md|php)$", "", last_segment, flags=re.IGNORECASE)
+    if not candidate:
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        candidate = host.split(".", maxsplit=1)[0]
+
+    normalized = re.sub(r"[_\-.]+", " ", candidate)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return "Untitled"
+    return normalized.title()

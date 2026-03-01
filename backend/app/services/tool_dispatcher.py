@@ -1065,18 +1065,31 @@ class ToolDispatcher:
         external_url = _payload_str(request.payload, "external_url") or _payload_str(
             request.payload, "url"
         )
+        normalized_domain = domain.strip().lower()
         media_domain = _normalize_bucket_media_domain(domain)
         title = (
             _payload_str(request.payload, "title")
             or _payload_str(request.payload, "name")
             or _payload_str(request.payload, "item")
         )
+        if normalized_domain == "research":
+            title, external_url = _normalize_research_title_and_url(
+                title=title,
+                external_url=external_url,
+                metadata_service=self._bucket_metadata_service,
+            )
         if title is None:
+            message = "payload.title (or payload.name/payload.item) is required"
+            if normalized_domain == "research":
+                message = (
+                    "payload.title (or payload.name/payload.item) is required. "
+                    "For research items, payload.url/payload.external_url is also accepted."
+                )
             return _tool_error_response(
                 request_id=request.request_id,
                 tool=request.tool,
                 code="invalid_input",
-                message="payload.title (or payload.name/payload.item) is required",
+                message=message,
             )
 
         notes = (
@@ -2261,6 +2274,42 @@ def _extract_youtube_video_id(value: str | None) -> str | None:
                     return first
 
     return None
+
+
+def _normalize_research_title_and_url(
+    *,
+    title: str | None,
+    external_url: str | None,
+    metadata_service: BucketMetadataService,
+) -> tuple[str | None, str | None]:
+    resolved_title = title
+    resolved_external_url = external_url
+
+    if external_url is not None:
+        normalized_url, title_from_url = metadata_service.resolve_research_url_title(url=external_url)
+        if normalized_url is not None:
+            resolved_external_url = normalized_url
+            if resolved_title is None or _looks_like_http_url(resolved_title):
+                resolved_title = title_from_url
+
+    if resolved_title is not None and _looks_like_http_url(resolved_title):
+        normalized_url, title_from_url = metadata_service.resolve_research_url_title(url=resolved_title)
+        if normalized_url is not None:
+            if not _looks_like_http_url(resolved_external_url):
+                resolved_external_url = normalized_url
+            resolved_title = title_from_url
+
+    return resolved_title, resolved_external_url
+
+
+def _looks_like_http_url(value: str | None) -> bool:
+    if value is None:
+        return False
+    candidate = value.strip()
+    if not candidate:
+        return False
+    parsed = urlparse(candidate)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
 
 def _normalize_memory_content(

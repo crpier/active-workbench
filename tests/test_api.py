@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.models.tool_contracts import WRITE_TOOLS, ToolName
@@ -529,6 +530,37 @@ def test_structured_bucket_supports_research_domain_search_and_recommend(
     assert recommend_result["count"] >= 1
     titles = [entry["bucket_item"]["title"] for entry in recommend_result["recommendations"]]
     assert "Compare methods for weekly review" in titles
+
+
+def test_structured_bucket_add_research_url_only_normalizes_title(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_html_title(url: str, *, timeout_seconds: float) -> str | None:
+        _ = (url, timeout_seconds)
+        return "LlamaIndex"
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_html_title",
+        _fake_fetch_html_title,
+    )
+    response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "domain": "research",
+                "url": "https://github.com/run-llama/llama_index",
+                "auto_enrich": False,
+            },
+        ),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    bucket_item = body["result"]["bucket_item"]
+    assert bucket_item["title"] == "LlamaIndex"
+    assert bucket_item["external_url"] == "https://github.com/run-llama/llama_index"
 
 
 def test_structured_bucket_recommend_excludes_unannotated_items(client: TestClient) -> None:

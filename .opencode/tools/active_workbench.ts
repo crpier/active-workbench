@@ -265,9 +265,15 @@ export const bucket_item_add = backendTool(
   "Add or merge a structured bucket item. Domain is required. For movie/tv/book/music, backend may return status=needs_clarification with provider candidates; ask the user to choose by option number or creator clues in normal chat (not by raw provider id), then call again with the matching provider id field. Do not call a question tool.",
   {
     extraArgs: {
-      title: tool.schema.string().optional().describe("Item title."),
+      title: tool.schema
+        .string()
+        .optional()
+        .describe("Item title. For domain=research, optional when url is provided."),
       domain: tool.schema.string().describe("Required domain (for example research, movie, tv, book, music, game, place, travel)."),
-      url: tool.schema.string().optional().describe("Optional URL."),
+      url: tool.schema
+        .string()
+        .optional()
+        .describe("Optional URL. For domain=research, URL-only adds are supported."),
       artist: tool.schema
         .string()
         .optional()

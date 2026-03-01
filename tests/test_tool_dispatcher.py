@@ -989,6 +989,129 @@ def test_bucket_item_add_research_is_annotated_by_default(tmp_path: Path) -> Non
     assert bucket_item["annotation_status"] == "annotated"
 
 
+def test_bucket_item_add_research_url_title_is_normalized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_html_title(url: str, *, timeout_seconds: float) -> str | None:
+        _ = (url, timeout_seconds)
+        return "Awesome Agentic Patterns"
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_html_title",
+        _fake_fetch_html_title,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "https://github.com/nibzard/awesome-agentic-patterns",
+                "domain": "research",
+                "auto_enrich": False,
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    bucket_item = add_response.result["bucket_item"]
+    assert bucket_item["title"] == "Awesome Agentic Patterns"
+    assert bucket_item["external_url"] == "https://github.com/nibzard/awesome-agentic-patterns"
+
+
+def test_bucket_item_add_research_url_only_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_html_title(url: str, *, timeout_seconds: float) -> str | None:
+        _ = (url, timeout_seconds)
+        return "SurrealDB"
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_html_title",
+        _fake_fetch_html_title,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "domain": "research",
+                "url": "https://surrealdb.com/",
+                "auto_enrich": False,
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    assert add_response.result["status"] == "created"
+    bucket_item = add_response.result["bucket_item"]
+    assert bucket_item["title"] == "SurrealDB"
+    assert bucket_item["external_url"] == "https://surrealdb.com/"
+
+
+def test_bucket_item_add_research_url_uses_fallback_title_when_fetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_fetch_html_title(url: str, *, timeout_seconds: float) -> str | None:
+        _ = (url, timeout_seconds)
+        return None
+
+    monkeypatch.setattr(
+        "backend.app.services.bucket_metadata_service._fetch_html_title",
+        _fake_fetch_html_title,
+    )
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+                "domain": "research",
+                "auto_enrich": False,
+            },
+        ),
+    )
+
+    assert add_response.ok is True
+    bucket_item = add_response.result["bucket_item"]
+    assert bucket_item["external_url"].startswith("https://owasp.org/")
+    assert not bucket_item["title"].startswith("http")
+    assert "Top 10" in bucket_item["title"]
+
+
 def test_bucket_item_recommend_includes_research_without_external_enrichment(
     tmp_path: Path,
 ) -> None:

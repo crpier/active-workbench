@@ -134,6 +134,7 @@ In OpenCode, these are exposed as:
 - "Get transcript for https://www.youtube.com/watch?v=<video_id>."
 - "Add 'Watch Andor' to my bucket list."
 - "Save 'Ways to evaluate note-taking methods' as a research idea in my bucket list."
+- "Add https://github.com/run-llama/llama_index as a research item."
 - "Recommend one bucket item I can do in under 45 minutes."
 - "Mark item <id> as completed."
 
