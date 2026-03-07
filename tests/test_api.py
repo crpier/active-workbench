@@ -19,6 +19,7 @@ ALL_TOOLS: tuple[ToolName, ...] = (
     "bucket.item.update",
     "bucket.item.complete",
     "bucket.item.search",
+    "bucket.item.recover_context",
     "bucket.item.recommend",
     "bucket.health.report",
     "memory.create",
@@ -76,6 +77,7 @@ def test_tool_catalog_marks_all_tools_ready(client: TestClient) -> None:
         "bucket.item.update",
         "bucket.item.complete",
         "bucket.item.search",
+        "bucket.item.recover_context",
         "bucket.item.recommend",
         "bucket.health.report",
         "memory.create",
@@ -105,6 +107,8 @@ def test_each_tool_endpoint_accepts_valid_envelope(client: TestClient) -> None:
             payload = {"query": "leeks"}
         elif tool == "memory.delete":
             payload = {"memory_id": "mem_missing"}
+        elif tool == "bucket.item.recover_context":
+            payload = {"query": "missing item"}
         response = client.post(f"/tools/{tool}", json=_request_body(tool, payload=payload))
         assert response.status_code == 200, tool
         body = response.json()
@@ -554,7 +558,9 @@ def test_structured_bucket_intent_context_round_trip_and_immutability(client: Te
     bucket_item = add_body["result"]["bucket_item"]
     item_id = bucket_item["item_id"]
     assert bucket_item["intent_context_locked"] is True
-    assert bucket_item["intent_context"]["why"] == "Recommended by my brother for western movie night."
+    assert (
+        bucket_item["intent_context"]["why"] == "Recommended by my brother for western movie night."
+    )
     assert bucket_item["intent_context"]["where_from"] == "family_chat"
     assert isinstance(bucket_item["intent_context"]["captured_at"], str)
 
@@ -590,6 +596,105 @@ def test_structured_bucket_intent_context_round_trip_and_immutability(client: Te
     assert update_body["ok"] is False
     assert update_body["error"]["code"] == "invalid_input"
     assert "immutable" in update_body["error"]["message"]
+
+
+def test_structured_bucket_search_matches_saved_intent_context(client: TestClient) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by Alex for western movie night.",
+                    "where_from": "chat",
+                },
+            },
+        ),
+    )
+    assert add_response.status_code == 200
+
+    search_response = client.post(
+        "/tools/bucket.item.search",
+        json=_request_body(
+            "bucket.item.search",
+            payload={"domain": "movie", "query": "western movie night"},
+        ),
+    )
+    assert search_response.status_code == 200
+    search_result = search_response.json()["result"]
+    assert search_result["count"] == 1
+    assert search_result["items"][0]["title"] == "The Quick and the Dead"
+
+
+def test_bucket_item_recover_context_by_query_and_completed_default(client: TestClient) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by Alex for western movie night.",
+                    "where_from": "chat",
+                },
+            },
+        ),
+    )
+    assert add_response.status_code == 200
+    item_id = add_response.json()["result"]["bucket_item"]["item_id"]
+
+    complete_response = client.post(
+        "/tools/bucket.item.complete",
+        json=_request_body("bucket.item.complete", payload={"item_id": item_id}),
+    )
+    assert complete_response.status_code == 200
+
+    recover_response = client.post(
+        "/tools/bucket.item.recover_context",
+        json=_request_body(
+            "bucket.item.recover_context",
+            payload={"query": "western movie night", "domain": "movie"},
+        ),
+    )
+    assert recover_response.status_code == 200
+    recover_result = recover_response.json()["result"]
+    assert recover_result["status"] == "ok"
+    assert recover_result["context_found"] is True
+    assert recover_result["bucket_item"]["item_id"] == item_id
+    assert recover_result["bucket_item"]["status"] == "completed"
+    assert recover_result["intent_context"]["why"] == (
+        "Recommended by Alex for western movie night."
+    )
+
+
+def test_bucket_item_recover_context_returns_missing_context(client: TestClient) -> None:
+    add_response = client.post(
+        "/tools/bucket.item.add",
+        json=_request_body(
+            "bucket.item.add",
+            payload={"title": "Andor", "domain": "tv", "auto_enrich": False},
+        ),
+    )
+    assert add_response.status_code == 200
+    item_id = add_response.json()["result"]["bucket_item"]["item_id"]
+
+    recover_response = client.post(
+        "/tools/bucket.item.recover_context",
+        json=_request_body(
+            "bucket.item.recover_context",
+            payload={"item_id": item_id},
+        ),
+    )
+    assert recover_response.status_code == 200
+    recover_result = recover_response.json()["result"]
+    assert recover_result["status"] == "missing_context"
+    assert recover_result["context_found"] is False
+    assert recover_result["intent_context"] is None
 
 
 def test_structured_bucket_add_research_url_only_normalizes_title(

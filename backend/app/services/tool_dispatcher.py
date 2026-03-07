@@ -71,6 +71,10 @@ TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Requires payload.item_id (or id/bucket_item_id alias)."
     ),
     "bucket.item.search": "Search bucket items with filters.",
+    "bucket.item.recover_context": (
+        "Recover why a bucket item was saved by item id or free-text query. "
+        "Returns saved intent context when present and can surface clarification candidates."
+    ),
     "bucket.item.recommend": "Recommend best-fit bucket items for the user's constraints.",
     "bucket.health.report": "Generate a bucket health report with stale items and quick wins.",
     "memory.create": "Create a memory record for future retrieval.",
@@ -92,6 +96,7 @@ READY_FOR_USE_TOOLS: frozenset[ToolName] = frozenset(
         "bucket.item.update",
         "bucket.item.complete",
         "bucket.item.search",
+        "bucket.item.recover_context",
         "bucket.item.recommend",
         "bucket.health.report",
         "memory.create",
@@ -297,6 +302,8 @@ class ToolDispatcher:
             return self._handle_bucket_item_complete(request)
         if tool_name == "bucket.item.search":
             return self._handle_bucket_item_search(request)
+        if tool_name == "bucket.item.recover_context":
+            return self._handle_bucket_item_recover_context(request)
         if tool_name == "bucket.item.recommend":
             return self._handle_bucket_item_recommend(request)
         if tool_name == "bucket.health.report":
@@ -1415,7 +1422,9 @@ class ToolDispatcher:
                 duration_minutes=_optional_int(
                     request.payload.get("duration_minutes") or request.payload.get("duration")
                 ),
-                rating=_optional_float(request.payload.get("rating") or request.payload.get("score")),
+                rating=_optional_float(
+                    request.payload.get("rating") or request.payload.get("score")
+                ),
                 popularity=_optional_float(request.payload.get("popularity")),
                 genres=_payload_optional_str_list(
                     request.payload.get("genres") or request.payload.get("genre")
@@ -1539,6 +1548,116 @@ class ToolDispatcher:
             provenance=[
                 ProvenanceRef(type="bucket_item", id=item.item_id) for item in matches[:30]
             ],
+            error=None,
+        )
+
+    def _handle_bucket_item_recover_context(self, request: ToolRequest) -> ToolResponse:
+        item_id = (
+            _payload_str(request.payload, "item_id")
+            or _payload_str(request.payload, "id")
+            or _payload_str(request.payload, "bucket_item_id")
+        )
+        query = _payload_str(request.payload, "query")
+        if item_id is None and query is None:
+            return _tool_error_response(
+                request_id=request.request_id,
+                tool=request.tool,
+                code="invalid_input",
+                message="payload.item_id or payload.query is required",
+            )
+
+        if item_id is not None:
+            item = self._bucket_repository.get_item(item_id)
+            if item is None:
+                return _tool_error_response(
+                    request_id=request.request_id,
+                    tool=request.tool,
+                    code="not_found",
+                    message=f"Bucket item was not found: {item_id}",
+                )
+
+            status = "ok" if item.intent_context is not None else "missing_context"
+            return ToolResponse(
+                ok=True,
+                request_id=request.request_id,
+                result={
+                    "tool": request.tool,
+                    "status": status,
+                    "context_found": item.intent_context is not None,
+                    "bucket_item": _bucket_item_payload(item),
+                    "intent_context": item.intent_context,
+                },
+                provenance=[ProvenanceRef(type="bucket_item", id=item.item_id)],
+                error=None,
+            )
+
+        domain = _payload_str(request.payload, "domain") or _payload_str(request.payload, "kind")
+        statuses = _bucket_statuses_for_recovery(request.payload)
+        limit = max(1, min(10, _int_or_default(request.payload.get("limit"), default=5)))
+
+        matches = self._bucket_repository.recover_context_candidates(
+            query=query or "",
+            domain=domain,
+            statuses=statuses,
+            limit=limit,
+        )
+        if not matches:
+            return ToolResponse(
+                ok=True,
+                request_id=request.request_id,
+                result={
+                    "tool": request.tool,
+                    "status": "not_found",
+                    "count": 0,
+                    "query": query,
+                    "candidates": [],
+                },
+                error=None,
+            )
+
+        normalized_query = _normalize_bucket_query_title(query or "")
+        exact_title_matches = [
+            item
+            for item in matches
+            if normalized_query and item.normalized_title == normalized_query
+        ]
+        selected: BucketItem | None = None
+        if len(exact_title_matches) == 1:
+            selected = exact_title_matches[0]
+        elif len(matches) == 1:
+            selected = matches[0]
+
+        if selected is None:
+            return ToolResponse(
+                ok=True,
+                request_id=request.request_id,
+                result={
+                    "tool": request.tool,
+                    "status": "needs_clarification",
+                    "query": query,
+                    "count": len(matches),
+                    "candidates": [
+                        _bucket_context_recovery_candidate_payload(item) for item in matches
+                    ],
+                },
+                provenance=[
+                    ProvenanceRef(type="bucket_item", id=item.item_id) for item in matches[:10]
+                ],
+                error=None,
+            )
+
+        status = "ok" if selected.intent_context is not None else "missing_context"
+        return ToolResponse(
+            ok=True,
+            request_id=request.request_id,
+            result={
+                "tool": request.tool,
+                "status": status,
+                "context_found": selected.intent_context is not None,
+                "bucket_item": _bucket_item_payload(selected),
+                "intent_context": selected.intent_context,
+            },
+            provenance=[ProvenanceRef(type="bucket_item", id=selected.item_id)],
             error=None,
         )
 
@@ -2182,6 +2301,17 @@ def _bucket_statuses_from_payload(payload: dict[str, Any]) -> set[str]:
     return statuses
 
 
+def _bucket_statuses_for_recovery(payload: dict[str, Any]) -> set[str]:
+    if "statuses" not in payload and "status" not in payload and "include_completed" not in payload:
+        return {"active", "completed"}
+    return _bucket_statuses_from_payload(payload)
+
+
+def _normalize_bucket_query_title(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
 def _bucket_item_payload(item: BucketItem) -> dict[str, Any]:
     return {
         "item_id": item.item_id,
@@ -2213,6 +2343,26 @@ def _bucket_item_payload(item: BucketItem) -> dict[str, Any]:
         "last_recommended_at": (
             item.last_recommended_at.isoformat() if item.last_recommended_at is not None else None
         ),
+    }
+
+
+def _bucket_context_recovery_candidate_payload(item: BucketItem) -> dict[str, Any]:
+    intent_context = item.intent_context
+    where_from = None
+    if intent_context is not None and isinstance(intent_context.get("where_from"), str):
+        where_from = str(intent_context.get("where_from"))
+    return {
+        "item_id": item.item_id,
+        "title": item.title,
+        "domain": item.domain,
+        "status": item.status,
+        "has_intent_context": intent_context is not None,
+        "captured_at": (
+            str(intent_context.get("captured_at")) if intent_context is not None else None
+        ),
+        "where_from": where_from,
+        "added_at": item.added_at.isoformat(),
+        "completed_at": item.completed_at.isoformat() if item.completed_at is not None else None,
     }
 
 
@@ -2365,14 +2515,18 @@ def _normalize_research_title_and_url(
     resolved_external_url = external_url
 
     if external_url is not None:
-        normalized_url, title_from_url = metadata_service.resolve_research_url_title(url=external_url)
+        normalized_url, title_from_url = metadata_service.resolve_research_url_title(
+            url=external_url
+        )
         if normalized_url is not None:
             resolved_external_url = normalized_url
             if resolved_title is None or _looks_like_http_url(resolved_title):
                 resolved_title = title_from_url
 
     if resolved_title is not None and _looks_like_http_url(resolved_title):
-        normalized_url, title_from_url = metadata_service.resolve_research_url_title(url=resolved_title)
+        normalized_url, title_from_url = metadata_service.resolve_research_url_title(
+            url=resolved_title
+        )
         if normalized_url is not None:
             if not _looks_like_http_url(resolved_external_url):
                 resolved_external_url = normalized_url

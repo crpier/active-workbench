@@ -16,6 +16,7 @@ const TOOL_NAMES = {
   bucket_item_update: "bucket.item.update",
   bucket_item_complete: "bucket.item.complete",
   bucket_item_search: "bucket.item.search",
+  bucket_item_recover_context: "bucket.item.recover_context",
   bucket_item_recommend: "bucket.item.recommend",
   bucket_health_report: "bucket.health.report",
   memory_create: "memory.create",
@@ -379,10 +380,13 @@ export const bucket_item_complete = backendTool(
 
 export const bucket_item_search = backendTool(
   TOOL_NAMES.bucket_item_search,
-  "Search structured bucket items by query/domain/genre/duration/rating. Includes annotation status so unannotated items can be identified.",
+  "Search structured bucket items by query/domain/genre/duration/rating. Query text matches title, notes, and saved intent context. Includes annotation status so unannotated items can be identified.",
   {
     extraArgs: {
-      query: tool.schema.string().optional().describe("Free-text query against title/notes."),
+      query: tool.schema
+        .string()
+        .optional()
+        .describe("Free-text query against title, notes, and saved intent context."),
       domain: tool.schema.string().optional().describe("Domain filter (research, movie, tv, book, etc.)."),
       include_completed: tool.schema
         .boolean()
@@ -391,6 +395,34 @@ export const bucket_item_search = backendTool(
       limit: tool.schema.number().int().optional().describe("Maximum number of returned items."),
     },
     payloadFields: ["query", "domain", "include_completed", "limit"],
+  },
+);
+
+export const bucket_item_recover_context = backendTool(
+  TOOL_NAMES.bucket_item_recover_context,
+  "Recover why a bucket item was saved by item id or by a free-text query. Query mode includes completed items by default and can return clarification candidates.",
+  {
+    extraArgs: {
+      item_id: tool.schema.string().optional().describe("Bucket item id to inspect directly."),
+      id: tool.schema.string().optional().describe("Alias for item_id."),
+      bucket_item_id: tool.schema.string().optional().describe("Alias for item_id."),
+      query: tool.schema
+        .string()
+        .optional()
+        .describe("Free-text recovery query against title, notes, and saved intent context."),
+      domain: tool.schema.string().optional().describe("Optional domain filter."),
+      include_completed: tool.schema
+        .boolean()
+        .optional()
+        .describe("Override whether completed items are included in query mode."),
+      limit: tool.schema
+        .number()
+        .int()
+        .optional()
+        .describe("Maximum clarification candidates to return in query mode."),
+    },
+    payloadFields: ["item_id", "id", "bucket_item_id", "query", "domain", "include_completed", "limit"],
+    requireAnyField: ["item_id", "id", "bucket_item_id", "query"],
   },
 );
 

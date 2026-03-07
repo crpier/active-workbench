@@ -1246,7 +1246,9 @@ def test_bucket_item_add_duplicate_with_locked_context_rejects_rewrite(tmp_path:
     assert "immutable" in second_add.error.message
 
 
-def test_bucket_item_add_duplicate_without_context_allows_one_time_context_set(tmp_path: Path) -> None:
+def test_bucket_item_add_duplicate_without_context_allows_one_time_context_set(
+    tmp_path: Path,
+) -> None:
     dispatcher = _build_dispatcher(
         tmp_path,
         metadata_service=BucketMetadataService(
@@ -1373,10 +1375,7 @@ def test_bucket_item_recommend_includes_research_without_external_enrichment(
 
     assert recommend.ok is True
     assert recommend.result["count"] >= 1
-    titles = [
-        entry["bucket_item"]["title"]
-        for entry in recommend.result["recommendations"]
-    ]
+    titles = [entry["bucket_item"]["title"] for entry in recommend.result["recommendations"]]
     assert "Knowledge capture review methods" in titles
 
 
@@ -1437,6 +1436,181 @@ def test_bucket_item_complete_accepts_bucket_item_id_alias(tmp_path: Path) -> No
     assert complete_response.ok is True
     assert complete_response.result["status"] == "completed"
     assert complete_response.result["bucket_item"]["status"] == "completed"
+
+
+def test_bucket_item_search_matches_saved_intent_context(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by Alex for western movie night.",
+                    "where_from": "chat",
+                },
+            },
+        ),
+    )
+    assert add_response.ok is True
+
+    search_response = dispatcher.execute(
+        "bucket.item.search",
+        ToolRequest(
+            tool="bucket.item.search",
+            request_id=uuid4(),
+            payload={"query": "western movie night", "domain": "movie"},
+        ),
+    )
+
+    assert search_response.ok is True
+    assert search_response.result["count"] == 1
+    assert search_response.result["items"][0]["title"] == "The Quick and the Dead"
+
+
+def test_bucket_item_recover_context_returns_completed_item_by_default(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={
+                "title": "The Quick and the Dead",
+                "domain": "movie",
+                "auto_enrich": False,
+                "intent_context": {
+                    "why": "Recommended by Alex for western movie night.",
+                    "where_from": "chat",
+                },
+            },
+        ),
+    )
+    assert add_response.ok is True
+    item_id = add_response.result["bucket_item"]["item_id"]
+
+    complete_response = dispatcher.execute(
+        "bucket.item.complete",
+        ToolRequest(
+            tool="bucket.item.complete",
+            request_id=uuid4(),
+            payload={"item_id": item_id},
+        ),
+    )
+    assert complete_response.ok is True
+
+    recover_response = dispatcher.execute(
+        "bucket.item.recover_context",
+        ToolRequest(
+            tool="bucket.item.recover_context",
+            request_id=uuid4(),
+            payload={"query": "western movie night", "domain": "movie"},
+        ),
+    )
+
+    assert recover_response.ok is True
+    assert recover_response.result["status"] == "ok"
+    assert recover_response.result["bucket_item"]["item_id"] == item_id
+    assert recover_response.result["bucket_item"]["status"] == "completed"
+    assert recover_response.result["intent_context"]["where_from"] == "chat"
+
+
+def test_bucket_item_recover_context_returns_missing_context_for_known_item(tmp_path: Path) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    add_response = dispatcher.execute(
+        "bucket.item.add",
+        ToolRequest(
+            tool="bucket.item.add",
+            request_id=uuid4(),
+            payload={"title": "Andor", "domain": "tv", "auto_enrich": False},
+        ),
+    )
+    assert add_response.ok is True
+
+    recover_response = dispatcher.execute(
+        "bucket.item.recover_context",
+        ToolRequest(
+            tool="bucket.item.recover_context",
+            request_id=uuid4(),
+            payload={"item_id": add_response.result["bucket_item"]["item_id"]},
+        ),
+    )
+
+    assert recover_response.ok is True
+    assert recover_response.result["status"] == "missing_context"
+    assert recover_response.result["context_found"] is False
+    assert recover_response.result["intent_context"] is None
+
+
+def test_bucket_item_recover_context_returns_clarification_for_ambiguous_query(
+    tmp_path: Path,
+) -> None:
+    dispatcher = _build_dispatcher(
+        tmp_path,
+        metadata_service=BucketMetadataService(
+            enrichment_enabled=False,
+            http_timeout_seconds=0.5,
+            tmdb_api_key=None,
+        ),
+    )
+
+    for title in ("The Quick and the Dead", "Unforgiven"):
+        add_response = dispatcher.execute(
+            "bucket.item.add",
+            ToolRequest(
+                tool="bucket.item.add",
+                request_id=uuid4(),
+                payload={
+                    "title": title,
+                    "domain": "movie",
+                    "auto_enrich": False,
+                    "intent_context": {"why": "Recommended by Alex."},
+                },
+            ),
+        )
+        assert add_response.ok is True
+
+    recover_response = dispatcher.execute(
+        "bucket.item.recover_context",
+        ToolRequest(
+            tool="bucket.item.recover_context",
+            request_id=uuid4(),
+            payload={"query": "Recommended by Alex", "domain": "movie"},
+        ),
+    )
+
+    assert recover_response.ok is True
+    assert recover_response.result["status"] == "needs_clarification"
+    assert recover_response.result["count"] == 2
+    assert len(recover_response.result["candidates"]) == 2
 
 
 def test_bucket_item_add_skips_obscure_matches_for_common_titles(

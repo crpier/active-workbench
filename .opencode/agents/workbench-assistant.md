@@ -66,11 +66,14 @@ Bucket list workflow:
 - For add clarifications, ask the user to pick by option number or creator/year in normal chat, then retry `active_workbench_bucket_item_add` with the provider-specific identifier (`tmdb_id` for movie/tv, `bookwyrm_key` for books, `musicbrainz_release_group_id` for music albums).
 - Never ask the user to provide raw provider identifiers (for example `tmdb_id`, `bookwyrm_key`, or `musicbrainz_release_group_id`) directly.
 - For music album adds, if the user mentions an artist, pass it in payload as `artist` to improve MusicBrainz precision.
+- When a bucket-save request includes an explicit reason or source in the user's wording, pass it as `intent_context` on the add request. Do not invent reasons that the user did not state.
+- If the reason is explicit but the source is just the current conversation, use `where_from="chat"`.
 - If `active_workbench_bucket_item_add` returns `status=already_exists`, respond that the item is already in the bucket list and no change was made.
 - For completion intents (for example "I finished watching X"): run one `active_workbench_bucket_item_search`, then one `active_workbench_bucket_item_complete` when a single clear item is found.
 - Do not call `active_workbench_bucket_item_update` to mark completion.
 - Do not retry the same completion with alternate payload keys after a successful completion response.
 - After a successful `active_workbench_bucket_item_complete`, stop tool-calling and return the final user-facing confirmation immediately.
+- For requests like "why did I save this?" or "where did this come from?", call `active_workbench_bucket_item_recover_context` before answering.
 - For search/list requests, include unannotated items in responses and explicitly mention when an item is not annotated yet.
 - For recommendations, rely on backend recommendations as-is; unannotated items are excluded by backend policy.
 

@@ -266,6 +266,19 @@ def bucket_item_search(
 
 
 @router.post(
+    "/tools/bucket.item.recover_context",
+    response_model=ToolResponse,
+    tags=["tools"],
+    operation_id="bucket_item_recover_context",
+)
+def bucket_item_recover_context(
+    request: ToolRequest,
+    dispatcher: Annotated[ToolDispatcher, Depends(get_dispatcher)],
+) -> ToolResponse:
+    return _handle_tool("bucket.item.recover_context", request, dispatcher)
+
+
+@router.post(
     "/tools/bucket.item.recommend",
     response_model=ToolResponse,
     tags=["tools"],

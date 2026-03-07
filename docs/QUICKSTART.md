@@ -94,6 +94,7 @@ Only ready tools:
 - `active_workbench_bucket_item_update`
 - `active_workbench_bucket_item_complete`
 - `active_workbench_bucket_item_search`
+- `active_workbench_bucket_item_recover_context`
 - `active_workbench_bucket_item_recommend`
 - `active_workbench_bucket_health_report`
 
@@ -119,9 +120,11 @@ Get transcript for https://www.youtube.com/watch?v=<video_id>
 Add "Watch Andor" to my bucket list.
 Save "How to evaluate personal knowledge systems" as a research idea in my bucket list.
 Add "The Quick and the Dead" to my bucket list with intent context: why "recommended by Alex", where_from "chat".
+Save "The Quick and the Dead" for western movie night because Alex recommended it.
 Add https://github.com/run-llama/llama_index as a research item.
 Recommend what I should watch next under 45 minutes.
 Mark item <id> as completed.
+Why did I save "The Quick and the Dead"?
 ```
 
 ## YouTube + Supadata Notes

@@ -66,6 +66,7 @@ Use:
 - `bucket.item.update`
 - `bucket.item.complete`
 - `bucket.item.search`
+- `bucket.item.recover_context`
 - `bucket.item.recommend`
 - `bucket.health.report`
 
@@ -78,6 +79,11 @@ What it does:
   - Returned on `bucket_item` as `intent_context` + `intent_context_locked`.
   - Context is immutable once set; rewrite attempts return `invalid_input`.
   - Items created without context can receive it once later via `bucket.item.update`.
+- `bucket.item.search` query text matches `title`, `notes`, and saved `intent_context` fields.
+- `bucket.item.recover_context` returns the saved `intent_context` for a known item id or a fuzzy query.
+  - Query mode includes completed items by default.
+  - Ambiguous matches return `status=needs_clarification` with candidate items.
+  - Items without saved context return `status=missing_context`.
 - Requires explicit domain on add (for example research, movie, tv, book, music, game, place, travel).
 - For `movie`/`tv`, add requests run TMDb resolution before write.
   - If match is uncertain, `bucket.item.add` returns `status=needs_clarification` with candidates.
@@ -124,6 +130,7 @@ In OpenCode, these are exposed as:
 - `active_workbench_bucket_item_update`
 - `active_workbench_bucket_item_complete`
 - `active_workbench_bucket_item_search`
+- `active_workbench_bucket_item_recover_context`
 - `active_workbench_bucket_item_recommend`
 - `active_workbench_bucket_health_report`
 - `active_workbench_memory_create`
@@ -140,6 +147,8 @@ In OpenCode, these are exposed as:
 - "Add 'Watch Andor' to my bucket list."
 - "Save 'Ways to evaluate note-taking methods' as a research idea in my bucket list."
 - "Add 'The Quick and the Dead' with intent context: why='recommended by Alex', where_from='chat'."
+- "Save 'The Quick and the Dead' for western movie night because Alex recommended it."
+- "Why did I save 'The Quick and the Dead'?"
 - "Add https://github.com/run-llama/llama_index as a research item."
 - "Recommend one bucket item I can do in under 45 minutes."
 - "Mark item <id> as completed."

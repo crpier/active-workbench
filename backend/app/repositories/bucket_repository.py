@@ -106,6 +106,12 @@ class BucketItem:
         return _intent_context_locked(self.metadata)
 
 
+@dataclass(frozen=True)
+class BucketQueryMatch:
+    item: BucketItem
+    score: tuple[int, ...]
+
+
 class BucketRepository:
     def __init__(self, db: Database) -> None:
         self._db = db
@@ -503,30 +509,16 @@ class BucketRepository:
         if not normalized_statuses:
             normalized_statuses = [ACTIVE_STATUS]
 
-        clauses = [f"status IN ({', '.join('?' for _ in normalized_statuses)})"]
-        params: list[Any] = list(normalized_statuses)
-
-        normalized_domain = _normalize_optional_text(domain)
-        if normalized_domain is not None:
-            clauses.append("domain = ?")
-            params.append(_normalize_domain(normalized_domain))
-
-        where_clause = " AND ".join(clauses) if clauses else "1=1"
-        sql = f"SELECT * FROM bucket_items WHERE {where_clause} ORDER BY updated_at DESC LIMIT ?"
-        params.append(max(10, limit * 10))
-
-        with self._db.connection() as conn:
-            rows = conn.execute(sql, tuple(params)).fetchall()
-
-        candidate_items = [_row_to_item(row) for row in rows]
+        candidate_items = self._list_candidate_items(
+            domain=domain,
+            statuses=set(normalized_statuses),
+            scan_limit=max(50, limit * 20),
+        )
         normalized_query = _normalize_optional_text(query)
         normalized_genres = [genre.lower().strip() for genre in genres if genre.strip()]
+        ranked_items = self._rank_query_matches(candidate_items, normalized_query)
         filtered: list[BucketItem] = []
-        for item in candidate_items:
-            if normalized_query is not None:
-                searchable_text = f"{item.title}\n{item.notes}".lower()
-                if normalized_query.lower() not in searchable_text:
-                    continue
+        for item in ranked_items:
             if (
                 min_duration_minutes is not None
                 and item.duration_minutes is not None
@@ -547,6 +539,76 @@ class BucketRepository:
             if len(filtered) >= max(1, limit):
                 break
         return filtered
+
+    def recover_context_candidates(
+        self,
+        *,
+        query: str,
+        domain: str | None,
+        statuses: set[str],
+        limit: int,
+    ) -> list[BucketItem]:
+        normalized_statuses = sorted(
+            {status.strip().lower() for status in statuses if status.strip()}
+        )
+        if not normalized_statuses:
+            normalized_statuses = [ACTIVE_STATUS, COMPLETED_STATUS]
+
+        candidate_items = self._list_candidate_items(
+            domain=domain,
+            statuses=set(normalized_statuses),
+            scan_limit=max(50, limit * 20),
+        )
+        ranked_items = self._rank_query_matches(candidate_items, _normalize_optional_text(query))
+        return ranked_items[: max(1, limit)]
+
+    def _list_candidate_items(
+        self,
+        *,
+        domain: str | None,
+        statuses: set[str],
+        scan_limit: int,
+    ) -> list[BucketItem]:
+        normalized_statuses = sorted(
+            {status.strip().lower() for status in statuses if status.strip()}
+        )
+        if not normalized_statuses:
+            normalized_statuses = [ACTIVE_STATUS]
+
+        clauses = [f"status IN ({', '.join('?' for _ in normalized_statuses)})"]
+        params: list[Any] = list(normalized_statuses)
+
+        normalized_domain = _normalize_optional_text(domain)
+        if normalized_domain is not None:
+            clauses.append("domain = ?")
+            params.append(_normalize_domain(normalized_domain))
+
+        where_clause = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM bucket_items WHERE {where_clause} ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(10, scan_limit))
+
+        with self._db.connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+        return [_row_to_item(row) for row in rows]
+
+    def _rank_query_matches(
+        self,
+        items: list[BucketItem],
+        normalized_query: str | None,
+    ) -> list[BucketItem]:
+        if normalized_query is None:
+            return items
+
+        matches: list[BucketQueryMatch] = []
+        for item in items:
+            score = _bucket_query_match_score(item, normalized_query)
+            if score is None:
+                continue
+            matches.append(BucketQueryMatch(item=item, score=score))
+
+        matches.sort(key=lambda entry: entry.score, reverse=True)
+        return [entry.item for entry in matches]
 
     def track_recommendations(self, item_ids: list[str]) -> None:
         if not item_ids:
@@ -847,6 +909,65 @@ def _is_self_annotated_domain(domain: str | None) -> bool:
         return False
     normalized_domain = domain.strip().lower()
     return normalized_domain in {"research"}
+
+
+def _bucket_query_match_score(item: BucketItem, normalized_query: str) -> tuple[int, ...] | None:
+    query_text = normalized_query.lower().strip()
+    if not query_text:
+        return None
+
+    query_tokens = _search_tokens(query_text)
+    title_text = item.title.lower()
+    notes_text = item.notes.lower()
+    intent_context = item.intent_context or {}
+    intent_why = str(intent_context.get("why") or "").lower()
+    intent_where_from = str(intent_context.get("where_from") or "").lower()
+
+    exact_title = int(_normalize_title(query_text) == item.normalized_title)
+    title_phrase = int(query_text in title_text)
+    notes_phrase = int(query_text in notes_text)
+    intent_phrase = int(query_text in intent_why or query_text in intent_where_from)
+    title_token_hits = _field_token_hits(title_text, query_tokens)
+    notes_token_hits = _field_token_hits(notes_text, query_tokens)
+    intent_token_hits = max(
+        _field_token_hits(intent_why, query_tokens),
+        _field_token_hits(intent_where_from, query_tokens),
+    )
+
+    if not any(
+        (
+            exact_title,
+            title_phrase,
+            notes_phrase,
+            intent_phrase,
+            title_token_hits,
+            notes_token_hits,
+            intent_token_hits,
+        )
+    ):
+        return None
+
+    return (
+        exact_title,
+        title_phrase,
+        title_token_hits,
+        notes_phrase,
+        notes_token_hits,
+        intent_phrase,
+        intent_token_hits,
+        int(item.status == ACTIVE_STATUS),
+        int(item.updated_at.timestamp()),
+    )
+
+
+def _search_tokens(text: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) >= 2]
+
+
+def _field_token_hits(text: str, tokens: list[str]) -> int:
+    if not text or not tokens:
+        return 0
+    return sum(1 for token in tokens if token in text)
 
 
 def _genres_overlap(item_genres: list[str], target_genres: list[str]) -> bool:

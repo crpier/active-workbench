@@ -16,6 +16,7 @@ ToolName = Literal[
     "bucket.item.update",
     "bucket.item.complete",
     "bucket.item.search",
+    "bucket.item.recover_context",
     "bucket.item.recommend",
     "bucket.health.report",
     "memory.create",
